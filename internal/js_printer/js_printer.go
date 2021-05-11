@@ -1029,6 +1029,24 @@ func (p *printer) printRequireOrImportExpr(
 	}
 
 	if !record.SourceIndex.IsValid() {
+		// "require()" with a dynamic expression
+		if record.IsDynamicExpression {
+			p.printSpaceBeforeIdentifier()
+			p.print("require(")
+			p.addSourceMapping(record.Range.Loc)
+
+			// If the dynamic expression E has a module path P associated with it, we
+			// write "require(P)(E)". If not, write "require(E)".
+			if record.DynamicExpressionModulePath != "" {
+				p.printQuotedUTF8("./"+record.DynamicExpressionModulePath, false)
+				p.print(")(")
+			}
+
+			p.print(record.Path.Text)
+			p.print(")")
+			return
+		}
+
 		// External "require()"
 		if record.Kind != ast.ImportDynamic {
 			if record.WrapWithToModule {

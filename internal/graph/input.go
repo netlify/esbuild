@@ -73,6 +73,7 @@ const (
 
 type InputFileRepr interface {
 	ImportRecords() *[]ast.ImportRecord
+	SetClaimedDynamicImport(ClaimedDynamicImport)
 }
 
 type JSRepr struct {
@@ -110,4 +111,12 @@ type CSSRepr struct {
 
 func (repr *CSSRepr) ImportRecords() *[]ast.ImportRecord {
 	return &repr.AST.ImportRecords
+}
+
+// no-op
+func (repr *CSSRepr) SetClaimedDynamicImport(ClaimedDynamicImport) {}
+
+type ClaimedDynamicImport struct {
+	Index      int
+	ModulePath string
 }
