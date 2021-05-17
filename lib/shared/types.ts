@@ -287,6 +287,7 @@ export interface OnDynamicImportArgs {
   importer: string;
   namespace: string;
   pluginData: any;
+  resolveDir: string;
 }
 
 export interface OnDynamicImportResult {

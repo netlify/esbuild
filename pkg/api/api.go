@@ -520,6 +520,7 @@ type OnDynamicImportArgs struct {
 	Importer   string
 	Namespace  string
 	PluginData interface{}
+	ResolveDir string
 }
 
 type OnDynamicImportResult struct {
