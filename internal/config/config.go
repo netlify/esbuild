@@ -555,6 +555,7 @@ type OnDynamicImportArgs struct {
 	Importer   logger.Path
 	Namespace  string
 	PluginData interface{}
+	ResolveDir string
 }
 
 type OnDynamicImportResult struct {

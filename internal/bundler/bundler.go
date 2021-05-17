@@ -393,6 +393,7 @@ func parseFile(args parseArgs) {
 							args.pluginData,
 							record,
 							result.file.inputFile.Source.KeyPath,
+							absResolveDir,
 						)
 
 						onDynamicImportResults.Insert(OnDynamicImportResult{
@@ -1003,6 +1004,7 @@ func runOnDynamicImportPlugins(
 	pluginData interface{},
 	importRecord ast.ImportRecord,
 	importerPath logger.Path,
+	resolveDir string,
 ) *string {
 	// Run any plugins that defined a "onDynamicImport" hook. Plugins will run
 	// in serial and we stop when a plugin "claims" the dynamic import, which
@@ -1014,6 +1016,7 @@ func runOnDynamicImportPlugins(
 				Importer:   importerPath,
 				Namespace:  "file",
 				PluginData: pluginData,
+				ResolveDir: resolveDir,
 			}
 			pluginResult := onDynamicImport.Callback(onDynamicImportArgs)
 			pluginName := pluginResult.PluginName
