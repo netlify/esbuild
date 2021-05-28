@@ -73,6 +73,7 @@ const (
 
 type InputFileRepr interface {
 	ImportRecords() *[]ast.ImportRecord
+	DynamicExpressionImportRecords() *[]ast.DynamicExpressionImportRecord
 	SetClaimedDynamicImport(ClaimedDynamicImport)
 }
 
@@ -88,6 +89,14 @@ type JSRepr struct {
 
 func (repr *JSRepr) ImportRecords() *[]ast.ImportRecord {
 	return &repr.AST.ImportRecords
+}
+
+func (repr *JSRepr) DynamicExpressionImportRecords() *[]ast.DynamicExpressionImportRecord {
+	return &repr.AST.DynamicExpressionImportRecords
+}
+
+func (repr *JSRepr) SetClaimedDynamicImport(dynamicImport ClaimedDynamicImport) {
+	repr.AST.DynamicExpressionImportRecords[dynamicImport.Index].ModulePath = dynamicImport.ModulePath
 }
 
 func (repr *JSRepr) TopLevelSymbolToParts(ref js_ast.Ref) []uint32 {
@@ -113,7 +122,10 @@ func (repr *CSSRepr) ImportRecords() *[]ast.ImportRecord {
 	return &repr.AST.ImportRecords
 }
 
-// no-op
+func (repr *CSSRepr) DynamicExpressionImportRecords() *[]ast.DynamicExpressionImportRecord {
+	return &[]ast.DynamicExpressionImportRecord{}
+}
+
 func (repr *CSSRepr) SetClaimedDynamicImport(ClaimedDynamicImport) {}
 
 type ClaimedDynamicImport struct {
