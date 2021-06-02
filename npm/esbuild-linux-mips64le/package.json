@@ -1,16 +1,16 @@
 {
-  "name": "esbuild-linux-mips64le",
-  "version": "0.12.4",
-  "description": "The Linux MIPS 64-bit Little Endian binary for esbuild, a JavaScript bundler.",
-  "repository": "https://github.com/evanw/esbuild",
-  "license": "MIT",
-  "os": [
-    "linux"
-  ],
-  "cpu": [
-    "mips64el"
-  ],
-  "directories": {
-    "bin": "bin"
-  }
+	"name": "@netlify/esbuild-linux-mips64le",
+	"version": "0.12.4",
+	"description": "The Linux MIPS 64-bit Little Endian binary for esbuild, a JavaScript bundler.",
+	"repository": "https://github.com/netlify/esbuild",
+	"license": "MIT",
+	"os": [
+		"linux"
+	],
+	"cpu": [
+		"mips64el"
+	],
+	"directories": {
+		"bin": "bin"
+	}
 }
