@@ -23,7 +23,7 @@ test-all:
 test-prepublish: check-go-version test-all test-preact-splitting test-sucrase bench-rome-esbuild bench-readmin-esbuild test-esprima test-rollup
 
 check-go-version:
-	@go version | grep ' go1\.17\.1 ' || (echo 'Please install Go version 1.17.1' && false)
+	@go version | grep ' go1\.16\.4 ' || (echo 'Please install Go version 1.16.3' && false)
 
 # This "ESBUILD_RACE" variable exists at the request of a user on GitHub who
 # wants to run "make test" on an unsupported version of macOS (version 10.9).
@@ -111,7 +111,6 @@ platform-all: cmd/esbuild/version.go test-all
 	make -j8 \
 		platform-windows \
 		platform-windows-32 \
-		platform-windows-arm64 \
 		platform-android-arm64 \
 		platform-darwin \
 		platform-darwin-arm64 \
@@ -124,7 +123,6 @@ platform-all: cmd/esbuild/version.go test-all
 		platform-linux-arm64 \
 		platform-linux-mips64le \
 		platform-linux-ppc64le \
-		platform-sunos \
 		platform-wasm \
 		platform-neutral \
 		platform-deno
@@ -136,10 +134,6 @@ platform-windows:
 platform-windows-32:
 	cd npm/esbuild-windows-32 && npm version "$(ESBUILD_VERSION)" --allow-same-version
 	CGO_ENABLED=0 GOOS=windows GOARCH=386 go build $(GO_FLAGS) -o npm/esbuild-windows-32/esbuild.exe ./cmd/esbuild
-
-platform-windows-arm64:
-	cd npm/esbuild-windows-arm64 && npm version "$(ESBUILD_VERSION)" --allow-same-version
-	CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build $(GO_FLAGS) -o npm/esbuild-windows-arm64/esbuild.exe ./cmd/esbuild
 
 platform-unixlike:
 	test -n "$(GOOS)" && test -n "$(GOARCH)" && test -n "$(NPMDIR)"
@@ -183,9 +177,6 @@ platform-linux-mips64le:
 platform-linux-ppc64le:
 	make GOOS=linux GOARCH=ppc64le NPMDIR=npm/esbuild-linux-ppc64le platform-unixlike
 
-platform-sunos:
-	make GOOS=illumos GOARCH=amd64 NPMDIR=npm/esbuild-sunos-64 platform-unixlike
-
 platform-wasm: esbuild | scripts/node_modules
 	cd npm/esbuild-wasm && npm version "$(ESBUILD_VERSION)" --allow-same-version
 	node scripts/esbuild.js ./esbuild --wasm
@@ -205,99 +196,80 @@ publish-all: cmd/esbuild/version.go test-prepublish
 	@echo "Checking for unpushed commits..." && git fetch
 	@test "" = "`git cherry`" || (echo "Refusing to publish with unpushed commits" && false)
 	rm -fr npm && git checkout npm
-
 	@echo Enter one-time password:
 	@read OTP && OTP="$$OTP" make -j4 \
 		publish-windows \
 		publish-windows-32 \
-		publish-windows-arm64 \
-		publish-openbsd
-
-	@echo Enter one-time password:
-	@read OTP && OTP="$$OTP" make -j4 \
 		publish-freebsd \
 		publish-freebsd-arm64 \
+		publish-openbsd \
 		publish-darwin \
 		publish-darwin-arm64
-
 	@echo Enter one-time password:
 	@read OTP && OTP="$$OTP" make -j4 \
 		publish-android-arm64 \
 		publish-linux \
 		publish-linux-32 \
-		publish-linux-arm
-
-	@echo Enter one-time password:
-	@read OTP && OTP="$$OTP" make -j4 \
+		publish-linux-arm \
 		publish-linux-arm64 \
 		publish-linux-mips64le \
-		publish-linux-ppc64le \
-		publish-sunos
-
+		publish-linux-ppc64le
 	# Do these last to avoid race conditions
 	@echo Enter one-time password:
 	@read OTP && OTP="$$OTP" make -j2 \
 		publish-neutral \
-		publish-deno \
 		publish-wasm
-
 	git commit -am "publish $(ESBUILD_VERSION) to npm"
 	git tag "v$(ESBUILD_VERSION)"
 	git push origin master "v$(ESBUILD_VERSION)"
 
 publish-windows: platform-windows
-	test -n "$(OTP)" && cd npm/esbuild-windows-64 && npm publish --otp="$(OTP)"
+	test -n "$(OTP)" && cd npm/esbuild-windows-64 && npm publish --access=public --otp="$(OTP)"
 
 publish-windows-32: platform-windows-32
-	test -n "$(OTP)" && cd npm/esbuild-windows-32 && npm publish --otp="$(OTP)"
-
-publish-windows-arm64: platform-windows-arm64
-	test -n "$(OTP)" && cd npm/esbuild-windows-arm64 && npm publish --otp="$(OTP)"
+	test -n "$(OTP)" && cd npm/esbuild-windows-32 && npm publish --access=public --otp="$(OTP)"
 
 publish-android-arm64: platform-android-arm64
-	test -n "$(OTP)" && cd npm/esbuild-android-arm64 && npm publish --otp="$(OTP)"
+	test -n "$(OTP)" && cd npm/esbuild-android-arm64 && npm publish --access=public --otp="$(OTP)"
 
 publish-darwin: platform-darwin
-	test -n "$(OTP)" && cd npm/esbuild-darwin-64 && npm publish --otp="$(OTP)"
+	test -n "$(OTP)" && cd npm/esbuild-darwin-64 && npm publish --access=public --otp="$(OTP)"
 
 publish-darwin-arm64: platform-darwin-arm64
-	test -n "$(OTP)" && cd npm/esbuild-darwin-arm64 && npm publish --otp="$(OTP)"
+	test -n "$(OTP)" && cd npm/esbuild-darwin-arm64 && npm publish --access=public --otp="$(OTP)"
 
 publish-freebsd: platform-freebsd
-	test -n "$(OTP)" && cd npm/esbuild-freebsd-64 && npm publish --otp="$(OTP)"
+	test -n "$(OTP)" && cd npm/esbuild-freebsd-64 && npm publish --access=public --otp="$(OTP)"
 
 publish-freebsd-arm64: platform-freebsd-arm64
-	test -n "$(OTP)" && cd npm/esbuild-freebsd-arm64 && npm publish --otp="$(OTP)"
+	test -n "$(OTP)" && cd npm/esbuild-freebsd-arm64 && npm publish --access=public --otp="$(OTP)"
 
 publish-openbsd: platform-openbsd
-	test -n "$(OTP)" && cd npm/esbuild-openbsd-64 && npm publish --otp="$(OTP)"
+	test -n "$(OTP)" && cd npm/esbuild-openbsd-64 && npm publish --access=public --otp="$(OTP)"
 
 publish-linux: platform-linux
-	test -n "$(OTP)" && cd npm/esbuild-linux-64 && npm publish --otp="$(OTP)"
+	test -n "$(OTP)" && cd npm/esbuild-linux-64 && npm publish --access=public --otp="$(OTP)"
 
 publish-linux-32: platform-linux-32
-	test -n "$(OTP)" && cd npm/esbuild-linux-32 && npm publish --otp="$(OTP)"
+	test -n "$(OTP)" && cd npm/esbuild-linux-32 && npm publish --access=public --otp="$(OTP)"
 
 publish-linux-arm: platform-linux-arm
-	test -n "$(OTP)" && cd npm/esbuild-linux-arm && npm publish --otp="$(OTP)"
+	test -n "$(OTP)" && cd npm/esbuild-linux-arm && npm publish --access=public --otp="$(OTP)"
 
 publish-linux-arm64: platform-linux-arm64
-	test -n "$(OTP)" && cd npm/esbuild-linux-arm64 && npm publish --otp="$(OTP)"
+	test -n "$(OTP)" && cd npm/esbuild-linux-arm64 && npm publish --access=public --otp="$(OTP)"
 
 publish-linux-mips64le: platform-linux-mips64le
-	test -n "$(OTP)" && cd npm/esbuild-linux-mips64le && npm publish --otp="$(OTP)"
+	test -n "$(OTP)" && cd npm/esbuild-linux-mips64le && npm publish --access=public --otp="$(OTP)"
 
 publish-linux-ppc64le: platform-linux-ppc64le
-	test -n "$(OTP)" && cd npm/esbuild-linux-ppc64le && npm publish --otp="$(OTP)"
-
-publish-sunos: platform-sunos
-	test -n "$(OTP)" && cd npm/esbuild-sunos-64 && npm publish --otp="$(OTP)"
+	test -n "$(OTP)" && cd npm/esbuild-linux-ppc64le && npm publish --access=public --otp="$(OTP)"
 
 publish-wasm: platform-wasm
-	test -n "$(OTP)" && cd npm/esbuild-wasm && npm publish --otp="$(OTP)"
+	test -n "$(OTP)" && cd npm/esbuild-wasm && npm publish --access=public --otp="$(OTP)"
 
 publish-neutral: platform-neutral
-	test -n "$(OTP)" && cd npm/esbuild && npm publish --otp="$(OTP)"
+	test -n "$(OTP)" && cd npm/esbuild && npm publish --access=public --otp="$(OTP)"
 
 publish-deno:
 	test -d deno/.git || (rm -fr deno && git clone git@github.com:esbuild/deno-esbuild.git deno)
@@ -311,7 +283,6 @@ clean:
 	rm -f esbuild
 	rm -f npm/esbuild-windows-32/esbuild.exe
 	rm -f npm/esbuild-windows-64/esbuild.exe
-	rm -f npm/esbuild-windows-arm64/esbuild.exe
 	rm -rf npm/esbuild-android-arm64/bin
 	rm -rf npm/esbuild-darwin-64/bin
 	rm -rf npm/esbuild-darwin-arm64/bin
@@ -324,7 +295,6 @@ clean:
 	rm -rf npm/esbuild-linux-arm64/bin
 	rm -rf npm/esbuild-linux-mips64le/bin
 	rm -rf npm/esbuild-linux-ppc64le/bin
-	rm -rf npm/esbuild-sunos-64/bin
 	rm -f npm/esbuild-wasm/esbuild.wasm npm/esbuild-wasm/wasm_exec.js
 	rm -rf npm/esbuild/lib
 	rm -rf npm/esbuild-wasm/lib
@@ -507,8 +477,9 @@ demo/esprima: | github/esprima
 	cd demo/esprima && npm ci
 
 test-esprima: esbuild | demo/esprima
-	cd demo/esprima && ../../esbuild --bundle src/esprima.ts --outfile=dist/esprima.js --target=es6 --platform=node && npm run all-tests
-	cd demo/esprima && ../../esbuild --bundle src/esprima.ts --outfile=dist/esprima.js --target=es6 --platform=node --minify && npm run all-tests
+	echo {} > demo/esprima/ts.json # Avoid "target: ES5" in "tsconfig.json"
+	cd demo/esprima && ../../esbuild --bundle src/esprima.ts --outfile=dist/esprima.js --target=es6 --platform=node --tsconfig=ts.json && npm run all-tests
+	cd demo/esprima && ../../esbuild --bundle src/esprima.ts --outfile=dist/esprima.js --target=es6 --platform=node --tsconfig=ts.json --minify && npm run all-tests
 
 ################################################################################
 # This runs terser's test suite through esbuild
