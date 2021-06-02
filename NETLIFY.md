@@ -50,49 +50,49 @@ For the example above, one could write a plugin like so:
 
 ```js
 plugins: [
-	{
-		name: "dynamic-import-plugin",
-		setup: (build) => {
-			const filesWithDynamicImports = new Set();
+  {
+    name: "dynamic-import-plugin",
+    setup: (build) => {
+      const filesWithDynamicImports = new Set();
 
-			build.onDynamicImport({}, (args) => {
-				// Add the importer file to a list of files with dynamic imports.
-				// It can be used to show a warning to users, letting them know
-				// which files could potentially lead to a broken build, prompting
-				// them to flag them as external if we're not able to resolve them.
-				filesWithDynamicImports.add(args.importer);
+      build.onDynamicImport({}, (args) => {
+        // Add the importer file to a list of files with dynamic imports.
+        // It can be used to show a warning to users, letting them know
+        // which files could potentially lead to a broken build, prompting
+        // them to flag them as external if we're not able to resolve them.
+        filesWithDynamicImports.add(args.importer);
 
-				// Parse the expression (e.g. "require(`./locale/${language}.json`)") with
-				// a JavaScript parser, like https://www.npmjs.com/package/acorn.
-				const parsedExpression = acorn.parse(args.expression);
+        // Parse the expression (e.g. "require(`./locale/${language}.json`)") with
+        // a JavaScript parser, like https://www.npmjs.com/package/acorn.
+        const parsedExpression = acorn.parse(args.expression);
 
-				// We're able to infer that the expression is dynamically loading
-				// files from the "locale/" directory, so we can make the choice to
-				// include that directory with the bundle and make the require work
-				// at runtime.
-				assert(
-					parsedExpression.body[0].expression.quasis[0].value === "./locale/"
-				);
+        // We're able to infer that the expression is dynamically loading
+        // files from the "locale/" directory, so we can make the choice to
+        // include that directory with the bundle and make the require work
+        // at runtime.
+        assert(
+          parsedExpression.body[0].expression.quasis[0].value === "./locale/"
+        );
 
-				// Because "locale/" will now be relative to the entire bundle and not
-				// namedspaced to a given file or npm module, we can create our own
-				// namespace and modify the require() at runtime.
-				const filesNamespace = generateRandomString();
+        // Because "locale/" will now be relative to the entire bundle and not
+        // namedspaced to a given file or npm module, we can create our own
+        // namespace and modify the require() at runtime.
+        const filesNamespace = generateRandomString();
 
-				// This replacement module will resolve the require at runtime. It will
-				// take an expression (e.g. "./locale/en.json") and return the value of
-				// require(`./${filesNamespace}/locale/en.json`), which is where we'll place
-				// the files from "locale/".
-				const replacementModule = `
+        // This replacement module will resolve the require at runtime. It will
+        // take an expression (e.g. "./locale/en.json") and return the value of
+        // require(`./${filesNamespace}/locale/en.json`), which is where we'll place
+        // the files from "locale/".
+        const replacementModule = `
           module.exports = expr => require(path.join('${filesNamespace}', expr))
         `;
 
-				return {
-					contents: replacementModule,
-				};
-			});
-		},
-	},
+        return {
+          contents: replacementModule,
+        };
+      });
+    },
+  },
 ];
 ```
 
