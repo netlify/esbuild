@@ -272,10 +272,10 @@ exports.installForTests = () => {
   fs.mkdirSync(installDir)
   fs.writeFileSync(path.join(installDir, 'package.json'), '{}')
   childProcess.execSync(`npm pack --silent "${npmDir}"`, { cwd: installDir, stdio: 'inherit' })
-  childProcess.execSync(`npm install --silent --no-audit --progress=false esbuild-${version}.tgz`, { cwd: installDir, env, stdio: 'inherit' })
+  childProcess.execSync(`npm install --silent --no-audit --progress=false netlify-esbuild-${version}.tgz`, { cwd: installDir, env, stdio: 'inherit' })
 
   // Evaluate the code
-  const ESBUILD_PACKAGE_PATH = path.join(installDir, 'node_modules', 'esbuild')
+  const ESBUILD_PACKAGE_PATH = path.join(installDir, 'node_modules', '@netlify', 'esbuild')
   const mod = require(ESBUILD_PACKAGE_PATH)
   mod.ESBUILD_PACKAGE_PATH = ESBUILD_PACKAGE_PATH
   return mod
