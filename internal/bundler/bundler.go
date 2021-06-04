@@ -511,10 +511,19 @@ func parseFile(args parseArgs) {
 			fileContents := []byte(*contents)
 			shimPath := getDynamicExpressionModulePath(args.options.DynamicImportPathTemplate, fileContents, base, ext, importRecordIndex)
 
+			var jsonMetadataChunk string
+			if args.options.NeedsMetafile {
+				jsonMetadataChunk = fmt.Sprintf(
+					"{\n      \"imports\": [],\n      \"exports\": [],\n      \"inputs\": [],\n      \"bytes\": %d\n    }",
+					len(fileContents),
+				)
+			}
+
 			// Add the shim to the list of additional files
 			result.file.inputFile.AdditionalFiles = append(result.file.inputFile.AdditionalFiles, graph.OutputFile{
-				AbsPath:  args.fs.Join(args.options.AbsOutputDir, shimPath),
-				Contents: fileContents,
+				AbsPath:           args.fs.Join(args.options.AbsOutputDir, shimPath),
+				Contents:          fileContents,
+				JSONMetadataChunk: jsonMetadataChunk,
 			})
 
 			// Add the shim path to the AST so that the printer can rewrite the
