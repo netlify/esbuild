@@ -2453,7 +2453,7 @@ let syncTests = {
 
     assert.deepStrictEqual(result, shimData)
     assert(outputs.includes('out.js'))
-    assert(outputs.some(outputPath => /in-([\w\d]+)-(\d)+\.js/.test(outputPath)))
+    assert(outputs.some(outputPath => /in-\w+-\d+\.js$/.test(outputPath)))
   },
 
   async onDynamicImportPluginImport({ esbuild, testDir }) {
