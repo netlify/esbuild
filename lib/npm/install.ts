@@ -281,19 +281,19 @@ const knownWindowsPackages: Record<string, string> = {
   'win32 x64 LE': 'esbuild-windows-64',
 };
 const knownUnixlikePackages: Record<string, string> = {
-  'android arm64 LE': 'esbuild-android-arm64',
-  'darwin arm64 LE': 'esbuild-darwin-arm64',
-  'darwin x64 LE': 'esbuild-darwin-64',
-  'freebsd arm64 LE': 'esbuild-freebsd-arm64',
-  'freebsd x64 LE': 'esbuild-freebsd-64',
-  'openbsd x64 LE': 'esbuild-openbsd-64',
-  'linux arm LE': 'esbuild-linux-arm',
-  'linux arm64 LE': 'esbuild-linux-arm64',
-  'linux ia32 LE': 'esbuild-linux-32',
-  'linux mips64el LE': 'esbuild-linux-mips64le',
-  'linux ppc64 LE': 'esbuild-linux-ppc64le',
-  'linux x64 LE': 'esbuild-linux-64',
-  'sunos x64 LE': 'esbuild-sunos-64',
+  'android arm64 LE': '@netlify/esbuild-android-arm64',
+  'darwin arm64 LE': '@netlify/esbuild-darwin-arm64',
+  'darwin x64 LE': '@netlify/esbuild-darwin-64',
+  'freebsd arm64 LE': '@netlify/esbuild-freebsd-arm64',
+  'freebsd x64 LE': '@netlify/esbuild-freebsd-64',
+  'openbsd x64 LE': '@netlify/esbuild-openbsd-64',
+  'linux arm LE': '@netlify/esbuild-linux-arm',
+  'linux arm64 LE': '@netlify/esbuild-linux-arm64',
+  'linux ia32 LE': '@netlify/esbuild-linux-32',
+  'linux mips64el LE': '@netlify/esbuild-linux-mips64le',
+  'linux ppc64 LE': '@netlify/esbuild-linux-ppc64le',
+  'linux x64 LE': '@netlify/esbuild-linux-64',
+  'sunos x64 LE': '@netlify/esbuild-sunos-64',
 };
 
 // Pick a package to install
