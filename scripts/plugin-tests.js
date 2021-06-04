@@ -2525,9 +2525,10 @@ let syncTests = {
       shim,
       JSON.stringify(shimData)
     )
-    await esbuild.build({
+    const { metafile } = await esbuild.build({
       entryPoints: [input],
       bundle: true,
+      metafile: true,
       outfile: output,
       format: "cjs",
       plugins: [
@@ -2538,7 +2539,7 @@ let syncTests = {
               assert.strictEqual(args.expression, 'require(`./files/${name}.json`)');
               assert.strictEqual(args.importer, input);
               assert.strictEqual(args.namespace, 'file');
-              assert.strictEqual(args.resolveDir, path.join(rootTestDir, 'onDynamicImportPluginRequire'))
+              assert.strictEqual(args.resolveDir, testDir)
 
               return {
                 contents: `module.exports = () => require('./shim.json')`,
@@ -2548,10 +2549,18 @@ let syncTests = {
         },
       ],
     })
+    const outputs = Object.keys(metafile.outputs).map(outputPath => {
+      const absolutePath = path.resolve(outputPath)
+      const relativePath = path.relative(testDir, absolutePath)
+
+      return relativePath
+    })
     const bundle = require(output)
     const result = bundle()
 
     assert.deepStrictEqual(result, shimData)
+    assert(outputs.includes('out.js'))
+    assert(outputs.some(outputPath => /in-\w+-\d+\.js$/.test(outputPath)))
   },
 
   async onDynamicImportPluginImport({ esbuild, testDir }) {
@@ -2571,9 +2580,10 @@ let syncTests = {
       console.log(loadFile())
     `
     );
-    await esbuild.build({
+    const { metafile } = await esbuild.build({
       entryPoints: [input],
       bundle: true,
+      metafile: true,
       outfile: output,
       format: "esm",
       plugins: [
@@ -2600,8 +2610,17 @@ let syncTests = {
 
     // Spawning a new process so that we can run an ESM file.
     const result = childProcess.spawnSync('node', ['--input-type=module', '--eval', sanitizedSource], { cwd: testPath, encoding: 'utf8' })
+
+    const outputs = Object.keys(metafile.outputs).map(outputPath => {
+      const absolutePath = path.resolve(outputPath)
+      const relativePath = path.relative(testDir, absolutePath)
+
+      return relativePath
+    })
     
     assert.strictEqual(result.stdout.trim(), shimData)
+    assert(outputs.includes('out.js'))
+    assert(outputs.some(outputPath => /in-([\w\d]+)-(\d)+\.js/.test(outputPath)))
   },
 
   async onDynamicImportPluginImportES5({ esbuild, testDir }) {
@@ -2620,9 +2639,10 @@ let syncTests = {
       module.exports = loadFile
     `
     )
-    await esbuild.build({
+    const { metafile } = await esbuild.build({
       entryPoints: [input],
       bundle: true,
+      metafile: true,
       outfile: output,
       format: "cjs",
       target: "es5",
@@ -2644,10 +2664,18 @@ let syncTests = {
         },
       ],
     })
+    const outputs = Object.keys(metafile.outputs).map(outputPath => {
+      const absolutePath = path.resolve(outputPath)
+      const relativePath = path.relative(testDir, absolutePath)
+
+      return relativePath
+    })
     const bundle = require(output)
     const result = await bundle()
 
     assert.deepStrictEqual(result.default, shimData)
+    assert(outputs.includes('out.js'))
+    assert(outputs.some(outputPath => /in-([\w\d]+)-(\d)+\.js/.test(outputPath)))
   },
 
   async onDynamicImportPluginRequireUnclaimed({ esbuild, testDir }) {
