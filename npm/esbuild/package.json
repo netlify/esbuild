@@ -1,6 +1,6 @@
 {
 	"name": "@netlify/esbuild",
-	"version": "0.13.2",
+	"version": "0.13.3",
 	"description": "An extremely fast JavaScript bundler and minifier.",
 	"repository": "https://github.com/netlify/esbuild",
 	"scripts": {
