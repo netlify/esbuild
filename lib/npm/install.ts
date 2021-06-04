@@ -276,8 +276,8 @@ function installOnWindows(name: string): void {
 
 const platformKey = `${process.platform} ${os.arch()} ${os.endianness()}`;
 const knownWindowsPackages: Record<string, string> = {
-  'win32 ia32 LE': 'esbuild-windows-32',
-  'win32 x64 LE': 'esbuild-windows-64',
+  'win32 ia32 LE': '@netlify/esbuild-windows-32',
+  'win32 x64 LE': '@netlify/esbuild-windows-64',
 };
 const knownUnixlikePackages: Record<string, string> = {
   'android arm64 LE': '@netlify/esbuild-android-arm64',
