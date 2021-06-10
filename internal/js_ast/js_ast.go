@@ -414,7 +414,9 @@ type EUndefined struct{}
 
 type EThis struct{}
 
-type ENewTarget struct{}
+type ENewTarget struct {
+	Range logger.Range
+}
 
 type EImportMeta struct{}
 
@@ -425,7 +427,6 @@ var ESuperShared = &ESuper{}
 var ENullShared = &ENull{}
 var EUndefinedShared = &EUndefined{}
 var EThisShared = &EThis{}
-var ENewTargetShared = &ENewTarget{}
 var EImportMetaShared = &EImportMeta{}
 
 type ENew struct {
@@ -616,6 +617,7 @@ type TemplatePart struct {
 
 type ETemplate struct {
 	TagOrNil       Expr
+	HeadLoc        logger.Loc
 	HeadCooked     []uint16 // Only use when "TagOrNil" is nil
 	HeadRaw        string   // Only use when "TagOrNil" is not nil
 	Parts          []TemplatePart
@@ -1630,7 +1632,7 @@ type Scope struct {
 	UseStrictLoc logger.Loc
 
 	// This is used to store the ref of the label symbol for ScopeLabel scopes.
-	LabelRef        Ref
+	Label           LocRef
 	LabelStmtIsLoop bool
 
 	// If a scope contains a direct eval() expression, then none of the symbols
@@ -1731,11 +1733,11 @@ type AST struct {
 
 	// This is a list of CommonJS features. When a file uses CommonJS features,
 	// it's not a candidate for "flat bundling" and must be wrapped in its own
-	// closure.
-	HasTopLevelReturn bool
-	UsesExportsRef    bool
-	UsesModuleRef     bool
-	ExportsKind       ExportsKind
+	// closure. Note that this also includes top-level "return" but these aren't
+	// here because only the parser checks those.
+	UsesExportsRef bool
+	UsesModuleRef  bool
+	ExportsKind    ExportsKind
 
 	// This is a list of ES6 features. They are ranges instead of booleans so
 	// that they can be used in log messages. Check to see if "Len > 0".

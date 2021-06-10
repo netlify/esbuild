@@ -243,6 +243,7 @@ export interface OnResolveResult {
 
   path?: string;
   external?: boolean;
+  sideEffects?: boolean;
   namespace?: string;
   pluginData?: any;
 

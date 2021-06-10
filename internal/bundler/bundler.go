@@ -237,7 +237,11 @@ func parseFile(args parseArgs) {
 	case config.LoaderBinary:
 		encoded := base64.StdEncoding.EncodeToString([]byte(source.Contents))
 		expr := js_ast.Expr{Data: &js_ast.EString{Value: js_lexer.StringToUTF16(encoded)}}
-		ast := js_parser.LazyExportAST(args.log, source, js_parser.OptionsFromConfig(&args.options), expr, "__toBinary")
+		helper := "__toBinary"
+		if args.options.Platform == config.PlatformNode {
+			helper = "__toBinaryNode"
+		}
+		ast := js_parser.LazyExportAST(args.log, source, js_parser.OptionsFromConfig(&args.options), expr, helper)
 		ast.URLForCSS = "data:application/octet-stream;base64," + encoded
 		if pluginName != "" {
 			result.file.inputFile.SideEffects.Kind = graph.NoSideEffects_PureData_FromPlugin
@@ -655,7 +659,6 @@ func extractSourceMapFromComment(
 	}
 
 	// Anything else is unsupported
-	log.AddRangeWarning(&tracker, comment.Range, "Unsupported source map comment")
 	return logger.Path{}, nil
 }
 
@@ -816,10 +819,18 @@ func runOnResolvePlugins(
 				return nil, true, resolver.DebugMeta{}
 			}
 
+			var sideEffectsData *resolver.SideEffectsData
+			if result.IsSideEffectFree {
+				sideEffectsData = &resolver.SideEffectsData{
+					PluginName: pluginName,
+				}
+			}
+
 			return &resolver.ResolveResult{
-				PathPair:   resolver.PathPair{Primary: result.Path},
-				IsExternal: result.External,
-				PluginData: result.PluginData,
+				PathPair:               resolver.PathPair{Primary: result.Path},
+				IsExternal:             result.External,
+				PluginData:             result.PluginData,
+				PrimarySideEffectsData: sideEffectsData,
 			}, false, resolver.DebugMeta{}
 		}
 	}
@@ -1836,19 +1847,24 @@ func (s *scanner) processScannedFiles() []scannerFile {
 						// effect.
 						otherModule.SideEffects.Kind != graph.NoSideEffects_PureData_FromPlugin {
 						var notes []logger.MsgData
+						var by string
 						if data := otherModule.SideEffects.Data; data != nil {
-							var text string
-							if data.IsSideEffectsArrayInJSON {
-								text = "It was excluded from the \"sideEffects\" array in the enclosing \"package.json\" file"
+							if data.PluginName != "" {
+								by = fmt.Sprintf(" by plugin %q", data.PluginName)
 							} else {
-								text = "\"sideEffects\" is false in the enclosing \"package.json\" file"
+								var text string
+								if data.IsSideEffectsArrayInJSON {
+									text = "It was excluded from the \"sideEffects\" array in the enclosing \"package.json\" file"
+								} else {
+									text = "\"sideEffects\" is false in the enclosing \"package.json\" file"
+								}
+								tracker := logger.MakeLineColumnTracker(data.Source)
+								notes = append(notes, logger.RangeData(&tracker, data.Range, text))
 							}
-							tracker := logger.MakeLineColumnTracker(data.Source)
-							notes = append(notes, logger.RangeData(&tracker, data.Range, text))
 						}
 						s.log.AddRangeWarningWithNotes(&tracker, record.Range,
-							fmt.Sprintf("Ignoring this import because %q was marked as having no side effects",
-								otherModule.Source.PrettyPath), notes)
+							fmt.Sprintf("Ignoring this import because %q was marked as having no side effects%s",
+								otherModule.Source.PrettyPath, by), notes)
 					}
 				}
 			}
@@ -2304,22 +2320,12 @@ func (b *Bundle) generateMetadataJSON(results []graph.OutputFile, allReachableFi
 type runtimeCacheKey struct {
 	MangleSyntax      bool
 	MinifyIdentifiers bool
-	ProfilerNames     bool
 	ES6               bool
-	Platform          config.Platform
-}
-
-type definesCacheKey struct {
-	platform      config.Platform
-	profilerNames bool
 }
 
 type runtimeCache struct {
 	astMutex sync.Mutex
 	astMap   map[runtimeCacheKey]js_ast.AST
-
-	definesMutex sync.Mutex
-	definesMap   map[definesCacheKey]*config.ProcessedDefines
 }
 
 var globalRuntimeCache runtimeCache
@@ -2329,8 +2335,6 @@ func (cache *runtimeCache) parseRuntime(options *config.Options) (source logger.
 		// All configuration options that the runtime code depends on must go here
 		MangleSyntax:      options.MangleSyntax,
 		MinifyIdentifiers: options.MinifyIdentifiers,
-		ProfilerNames:     options.ProfilerNames,
-		Platform:          options.Platform,
 		ES6:               runtime.CanUseES6(options.UnsupportedJSFeatures),
 	}
 
@@ -2365,11 +2369,6 @@ func (cache *runtimeCache) parseRuntime(options *config.Options) (source logger.
 		// These configuration options must only depend on the key
 		MangleSyntax:      key.MangleSyntax,
 		MinifyIdentifiers: key.MinifyIdentifiers,
-		Platform:          key.Platform,
-		Defines: cache.processedDefines(definesCacheKey{
-			platform:      key.Platform,
-			profilerNames: key.ProfilerNames,
-		}),
 		UnsupportedJSFeatures: compat.UnsupportedJSFeatures(
 			map[compat.Engine][]int{compat.ES: {constraint}}),
 
@@ -2394,54 +2393,5 @@ func (cache *runtimeCache) parseRuntime(options *config.Options) (source logger.
 		}
 		cache.astMap[key] = runtimeAST
 	}
-	return
-}
-
-func (cache *runtimeCache) processedDefines(key definesCacheKey) (defines *config.ProcessedDefines) {
-	ok := false
-
-	// Cache hit?
-	(func() {
-		cache.definesMutex.Lock()
-		defer cache.definesMutex.Unlock()
-		if cache.definesMap != nil {
-			defines, ok = cache.definesMap[key]
-		}
-	})()
-	if ok {
-		return
-	}
-
-	// Cache miss
-	var platform string
-	switch key.platform {
-	case config.PlatformBrowser:
-		platform = "browser"
-	case config.PlatformNode:
-		platform = "node"
-	case config.PlatformNeutral:
-		platform = "neutral"
-	}
-	result := config.ProcessDefines(map[string]config.DefineData{
-		"__platform": {
-			DefineFunc: func(config.DefineArgs) js_ast.E {
-				return &js_ast.EString{Value: js_lexer.StringToUTF16(platform)}
-			},
-		},
-		"__profiler": {
-			DefineFunc: func(da config.DefineArgs) js_ast.E {
-				return &js_ast.EBoolean{Value: key.profilerNames}
-			},
-		},
-	})
-	defines = &result
-
-	// Cache for next time
-	cache.definesMutex.Lock()
-	defer cache.definesMutex.Unlock()
-	if cache.definesMap == nil {
-		cache.definesMap = make(map[definesCacheKey]*config.ProcessedDefines)
-	}
-	cache.definesMap[key] = defines
 	return
 }
