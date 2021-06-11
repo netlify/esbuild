@@ -12,8 +12,6 @@ import (
 	"github.com/evanw/esbuild/internal/logger"
 )
 
-type LanguageTarget int8
-
 type JSXOptions struct {
 	Factory  JSXExpr
 	Fragment JSXExpr
@@ -224,6 +222,7 @@ type Options struct {
 	JSX      JSXOptions
 	Platform Platform
 
+	IsTargetUnconfigured   bool // If true, TypeScript's "target" setting is respected
 	UnsupportedJSFeatures  compat.JSFeature
 	UnsupportedCSSFeatures compat.CSSFeature
 	TSTarget               *TSTarget
@@ -500,9 +499,10 @@ type OnResolveArgs struct {
 type OnResolveResult struct {
 	PluginName string
 
-	Path       logger.Path
-	External   bool
-	PluginData interface{}
+	Path             logger.Path
+	External         bool
+	IsSideEffectFree bool
+	PluginData       interface{}
 
 	Msgs        []logger.Msg
 	ThrownError error

@@ -115,7 +115,8 @@ const (
 type Target uint8
 
 const (
-	ESNext Target = iota
+	DefaultTarget Target = iota
+	ESNext
 	ES5
 	ES2015
 	ES2016
@@ -426,6 +427,13 @@ func Serve(serveOptions ServeOptions, buildOptions BuildOptions) (ServeResult, e
 ////////////////////////////////////////////////////////////////////////////////
 // Plugin API
 
+type SideEffects uint8
+
+const (
+	SideEffectsTrue SideEffects = iota
+	SideEffectsFalse
+)
+
 type Plugin struct {
 	Name  string
 	Setup func(PluginBuild)
@@ -465,10 +473,11 @@ type OnResolveResult struct {
 	Errors   []Message
 	Warnings []Message
 
-	Path       string
-	External   bool
-	Namespace  string
-	PluginData interface{}
+	Path        string
+	External    bool
+	SideEffects SideEffects
+	Namespace   string
+	PluginData  interface{}
 
 	WatchFiles []string
 	WatchDirs  []string
