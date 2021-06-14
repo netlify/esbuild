@@ -44,7 +44,8 @@ async function installBinaryFromPackage(name: string, fromPath: string, toPath: 
   // If that fails, the user could have npm configured incorrectly or could not
   // have npm installed. Try downloading directly from npm as a last resort.
   if (!buffer) {
-    const url = `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`;
+    const canonicalName = name.split('/').pop();
+    const url = `https://registry.npmjs.org/${name}/-/${canonicalName}-${version}.tgz`;
     console.error(`Trying to download ${JSON.stringify(url)}`);
     try {
       buffer = extractFileFromTarGzip(await fetch(url), fromPath);
