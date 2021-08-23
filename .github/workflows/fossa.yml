@@ -3,7 +3,7 @@ name: Dependency License Scanning
 on:
   push:
     branches:
-      - master
+      - netlify
       - chore/fossa-workflow
 
 defaults:
