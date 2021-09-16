@@ -777,7 +777,7 @@ func IsIdentifierStartES5(codePoint rune) bool {
 		return false
 	}
 
-	return unicode.Is(idStartES5, codePoint)
+	return unicode.Is(idStartES5OrESNext, codePoint)
 }
 
 func IsIdentifierContinueES5(codePoint rune) bool {
@@ -800,7 +800,7 @@ func IsIdentifierContinueES5(codePoint rune) bool {
 		return true
 	}
 
-	return unicode.Is(idContinueES5, codePoint)
+	return unicode.Is(idContinueES5OrESNext, codePoint)
 }
 
 // See the "White Space Code Points" table in the ECMAScript standard

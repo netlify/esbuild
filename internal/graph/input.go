@@ -109,10 +109,6 @@ func (repr *JSRepr) TopLevelSymbolToParts(ref js_ast.Ref) []uint32 {
 	return repr.AST.TopLevelSymbolToPartsFromParser[ref]
 }
 
-func (repr *JSRepr) SetClaimedDynamicImport(dynamicImport ClaimedDynamicImport) {
-	repr.AST.ImportRecords[dynamicImport.Index].DynamicExpressionModulePath = dynamicImport.ModulePath
-}
-
 type CSSRepr struct {
 	AST css_ast.AST
 
