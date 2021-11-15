@@ -7,6 +7,7 @@ import (
 	"github.com/evanw/esbuild/internal/cache"
 	"github.com/evanw/esbuild/internal/compat"
 	"github.com/evanw/esbuild/internal/config"
+	"github.com/evanw/esbuild/internal/helpers"
 	"github.com/evanw/esbuild/internal/js_ast"
 	"github.com/evanw/esbuild/internal/js_lexer"
 	"github.com/evanw/esbuild/internal/js_parser"
@@ -125,7 +126,7 @@ func ParseTSConfigJSON(
 					constraints[compat.ES] = []int{5}
 				case "es6", "es2015":
 					constraints[compat.ES] = []int{2015}
-				case "es7", "es2016":
+				case "es2016":
 					constraints[compat.ES] = []int{2016}
 				case "es2017":
 					constraints[compat.ES] = []int{2017}
@@ -135,12 +136,16 @@ func ParseTSConfigJSON(
 					constraints[compat.ES] = []int{2019}
 				case "es2020":
 					constraints[compat.ES] = []int{2020}
+				case "es2021":
+					constraints[compat.ES] = []int{2021}
 				case "esnext":
 					// Nothing to do in this case
 				default:
 					ok = false
-					log.AddRangeWarning(&tracker, r,
-						fmt.Sprintf("Unrecognized target environment %q", value))
+					if !helpers.IsInsideNodeModules(source.KeyPath.Text) {
+						log.AddRangeWarning(&tracker, r,
+							fmt.Sprintf("Unrecognized target environment %q", value))
+					}
 				}
 
 				// These feature restrictions are merged with esbuild's own restrictions

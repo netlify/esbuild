@@ -311,6 +311,11 @@ func (service *serviceType) handleIncomingPacket(bytes []byte) (result outgoingP
 				bytes: service.handleFormatMessagesRequest(p.id, request),
 			}
 
+		case "analyze-metafile":
+			return outgoingPacket{
+				bytes: service.handleAnalyzeMetafileRequest(p.id, request),
+			}
+
 		default:
 			return outgoingPacket{
 				bytes: encodePacket(packet{
@@ -786,6 +791,13 @@ func (service *serviceType) convertPlugins(key int, jsPlugins interface{}) ([]ap
 				if value, ok := response["pluginName"]; ok {
 					result.PluginName = value.(string)
 				}
+				if value, ok := response["loader"]; ok {
+					loader, err := cli_helpers.ParseLoader(value.(string))
+					if err != nil {
+						return result, err
+					}
+					result.Loader = loader
+				}
 				if value, ok := response["contents"]; ok {
 					contents := string(value.([]byte))
 					result.Contents = &contents
@@ -807,13 +819,6 @@ func (service *serviceType) convertPlugins(key int, jsPlugins interface{}) ([]ap
 				}
 				if value, ok := response["watchDirs"]; ok {
 					result.WatchDirs = decodeStringArray(value.([]interface{}))
-				}
-				if value, ok := response["loader"]; ok {
-					loader, err := cli_helpers.ParseLoader(value.(string))
-					if err != nil {
-						return api.OnLoadResult{}, err
-					}
-					result.Loader = loader
 				}
 
 				return result, nil
@@ -969,6 +974,27 @@ func (service *serviceType) handleFormatMessagesRequest(id uint32, request map[s
 		id: id,
 		value: map[string]interface{}{
 			"messages": encodeStringArray(result),
+		},
+	})
+}
+
+func (service *serviceType) handleAnalyzeMetafileRequest(id uint32, request map[string]interface{}) []byte {
+	metafile := request["metafile"].(string)
+
+	options := api.AnalyzeMetafileOptions{}
+	if value, ok := request["color"].(bool); ok {
+		options.Color = value
+	}
+	if value, ok := request["verbose"].(bool); ok {
+		options.Verbose = value
+	}
+
+	result := api.AnalyzeMetafile(metafile, options)
+
+	return encodePacket(packet{
+		id: id,
+		value: map[string]interface{}{
+			"result": result,
 		},
 	})
 }

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/evanw/esbuild/internal/helpers"
 	"github.com/evanw/esbuild/internal/logger"
 )
 
@@ -38,6 +39,7 @@ const (
 	TDelimEquals
 	TDelimExclamation
 	TDelimGreaterThan
+	TDelimMinus
 	TDelimPlus
 	TDelimSlash
 	TDelimTilde
@@ -78,6 +80,7 @@ var tokenToString = []string{
 	"\"=\"",
 	"\"!\"",
 	"\">\"",
+	"\"-\"",
 	"\"+\"",
 	"\"/\"",
 	"\"~\"",
@@ -98,6 +101,10 @@ var tokenToString = []string{
 
 func (t T) String() string {
 	return tokenToString[t]
+}
+
+func (t T) IsNumeric() bool {
+	return t == TNumber || t == TPercentage || t == TDimension
 }
 
 // This token struct is designed to be memory-efficient. It just references a
@@ -145,15 +152,31 @@ func (token Token) DecodedText(contents string) string {
 }
 
 type lexer struct {
-	log       logger.Log
-	source    logger.Source
-	tracker   logger.LineColumnTracker
-	current   int
-	codePoint rune
-	Token     Token
+	log                     logger.Log
+	source                  logger.Source
+	tracker                 logger.LineColumnTracker
+	current                 int
+	codePoint               rune
+	Token                   Token
+	licenseCommentsBefore   []Comment
+	approximateNewlineCount int
+	sourceMappingURL        logger.Span
 }
 
-func Tokenize(log logger.Log, source logger.Source) (tokens []Token) {
+type Comment struct {
+	Text            string
+	Loc             logger.Loc
+	TokenIndexAfter uint32
+}
+
+type TokenizeResult struct {
+	Tokens               []Token
+	LicenseComments      []Comment
+	ApproximateLineCount int32
+	SourceMapComment     logger.Span
+}
+
+func Tokenize(log logger.Log, source logger.Source) TokenizeResult {
 	lexer := lexer{
 		log:     log,
 		source:  source,
@@ -172,11 +195,32 @@ func Tokenize(log logger.Log, source logger.Source) (tokens []Token) {
 	}
 
 	lexer.next()
+	var tokens []Token
+	var comments []Comment
 	for lexer.Token.Kind != TEndOfFile {
+		if lexer.licenseCommentsBefore != nil {
+			for _, comment := range lexer.licenseCommentsBefore {
+				comment.TokenIndexAfter = uint32(len(tokens))
+				comments = append(comments, comment)
+			}
+			lexer.licenseCommentsBefore = nil
+		}
 		tokens = append(tokens, lexer.Token)
 		lexer.next()
 	}
-	return
+	if lexer.licenseCommentsBefore != nil {
+		for _, comment := range lexer.licenseCommentsBefore {
+			comment.TokenIndexAfter = uint32(len(tokens))
+			comments = append(comments, comment)
+		}
+		lexer.licenseCommentsBefore = nil
+	}
+	return TokenizeResult{
+		Tokens:               tokens,
+		LicenseComments:      comments,
+		ApproximateLineCount: int32(lexer.approximateNewlineCount) + 1,
+		SourceMapComment:     lexer.sourceMappingURL,
+	}
 }
 
 func (lexer *lexer) step() {
@@ -185,6 +229,16 @@ func (lexer *lexer) step() {
 	// Use -1 to indicate the end of the file
 	if width == 0 {
 		codePoint = eof
+	}
+
+	// Track the approximate number of newlines in the file so we can preallocate
+	// the line offset table in the printer for source maps. The line offset table
+	// is the #1 highest allocation in the heap profile, so this is worth doing.
+	// This count is approximate because it handles "\n" and "\r\n" (the common
+	// cases) but not "\r" or "\u2028" or "\u2029". Getting this wrong is harmless
+	// because it's only a preallocation. The array will just grow if it's too small.
+	if codePoint == '\n' {
+		lexer.approximateNewlineCount++
 	}
 
 	lexer.codePoint = codePoint
@@ -311,7 +365,7 @@ func (lexer *lexer) next() {
 				lexer.Token.Kind = lexer.consumeIdentLike()
 			} else {
 				lexer.step()
-				lexer.Token.Kind = TDelim
+				lexer.Token.Kind = TDelimMinus
 			}
 
 		case '<':
@@ -397,12 +451,45 @@ func (lexer *lexer) next() {
 }
 
 func (lexer *lexer) consumeToEndOfMultiLineComment(startRange logger.Range) {
+	startOfSourceMappingURL := 0
+	isLicenseComment := false
+
+	switch lexer.codePoint {
+	case '#', '@':
+		// Keep track of the contents of the "sourceMappingURL=" comment
+		if strings.HasPrefix(lexer.source.Contents[lexer.current:], " sourceMappingURL=") {
+			startOfSourceMappingURL = lexer.current + len(" sourceMappingURL=")
+		}
+
+	case '!':
+		// Remember if this is a license comment
+		isLicenseComment = true
+	}
+
 	for {
 		switch lexer.codePoint {
 		case '*':
+			endOfSourceMappingURL := lexer.current - 1
 			lexer.step()
 			if lexer.codePoint == '/' {
+				commentEnd := lexer.current
 				lexer.step()
+
+				// Record the source mapping URL
+				if startOfSourceMappingURL != 0 {
+					r := logger.Range{Loc: logger.Loc{Start: int32(startOfSourceMappingURL)}}
+					text := lexer.source.Contents[startOfSourceMappingURL:endOfSourceMappingURL]
+					for int(r.Len) < len(text) && !isWhitespace(rune(text[r.Len])) {
+						r.Len++
+					}
+					lexer.sourceMappingURL = logger.Span{Text: text[:r.Len], Range: r}
+				}
+
+				// Record license comments
+				if text := lexer.source.Contents[startRange.Loc.Start:commentEnd]; isLicenseComment || containsAtPreserveOrAtLicense(text) {
+					text = helpers.RemoveMultiLineCommentIndent(lexer.source.Contents[:startRange.Loc.Start], text)
+					lexer.licenseCommentsBefore = append(lexer.licenseCommentsBefore, Comment{Loc: startRange.Loc, Text: text})
+				}
 				return
 			}
 
@@ -415,6 +502,15 @@ func (lexer *lexer) consumeToEndOfMultiLineComment(startRange logger.Range) {
 			lexer.step()
 		}
 	}
+}
+
+func containsAtPreserveOrAtLicense(text string) bool {
+	for i, c := range text {
+		if c == '@' && (strings.HasPrefix(text[i+1:], "preserve") || strings.HasPrefix(text[i+1:], "license")) {
+			return true
+		}
+	}
+	return false
 }
 
 func (lexer *lexer) consumeToEndOfSingleLineComment() {

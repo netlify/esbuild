@@ -1,5 +1,6 @@
 import * as types from "../shared/types";
 import * as common from "../shared/common";
+import { ESBUILD_BINARY_PATH, generateBinPath } from "./node-platform";
 
 import child_process = require('child_process');
 import crypto = require('crypto');
@@ -16,29 +17,38 @@ declare const WASM: boolean;
 
 let worker_threads: typeof import('worker_threads') | undefined;
 
-// This optimization is opt-in for now because it could break if node has bugs
-// with "worker_threads", and node has had such bugs in the past.
-//
-// TODO: Determine under which conditions this is safe to enable, and then
-// replace this check with a check for those conditions.
-if (process.env.ESBUILD_WORKER_THREADS) {
+if (process.env.ESBUILD_WORKER_THREADS !== '0') {
   // Don't crash if the "worker_threads" library isn't present
   try {
     worker_threads = require('worker_threads');
   } catch {
   }
+
+  // Creating a worker in certain node versions doesn't work. The specific
+  // error is "TypeError: MessagePort was found in message but not listed
+  // in transferList". See: https://github.com/nodejs/node/issues/32250.
+  // We just pretend worker threads are unavailable in these cases.
+  let [major, minor] = process.versions.node.split('.');
+  if (
+    // <v12.17.0 does not work
+    +major < 12 || (+major === 12 && +minor < 17)
+
+    // >=v13.0.0 && <v13.13.0 also does not work
+    || (+major === 13 && +minor < 13)
+  ) {
+    worker_threads = void 0;
+  }
 }
 
-let esbuildCommandAndArgs = (): [string, string[]] => {
-  // This feature was added to give external code a way to modify the binary
-  // path without modifying the code itself. Do not remove this because
-  // external code relies on this.
-  if (process.env.ESBUILD_BINARY_PATH) {
-    return [path.resolve(process.env.ESBUILD_BINARY_PATH), []];
-  }
+// This should only be true if this is our internal worker thread. We want this
+// library to be usable from other people's worker threads, so we should not be
+// checking for "isMainThread".
+let isInternalWorkerThread = worker_threads?.workerData?.esbuildVersion === ESBUILD_VERSION;
 
+let esbuildCommandAndArgs = (): [string, string[]] => {
   // Try to have a nice error message when people accidentally bundle esbuild
-  if (path.basename(__filename) !== 'main.js' || path.basename(__dirname) !== 'lib') {
+  // without providing an explicit path to the binary, or when using WebAssembly.
+  if ((!ESBUILD_BINARY_PATH || WASM) && (path.basename(__filename) !== 'main.js' || path.basename(__dirname) !== 'lib')) {
     throw new Error(
       `The esbuild JavaScript API cannot be bundled. Please mark the "esbuild" ` +
       `package as external so it's not included in the bundle.\n` +
@@ -57,33 +67,7 @@ let esbuildCommandAndArgs = (): [string, string[]] => {
     return ['node', [path.join(__dirname, '..', 'bin', 'esbuild')]];
   }
 
-  if (process.platform === 'win32') {
-    return [path.join(__dirname, '..', 'esbuild.exe'), []];
-  }
-
-  // Yarn 2 is deliberately incompatible with binary modules because the
-  // developers of Yarn 2 don't think they should be used. See this thread for
-  // details: https://github.com/yarnpkg/berry/issues/882.
-  //
-  // As a compatibility hack we replace the binary with a wrapper script only
-  // for Yarn 2. The wrapper script is avoided for other platforms because
-  // running the binary directly without going through node first is faster.
-  // However, this will make using the JavaScript API with Yarn 2 unnecessarily
-  // slow because the wrapper means running the binary will now start another
-  // nested node process just to call "spawnSync" and run the actual binary.
-  //
-  // To work around this workaround, we query for the place the binary is moved
-  // to if the original location is replaced by our Yarn 2 compatibility hack.
-  // If it exists, we can infer that we are running within Yarn 2 and the
-  // JavaScript API should invoke the binary here instead to avoid a slowdown.
-  // Calling the binary directly can be over 6x faster than calling the wrapper
-  // script instead.
-  let pathForYarn2 = path.join(__dirname, '..', 'esbuild');
-  if (fs.existsSync(pathForYarn2)) {
-    return [pathForYarn2, []];
-  }
-
-  return [path.join(__dirname, '..', 'bin', 'esbuild'), []];
+  return [generateBinPath(), []];
 };
 
 // Return true if stderr is a TTY
@@ -98,7 +82,7 @@ let fsSync: common.StreamFS = {
       } catch {
       }
       callback(null, contents);
-    } catch (err) {
+    } catch (err: any) {
       callback(err, null);
     }
   },
@@ -123,7 +107,7 @@ let fsAsync: common.StreamFS = {
           callback(err, contents);
         }
       });
-    } catch (err) {
+    } catch (err: any) {
       callback(err, null);
     }
   },
@@ -152,9 +136,12 @@ export let transform: typeof types.transform = (input, options) =>
 export let formatMessages: typeof types.formatMessages = (messages, options) =>
   ensureServiceIsRunning().formatMessages(messages, options);
 
+export let analyzeMetafile: typeof types.analyzeMetafile = (messages, options) =>
+  ensureServiceIsRunning().analyzeMetafile(messages, options);
+
 export let buildSync: typeof types.buildSync = (options: types.BuildOptions): any => {
   // Try using a long-lived worker thread to avoid repeated start-up overhead
-  if (worker_threads) {
+  if (worker_threads && !isInternalWorkerThread) {
     if (!workerThreadService) workerThreadService = startWorkerThreadService(worker_threads);
     return workerThreadService.buildSync(options);
   }
@@ -174,7 +161,7 @@ export let buildSync: typeof types.buildSync = (options: types.BuildOptions): an
 
 export let transformSync: typeof types.transformSync = (input, options) => {
   // Try using a long-lived worker thread to avoid repeated start-up overhead
-  if (worker_threads) {
+  if (worker_threads && !isInternalWorkerThread) {
     if (!workerThreadService) workerThreadService = startWorkerThreadService(worker_threads);
     return workerThreadService.transformSync(input, options);
   }
@@ -194,7 +181,7 @@ export let transformSync: typeof types.transformSync = (input, options) => {
 
 export let formatMessagesSync: typeof types.formatMessagesSync = (messages, options) => {
   // Try using a long-lived worker thread to avoid repeated start-up overhead
-  if (worker_threads) {
+  if (worker_threads && !isInternalWorkerThread) {
     if (!workerThreadService) workerThreadService = startWorkerThreadService(worker_threads);
     return workerThreadService.formatMessagesSync(messages, options);
   }
@@ -204,6 +191,24 @@ export let formatMessagesSync: typeof types.formatMessagesSync = (messages, opti
     callName: 'formatMessagesSync',
     refs: null,
     messages,
+    options,
+    callback: (err, res) => { if (err) throw err; result = res! },
+  }));
+  return result!;
+};
+
+export let analyzeMetafileSync: typeof types.analyzeMetafileSync = (metafile, options) => {
+  // Try using a long-lived worker thread to avoid repeated start-up overhead
+  if (worker_threads && !isInternalWorkerThread) {
+    if (!workerThreadService) workerThreadService = startWorkerThreadService(worker_threads);
+    return workerThreadService.analyzeMetafileSync(metafile, options);
+  }
+
+  let result: string;
+  runServiceSync(service => service.analyzeMetafile({
+    callName: 'analyzeMetafileSync',
+    refs: null,
+    metafile: typeof metafile === 'string' ? metafile : JSON.stringify(metafile),
     options,
     callback: (err, res) => { if (err) throw err; result = res! },
   }));
@@ -227,6 +232,7 @@ interface Service {
   serve: typeof types.serve;
   transform: typeof types.transform;
   formatMessages: typeof types.formatMessages;
+  analyzeMetafile: typeof types.analyzeMetafile;
 }
 
 let defaultWD = process.cwd();
@@ -319,6 +325,16 @@ let ensureServiceIsRunning = (): Service => {
           callback: (err, res) => err ? reject(err) : resolve(res!),
         }));
     },
+    analyzeMetafile: (metafile, options) => {
+      return new Promise((resolve, reject) =>
+        service.analyzeMetafile({
+          callName: 'analyzeMetafile',
+          refs,
+          metafile: typeof metafile === 'string' ? metafile : JSON.stringify(metafile),
+          options,
+          callback: (err, res) => err ? reject(err) : resolve(res!),
+        }));
+    },
   };
   return longLivedService;
 }
@@ -365,6 +381,7 @@ interface WorkerThreadService {
   buildSync(options: types.BuildOptions): types.BuildResult;
   transformSync: typeof types.transformSync;
   formatMessagesSync: typeof types.formatMessagesSync;
+  analyzeMetafileSync: typeof types.analyzeMetafileSync;
 }
 
 let workerThreadService: WorkerThreadService | null = null;
@@ -372,7 +389,7 @@ let workerThreadService: WorkerThreadService | null = null;
 let startWorkerThreadService = (worker_threads: typeof import('worker_threads')): WorkerThreadService => {
   let { port1: mainPort, port2: workerPort } = new worker_threads.MessageChannel();
   let worker = new worker_threads.Worker(__filename, {
-    workerData: { workerPort, defaultWD },
+    workerData: { workerPort, defaultWD, esbuildVersion: ESBUILD_VERSION },
     transferList: [workerPort],
 
     // From node's documentation: https://nodejs.org/api/worker_threads.html
@@ -401,8 +418,10 @@ let startWorkerThreadService = (worker_threads: typeof import('worker_threads'))
     if (!options) return
     let plugins = options.plugins
     let incremental = options.incremental
+    let watch = options.watch
     if (plugins && plugins.length > 0) throw fakeBuildError(`Cannot use plugins in synchronous API calls`);
     if (incremental) throw fakeBuildError(`Cannot use "incremental" with a synchronous build`);
+    if (watch) throw fakeBuildError(`Cannot use "watch" with a synchronous build`);
   };
 
   // MessagePort doesn't copy the properties of Error objects. We still want
@@ -463,6 +482,9 @@ let startWorkerThreadService = (worker_threads: typeof import('worker_threads'))
     formatMessagesSync(messages, options) {
       return runCallSync('formatMessages', [messages, options]);
     },
+    analyzeMetafileSync(metafile, options) {
+      return runCallSync('analyzeMetafile', [metafile, options]);
+    },
   };
 };
 
@@ -495,14 +517,25 @@ let startSyncServiceWorker = () => {
       let sharedBufferView = new Int32Array(sharedBuffer);
 
       try {
-        if (command === 'build') {
-          workerPort.postMessage({ id, resolve: await service.build(args[0]) });
-        } else if (command === 'transform') {
-          workerPort.postMessage({ id, resolve: await service.transform(args[0], args[1]) });
-        } else if (command === 'formatMessages') {
-          workerPort.postMessage({ id, resolve: await service.formatMessages(args[0], args[1]) });
-        } else {
-          throw new Error(`Invalid command: ${command}`);
+        switch (command) {
+          case 'build':
+            workerPort.postMessage({ id, resolve: await service.build(args[0]) });
+            break;
+
+          case 'transform':
+            workerPort.postMessage({ id, resolve: await service.transform(args[0], args[1]) });
+            break;
+
+          case 'formatMessages':
+            workerPort.postMessage({ id, resolve: await service.formatMessages(args[0], args[1]) });
+            break;
+
+          case 'analyzeMetafile':
+            workerPort.postMessage({ id, resolve: await service.analyzeMetafile(args[0], args[1]) });
+            break;
+
+          default:
+            throw new Error(`Invalid command: ${command}`);
         }
       } catch (reject) {
         workerPort.postMessage({ id, reject, properties: extractProperties(reject) });
@@ -525,6 +558,6 @@ let startSyncServiceWorker = () => {
 };
 
 // If we're in the worker thread, start the worker code
-if (worker_threads && !worker_threads.isMainThread) {
+if (isInternalWorkerThread) {
   startSyncServiceWorker();
 }

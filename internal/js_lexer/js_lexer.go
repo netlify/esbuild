@@ -20,6 +20,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/evanw/esbuild/internal/helpers"
 	"github.com/evanw/esbuild/internal/js_ast"
 	"github.com/evanw/esbuild/internal/logger"
 )
@@ -237,9 +238,9 @@ type Lexer struct {
 	AllOriginalComments             []js_ast.Comment
 	codePoint                       rune
 	Identifier                      string
-	JSXFactoryPragmaComment         js_ast.Span
-	JSXFragmentPragmaComment        js_ast.Span
-	SourceMappingURL                js_ast.Span
+	JSXFactoryPragmaComment         logger.Span
+	JSXFragmentPragmaComment        logger.Span
+	SourceMappingURL                logger.Span
 	Number                          float64
 	rescanCloseBraceAsTemplateToken bool
 	forGlobalName                   bool
@@ -319,7 +320,7 @@ func (lexer *Lexer) Raw() string {
 func (lexer *Lexer) StringLiteral() []uint16 {
 	if lexer.decodedStringLiteralOrNil == nil {
 		// Lazily decode escape sequences if needed
-		if decoded, ok, end := lexer.tryToDecodeEscapeSequences(lexer.encodedStringLiteralStart, lexer.encodedStringLiteralText); !ok {
+		if decoded, ok, end := lexer.tryToDecodeEscapeSequences(lexer.encodedStringLiteralStart, lexer.encodedStringLiteralText, true /* reportErrors */); !ok {
 			lexer.end = end
 			lexer.SyntaxError()
 		} else {
@@ -378,7 +379,7 @@ func (lexer *Lexer) CookedAndRawTemplateContents() ([]uint16, string) {
 	}
 
 	// This will return nil on failure, which will become "undefined" for the tag
-	cooked, _, _ := lexer.tryToDecodeEscapeSequences(lexer.start+1, raw)
+	cooked, _, _ := lexer.tryToDecodeEscapeSequences(lexer.start+1, raw, false /* reportErrors */)
 	return cooked, raw
 }
 
@@ -577,17 +578,17 @@ func IsIdentifier(text string) bool {
 	return true
 }
 
-func IsIdentifierES5(text string) bool {
+func IsIdentifierES5AndESNext(text string) bool {
 	if len(text) == 0 {
 		return false
 	}
 	for i, codePoint := range text {
 		if i == 0 {
-			if !IsIdentifierStartES5(codePoint) {
+			if !IsIdentifierStartES5AndESNext(codePoint) {
 				return false
 			}
 		} else {
-			if !IsIdentifierContinueES5(codePoint) {
+			if !IsIdentifierContinueES5AndESNext(codePoint) {
 				return false
 			}
 		}
@@ -652,8 +653,8 @@ func IsIdentifierUTF16(text []uint16) bool {
 	return true
 }
 
-// This does "IsIdentifierES5(UTF16ToString(text))" without any allocations
-func IsIdentifierES5UTF16(text []uint16) bool {
+// This does "IsIdentifierES5AndESNext(UTF16ToString(text))" without any allocations
+func IsIdentifierES5AndESNextUTF16(text []uint16) bool {
 	n := len(text)
 	if n == 0 {
 		return false
@@ -668,11 +669,11 @@ func IsIdentifierES5UTF16(text []uint16) bool {
 			}
 		}
 		if isStart {
-			if !IsIdentifierStartES5(r1) {
+			if !IsIdentifierStartES5AndESNext(r1) {
 				return false
 			}
 		} else {
-			if !IsIdentifierContinueES5(r1) {
+			if !IsIdentifierContinueES5AndESNext(r1) {
 				return false
 			}
 		}
@@ -695,7 +696,7 @@ func IsIdentifierStart(codePoint rune) bool {
 		return false
 	}
 
-	return unicode.Is(idStart, codePoint)
+	return unicode.Is(idStartES5OrESNext, codePoint)
 }
 
 func IsIdentifierContinue(codePoint rune) bool {
@@ -718,7 +719,48 @@ func IsIdentifierContinue(codePoint rune) bool {
 		return true
 	}
 
-	return unicode.Is(idContinue, codePoint)
+	return unicode.Is(idContinueES5OrESNext, codePoint)
+}
+
+func IsIdentifierStartES5AndESNext(codePoint rune) bool {
+	switch codePoint {
+	case '_', '$',
+		'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
+		'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+		'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+		'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z':
+		return true
+	}
+
+	// All ASCII identifier start code points are listed above
+	if codePoint < 0x7F {
+		return false
+	}
+
+	return unicode.Is(idStartES5AndESNext, codePoint)
+}
+
+func IsIdentifierContinueES5AndESNext(codePoint rune) bool {
+	switch codePoint {
+	case '_', '$', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+		'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
+		'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+		'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+		'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z':
+		return true
+	}
+
+	// All ASCII identifier start code points are listed above
+	if codePoint < 0x7F {
+		return false
+	}
+
+	// ZWNJ and ZWJ are allowed in identifiers
+	if codePoint == 0x200C || codePoint == 0x200D {
+		return true
+	}
+
+	return unicode.Is(idContinueES5AndESNext, codePoint)
 }
 
 func IsIdentifierStartES5(codePoint rune) bool {
@@ -1814,7 +1856,7 @@ func (lexer *Lexer) scanIdentifierWithEscapes(kind identifierKind) (string, T) {
 	}
 
 	// Second pass: re-use our existing escape sequence parser
-	decoded, ok, end := lexer.tryToDecodeEscapeSequences(lexer.start, lexer.Raw())
+	decoded, ok, end := lexer.tryToDecodeEscapeSequences(lexer.start, lexer.Raw(), true /* reportErrors */)
 	if !ok {
 		lexer.end = end
 		lexer.SyntaxError()
@@ -2309,7 +2351,7 @@ func fixWhitespaceAndDecodeJSXEntities(text string) []uint16 {
 
 // If this fails, this returns "nil, false, end" where "end" is the value to
 // store to "lexer.end" before calling "lexer.SyntaxError()" if relevant
-func (lexer *Lexer) tryToDecodeEscapeSequences(start int, text string) ([]uint16, bool, int) {
+func (lexer *Lexer) tryToDecodeEscapeSequences(start int, text string, reportErrors bool) ([]uint16, bool, int) {
 	decoded := []uint16{}
 	i := 0
 
@@ -2479,7 +2521,7 @@ func (lexer *Lexer) tryToDecodeEscapeSequences(start int, text string) ([]uint16
 						isFirst = false
 					}
 
-					if isOutOfRange {
+					if isOutOfRange && reportErrors {
 						lexer.addRangeError(logger.Range{Loc: logger.Loc{Start: int32(start + hexStart)}, Len: int32(i - hexStart)},
 							"Unicode escape sequence is out of range")
 						panic(LexerPanic{})
@@ -2657,25 +2699,25 @@ const (
 	pragmaSkipSpaceFirst
 )
 
-func scanForPragmaArg(kind pragmaArg, start int, pragma string, text string) (js_ast.Span, bool) {
+func scanForPragmaArg(kind pragmaArg, start int, pragma string, text string) (logger.Span, bool) {
 	text = text[len(pragma):]
 	start += len(pragma)
 
 	if text == "" {
-		return js_ast.Span{}, false
+		return logger.Span{}, false
 	}
 
 	// One or more whitespace characters
 	c, width := utf8.DecodeRuneInString(text)
 	if kind == pragmaSkipSpaceFirst {
 		if !IsWhitespace(c) {
-			return js_ast.Span{}, false
+			return logger.Span{}, false
 		}
 		for IsWhitespace(c) {
 			text = text[width:]
 			start += width
 			if text == "" {
-				return js_ast.Span{}, false
+				return logger.Span{}, false
 			}
 			c, width = utf8.DecodeRuneInString(text)
 		}
@@ -2694,7 +2736,7 @@ func scanForPragmaArg(kind pragmaArg, start int, pragma string, text string) (js
 		}
 	}
 
-	return js_ast.Span{
+	return logger.Span{
 		Text: text[:i],
 		Range: logger.Range{
 			Loc: logger.Loc{Start: int32(start)},
@@ -2727,7 +2769,7 @@ func (lexer *Lexer) scanCommentText() {
 			rest := text[i+1 : endOfCommentText]
 			if hasPrefixWithWordBoundary(rest, "__PURE__") {
 				lexer.HasPureCommentBefore = true
-			} else if strings.HasPrefix(rest, " sourceMappingURL=") {
+			} else if i == 2 && strings.HasPrefix(rest, " sourceMappingURL=") {
 				if arg, ok := scanForPragmaArg(pragmaNoSpaceFirst, lexer.start+i+1, " sourceMappingURL=", rest); ok {
 					lexer.SourceMappingURL = arg
 				}
@@ -2747,7 +2789,7 @@ func (lexer *Lexer) scanCommentText() {
 				if arg, ok := scanForPragmaArg(pragmaSkipSpaceFirst, lexer.start+i+1, "jsxFrag", rest); ok {
 					lexer.JSXFragmentPragmaComment = arg
 				}
-			} else if strings.HasPrefix(rest, " sourceMappingURL=") {
+			} else if i == 2 && strings.HasPrefix(rest, " sourceMappingURL=") {
 				if arg, ok := scanForPragmaArg(pragmaNoSpaceFirst, lexer.start+i+1, " sourceMappingURL=", rest); ok {
 					lexer.SourceMappingURL = arg
 				}
@@ -2757,7 +2799,7 @@ func (lexer *Lexer) scanCommentText() {
 
 	if hasLegalAnnotation || lexer.PreserveAllCommentsBefore {
 		if isMultiLineComment {
-			text = removeMultiLineCommentIndent(lexer.source.Contents[:lexer.start], text)
+			text = helpers.RemoveMultiLineCommentIndent(lexer.source.Contents[:lexer.start], text)
 		}
 
 		lexer.CommentsToPreserveBefore = append(lexer.CommentsToPreserveBefore, js_ast.Comment{
@@ -2765,68 +2807,6 @@ func (lexer *Lexer) scanCommentText() {
 			Text: text,
 		})
 	}
-}
-
-func removeMultiLineCommentIndent(prefix string, text string) string {
-	// Figure out the initial indent
-	indent := 0
-seekBackwardToNewline:
-	for len(prefix) > 0 {
-		c, size := utf8.DecodeLastRuneInString(prefix)
-		switch c {
-		case '\r', '\n', '\u2028', '\u2029':
-			break seekBackwardToNewline
-		}
-		prefix = prefix[:len(prefix)-size]
-		indent++
-	}
-
-	// Split the comment into lines
-	var lines []string
-	start := 0
-	for i, c := range text {
-		switch c {
-		case '\r', '\n':
-			// Don't double-append for Windows style "\r\n" newlines
-			if start <= i {
-				lines = append(lines, text[start:i])
-			}
-
-			start = i + 1
-
-			// Ignore the second part of Windows style "\r\n" newlines
-			if c == '\r' && start < len(text) && text[start] == '\n' {
-				start++
-			}
-
-		case '\u2028', '\u2029':
-			lines = append(lines, text[start:i])
-			start = i + 3
-		}
-	}
-	lines = append(lines, text[start:])
-
-	// Find the minimum indent over all lines after the first line
-	for _, line := range lines[1:] {
-		lineIndent := 0
-		for _, c := range line {
-			if !IsWhitespace(c) {
-				break
-			}
-			lineIndent++
-		}
-		if indent > lineIndent {
-			indent = lineIndent
-		}
-	}
-
-	// Trim the indent off of all lines after the first line
-	for i, line := range lines {
-		if i > 0 {
-			lines[i] = line[indent:]
-		}
-	}
-	return strings.Join(lines, "\n")
 }
 
 func ContainsNonBMPCodePoint(text string) bool {
@@ -2868,7 +2848,7 @@ func StringToUTF16(text string) []uint16 {
 }
 
 func UTF16ToString(text []uint16) string {
-	temp := make([]byte, utf8.UTFMax)
+	var temp [utf8.UTFMax]byte
 	b := strings.Builder{}
 	n := len(text)
 	for i := 0; i < n; i++ {
@@ -2879,14 +2859,14 @@ func UTF16ToString(text []uint16) string {
 				i++
 			}
 		}
-		width := encodeWTF8Rune(temp, r1)
+		width := encodeWTF8Rune(temp[:], r1)
 		b.Write(temp[:width])
 	}
 	return b.String()
 }
 
 func UTF16ToStringWithValidation(text []uint16) (string, uint16, bool) {
-	temp := make([]byte, utf8.UTFMax)
+	var temp [utf8.UTFMax]byte
 	b := strings.Builder{}
 	n := len(text)
 	for i := 0; i < n; i++ {
@@ -2905,7 +2885,7 @@ func UTF16ToStringWithValidation(text []uint16) (string, uint16, bool) {
 		} else if r1 >= 0xDC00 && r1 <= 0xDFFF {
 			return "", uint16(r1), false
 		}
-		width := encodeWTF8Rune(temp, r1)
+		width := encodeWTF8Rune(temp[:], r1)
 		b.Write(temp[:width])
 	}
 	return b.String(), 0, true
@@ -2917,7 +2897,7 @@ func UTF16EqualsString(text []uint16, str string) bool {
 		// Strings can't be equal if UTF-16 encoding is longer than UTF-8 encoding
 		return false
 	}
-	temp := [utf8.UTFMax]byte{}
+	var temp [utf8.UTFMax]byte
 	n := len(text)
 	j := 0
 	for i := 0; i < n; i++ {

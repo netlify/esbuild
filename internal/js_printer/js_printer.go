@@ -22,96 +22,6 @@ import (
 var positiveInfinity = math.Inf(1)
 var negativeInfinity = math.Inf(-1)
 
-// Coordinates in source maps are stored using relative offsets for size
-// reasons. When joining together chunks of a source map that were emitted
-// in parallel for different parts of a file, we need to fix up the first
-// segment of each chunk to be relative to the end of the previous chunk.
-type SourceMapState struct {
-	// This isn't stored in the source map. It's only used by the bundler to join
-	// source map chunks together correctly.
-	GeneratedLine int
-
-	// These are stored in the source map in VLQ format.
-	GeneratedColumn int
-	SourceIndex     int
-	OriginalLine    int
-	OriginalColumn  int
-}
-
-// Source map chunks are computed in parallel for speed. Each chunk is relative
-// to the zero state instead of being relative to the end state of the previous
-// chunk, since it's impossible to know the end state of the previous chunk in
-// a parallel computation.
-//
-// After all chunks are computed, they are joined together in a second pass.
-// This rewrites the first mapping in each chunk to be relative to the end
-// state of the previous chunk.
-func AppendSourceMapChunk(j *helpers.Joiner, prevEndState SourceMapState, startState SourceMapState, sourceMap []byte) {
-	// Handle line breaks in between this mapping and the previous one
-	if startState.GeneratedLine != 0 {
-		j.AddBytes(bytes.Repeat([]byte{';'}, startState.GeneratedLine))
-		prevEndState.GeneratedColumn = 0
-	}
-
-	// Skip past any leading semicolons, which indicate line breaks
-	semicolons := 0
-	for sourceMap[semicolons] == ';' {
-		semicolons++
-	}
-	if semicolons > 0 {
-		j.AddBytes(sourceMap[:semicolons])
-		sourceMap = sourceMap[semicolons:]
-		prevEndState.GeneratedColumn = 0
-		startState.GeneratedColumn = 0
-	}
-
-	// Strip off the first mapping from the buffer. The first mapping should be
-	// for the start of the original file (the printer always generates one for
-	// the start of the file).
-	generatedColumn, i := sourcemap.DecodeVLQ(sourceMap, 0)
-	sourceIndex, i := sourcemap.DecodeVLQ(sourceMap, i)
-	originalLine, i := sourcemap.DecodeVLQ(sourceMap, i)
-	originalColumn, i := sourcemap.DecodeVLQ(sourceMap, i)
-	sourceMap = sourceMap[i:]
-
-	// Rewrite the first mapping to be relative to the end state of the previous
-	// chunk. We now know what the end state is because we're in the second pass
-	// where all chunks have already been generated.
-	startState.SourceIndex += sourceIndex
-	startState.GeneratedColumn += generatedColumn
-	startState.OriginalLine += originalLine
-	startState.OriginalColumn += originalColumn
-	j.AddBytes(appendMapping(nil, j.LastByte(), prevEndState, startState))
-
-	// Then append everything after that without modification.
-	j.AddBytes(sourceMap)
-}
-
-func appendMapping(buffer []byte, lastByte byte, prevState SourceMapState, currentState SourceMapState) []byte {
-	// Put commas in between mappings
-	if lastByte != 0 && lastByte != ';' && lastByte != '"' {
-		buffer = append(buffer, ',')
-	}
-
-	// Record the generated column (the line is recorded using ';' elsewhere)
-	buffer = append(buffer, sourcemap.EncodeVLQ(currentState.GeneratedColumn-prevState.GeneratedColumn)...)
-	prevState.GeneratedColumn = currentState.GeneratedColumn
-
-	// Record the generated source
-	buffer = append(buffer, sourcemap.EncodeVLQ(currentState.SourceIndex-prevState.SourceIndex)...)
-	prevState.SourceIndex = currentState.SourceIndex
-
-	// Record the original line
-	buffer = append(buffer, sourcemap.EncodeVLQ(currentState.OriginalLine-prevState.OriginalLine)...)
-	prevState.OriginalLine = currentState.OriginalLine
-
-	// Record the original column
-	buffer = append(buffer, sourcemap.EncodeVLQ(currentState.OriginalColumn-prevState.OriginalColumn)...)
-	prevState.OriginalColumn = currentState.OriginalColumn
-
-	return buffer
-}
-
 const hexChars = "0123456789ABCDEF"
 const firstASCII = 0x20
 const lastASCII = 0x7E
@@ -307,8 +217,24 @@ func (p *printer) printUnquotedUTF16(text []uint16, quote rune) {
 			js = append(js, "\\\\"...)
 
 		case '/':
-			if i >= 2 && text[i-2] == '<' && i+6 <= len(text) && js_lexer.UTF16EqualsString(text[i:i+6], "script") {
-				js = append(js, '\\')
+			// Avoid generating the sequence "</script" in JS code
+			if i >= 2 && text[i-2] == '<' && i+6 <= len(text) {
+				script := "script"
+				matches := true
+				for j := 0; j < 6; j++ {
+					a := text[i+j]
+					b := uint16(script[j])
+					if a >= 'A' && a <= 'Z' {
+						a += 'a' - 'A'
+					}
+					if a != b {
+						matches = false
+						break
+					}
+				}
+				if matches {
+					js = append(js, '\\')
+				}
 			}
 			js = append(js, '/')
 
@@ -524,6 +450,7 @@ type printer struct {
 	prevRegExpEnd                  int
 	callTarget                     js_ast.E
 	intToBytesBuffer               [64]byte
+	builder                        sourcemap.ChunkBuilder
 
 	// For source maps
 	sourceMap           []byte
@@ -578,213 +505,9 @@ func (p *printer) printQuotedUTF8(text string, allowBacktick bool) {
 }
 
 func (p *printer) addSourceMapping(loc logger.Loc) {
-	if !p.options.AddSourceMappings || loc == p.prevLoc {
-		return
+	if p.options.AddSourceMappings {
+		p.builder.AddSourceMapping(loc, p.js)
 	}
-	p.prevLoc = loc
-
-	// Binary search to find the line
-	lineOffsetTables := p.lineOffsetTables
-	count := len(lineOffsetTables)
-	originalLine := 0
-	for count > 0 {
-		step := count / 2
-		i := originalLine + step
-		if lineOffsetTables[i].byteOffsetToStartOfLine <= loc.Start {
-			originalLine = i + 1
-			count = count - step - 1
-		} else {
-			count = step
-		}
-	}
-	originalLine--
-
-	// Use the line to compute the column
-	line := &lineOffsetTables[originalLine]
-	originalColumn := int(loc.Start - line.byteOffsetToStartOfLine)
-	if line.columnsForNonASCII != nil && originalColumn >= int(line.byteOffsetToFirstNonASCII) {
-		originalColumn = int(line.columnsForNonASCII[originalColumn-int(line.byteOffsetToFirstNonASCII)])
-	}
-
-	p.updateGeneratedLineAndColumn()
-
-	// If this line doesn't start with a mapping and we're about to add a mapping
-	// that's not at the start, insert a mapping first so the line starts with one.
-	if p.coverLinesWithoutMappings && !p.lineStartsWithMapping && p.generatedColumn > 0 && p.hasPrevState {
-		p.appendMappingWithoutRemapping(SourceMapState{
-			GeneratedLine:   p.prevState.GeneratedLine,
-			GeneratedColumn: 0,
-			SourceIndex:     p.prevState.SourceIndex,
-			OriginalLine:    p.prevState.OriginalLine,
-			OriginalColumn:  p.prevState.OriginalColumn,
-		})
-	}
-
-	p.appendMapping(SourceMapState{
-		GeneratedLine:   p.prevState.GeneratedLine,
-		GeneratedColumn: p.generatedColumn,
-		OriginalLine:    originalLine,
-		OriginalColumn:  originalColumn,
-	})
-
-	// This line now has a mapping on it, so don't insert another one
-	p.lineStartsWithMapping = true
-}
-
-// Scan over the printed text since the last source mapping and update the
-// generated line and column numbers
-func (p *printer) updateGeneratedLineAndColumn() {
-	for i, c := range string(p.js[p.lastGeneratedUpdate:]) {
-		switch c {
-		case '\r', '\n', '\u2028', '\u2029':
-			// Handle Windows-specific "\r\n" newlines
-			if c == '\r' {
-				newlineCheck := p.lastGeneratedUpdate + i + 1
-				if newlineCheck < len(p.js) && p.js[newlineCheck] == '\n' {
-					continue
-				}
-			}
-
-			// If we're about to move to the next line and the previous line didn't have
-			// any mappings, add a mapping at the start of the previous line.
-			if p.coverLinesWithoutMappings && !p.lineStartsWithMapping && p.hasPrevState {
-				p.appendMappingWithoutRemapping(SourceMapState{
-					GeneratedLine:   p.prevState.GeneratedLine,
-					GeneratedColumn: 0,
-					SourceIndex:     p.prevState.SourceIndex,
-					OriginalLine:    p.prevState.OriginalLine,
-					OriginalColumn:  p.prevState.OriginalColumn,
-				})
-			}
-
-			p.prevState.GeneratedLine++
-			p.prevState.GeneratedColumn = 0
-			p.generatedColumn = 0
-			p.sourceMap = append(p.sourceMap, ';')
-
-			// This new line doesn't have a mapping yet
-			p.lineStartsWithMapping = false
-
-		default:
-			// Mozilla's "source-map" library counts columns using UTF-16 code units
-			if c <= 0xFFFF {
-				p.generatedColumn++
-			} else {
-				p.generatedColumn += 2
-			}
-		}
-	}
-
-	p.lastGeneratedUpdate = len(p.js)
-}
-
-func GenerateLineOffsetTables(contents string, approximateLineCount int32) []LineOffsetTable {
-	var columnsForNonASCII []int32
-	byteOffsetToFirstNonASCII := int32(0)
-	lineByteOffset := 0
-	columnByteOffset := 0
-	column := int32(0)
-
-	// Preallocate the top-level table using the approximate line count from the lexer
-	lineOffsetTables := make([]LineOffsetTable, 0, approximateLineCount)
-
-	for i, c := range contents {
-		// Mark the start of the next line
-		if column == 0 {
-			lineByteOffset = i
-		}
-
-		// Start the mapping if this character is non-ASCII
-		if c > 0x7F && columnsForNonASCII == nil {
-			columnByteOffset = i - lineByteOffset
-			byteOffsetToFirstNonASCII = int32(columnByteOffset)
-			columnsForNonASCII = []int32{}
-		}
-
-		// Update the per-byte column offsets
-		if columnsForNonASCII != nil {
-			for lineBytesSoFar := i - lineByteOffset; columnByteOffset <= lineBytesSoFar; columnByteOffset++ {
-				columnsForNonASCII = append(columnsForNonASCII, column)
-			}
-		}
-
-		switch c {
-		case '\r', '\n', '\u2028', '\u2029':
-			// Handle Windows-specific "\r\n" newlines
-			if c == '\r' && i+1 < len(contents) && contents[i+1] == '\n' {
-				column++
-				continue
-			}
-
-			lineOffsetTables = append(lineOffsetTables, LineOffsetTable{
-				byteOffsetToStartOfLine:   int32(lineByteOffset),
-				byteOffsetToFirstNonASCII: byteOffsetToFirstNonASCII,
-				columnsForNonASCII:        columnsForNonASCII,
-			})
-			columnByteOffset = 0
-			byteOffsetToFirstNonASCII = 0
-			columnsForNonASCII = nil
-			column = 0
-
-		default:
-			// Mozilla's "source-map" library counts columns using UTF-16 code units
-			if c <= 0xFFFF {
-				column++
-			} else {
-				column += 2
-			}
-		}
-	}
-
-	// Mark the start of the next line
-	if column == 0 {
-		lineByteOffset = len(contents)
-	}
-
-	// Do one last update for the column at the end of the file
-	if columnsForNonASCII != nil {
-		for lineBytesSoFar := len(contents) - lineByteOffset; columnByteOffset <= lineBytesSoFar; columnByteOffset++ {
-			columnsForNonASCII = append(columnsForNonASCII, column)
-		}
-	}
-
-	lineOffsetTables = append(lineOffsetTables, LineOffsetTable{
-		byteOffsetToStartOfLine:   int32(lineByteOffset),
-		byteOffsetToFirstNonASCII: byteOffsetToFirstNonASCII,
-		columnsForNonASCII:        columnsForNonASCII,
-	})
-	return lineOffsetTables
-}
-
-func (p *printer) appendMapping(currentState SourceMapState) {
-	// If the input file had a source map, map all the way back to the original
-	if p.options.InputSourceMap != nil {
-		mapping := p.options.InputSourceMap.Find(
-			int32(currentState.OriginalLine),
-			int32(currentState.OriginalColumn))
-
-		// Some locations won't have a mapping
-		if mapping == nil {
-			return
-		}
-
-		currentState.SourceIndex = int(mapping.SourceIndex)
-		currentState.OriginalLine = int(mapping.OriginalLine)
-		currentState.OriginalColumn = int(mapping.OriginalColumn)
-	}
-
-	p.appendMappingWithoutRemapping(currentState)
-}
-
-func (p *printer) appendMappingWithoutRemapping(currentState SourceMapState) {
-	var lastByte byte
-	if len(p.sourceMap) != 0 {
-		lastByte = p.sourceMap[len(p.sourceMap)-1]
-	}
-
-	p.sourceMap = appendMapping(p.sourceMap, lastByte, p.prevState, currentState)
-	p.prevState = currentState
-	p.hasPrevState = true
 }
 
 func (p *printer) printIndent() {
@@ -827,19 +550,19 @@ func (p *printer) printClauseAlias(alias string) {
 // JavaScript language target that we support.
 
 func CanEscapeIdentifier(name string, unsupportedJSFeatures compat.JSFeature, asciiOnly bool) bool {
-	return js_lexer.IsIdentifierES5(name) && (!asciiOnly ||
+	return js_lexer.IsIdentifierES5AndESNext(name) && (!asciiOnly ||
 		!unsupportedJSFeatures.Has(compat.UnicodeEscapes) ||
 		!js_lexer.ContainsNonBMPCodePoint(name))
 }
 
 func (p *printer) canPrintIdentifier(name string) bool {
-	return js_lexer.IsIdentifierES5(name) && (!p.options.ASCIIOnly ||
+	return js_lexer.IsIdentifierES5AndESNext(name) && (!p.options.ASCIIOnly ||
 		!p.options.UnsupportedFeatures.Has(compat.UnicodeEscapes) ||
 		!js_lexer.ContainsNonBMPCodePoint(name))
 }
 
 func (p *printer) canPrintIdentifierUTF16(name []uint16) bool {
-	return js_lexer.IsIdentifierES5UTF16(name) && (!p.options.ASCIIOnly ||
+	return js_lexer.IsIdentifierES5AndESNextUTF16(name) && (!p.options.ASCIIOnly ||
 		!p.options.UnsupportedFeatures.Has(compat.UnicodeEscapes) ||
 		!js_lexer.ContainsNonBMPCodePointUTF16(name))
 }
@@ -855,7 +578,7 @@ func (p *printer) printIdentifier(name string) {
 // This is the same as "printIdentifier(StringToUTF16(bytes))" without any
 // unnecessary temporary allocations
 func (p *printer) printIdentifierUTF16(name []uint16) {
-	temp := make([]byte, utf8.UTFMax)
+	var temp [utf8.UTFMax]byte
 	n := len(name)
 
 	for i := 0; i < n; i++ {
@@ -879,7 +602,7 @@ func (p *printer) printIdentifierUTF16(name []uint16) {
 			continue
 		}
 
-		width := utf8.EncodeRune(temp, c)
+		width := utf8.EncodeRune(temp[:], c)
 		p.js = append(p.js, temp[:width]...)
 	}
 }
@@ -1135,6 +858,15 @@ func (p *printer) printClass(class js_ast.Class) {
 	for _, item := range class.Properties {
 		p.printSemicolonIfNeeded()
 		p.printIndent()
+
+		if item.Kind == js_ast.PropertyClassStaticBlock {
+			p.print("static")
+			p.printSpace()
+			p.printBlock(item.ClassStaticBlock.Loc, item.ClassStaticBlock.Stmts)
+			p.printNewline()
+			continue
+		}
+
 		p.printProperty(item)
 
 		// Need semicolons after class fields
@@ -2134,7 +1866,7 @@ func (p *printer) printExpr(expr js_ast.Expr, level js_ast.L, flags printExprFla
 
 		if n > 0 {
 			// Avoid forming a single-line comment or "</script" sequence
-			if last := buffer[n-1]; last == '/' || (last == '<' && strings.HasPrefix(e.Value, "/script")) {
+			if last := buffer[n-1]; last == '/' || (last == '<' && len(e.Value) >= 7 && strings.EqualFold(e.Value[:7], "/script")) {
 				p.print(" ")
 			}
 		}
@@ -2155,15 +1887,27 @@ func (p *printer) printExpr(expr js_ast.Expr, level js_ast.L, flags printExprFla
 		if value != value {
 			p.printSpaceBeforeIdentifier()
 			p.print("NaN")
-		} else if value == positiveInfinity {
-			p.printSpaceBeforeIdentifier()
-			p.print("Infinity")
-		} else if value == negativeInfinity {
-			if level >= js_ast.LPrefix {
-				p.print("(-Infinity)")
-			} else {
+		} else if value == positiveInfinity || value == negativeInfinity {
+			wrap := (p.options.MangleSyntax && level >= js_ast.LMultiply) ||
+				(value == negativeInfinity && level >= js_ast.LPrefix)
+			if wrap {
+				p.print("(")
+			}
+			if value == negativeInfinity {
 				p.printSpaceBeforeOperator(js_ast.UnOpNeg)
-				p.print("-Infinity")
+				p.print("-")
+			} else {
+				p.printSpaceBeforeIdentifier()
+			}
+			if !p.options.MangleSyntax {
+				p.print("Infinity")
+			} else if p.options.RemoveWhitespace {
+				p.print("1/0")
+			} else {
+				p.print("1 / 0")
+			}
+			if wrap {
+				p.print(")")
 			}
 		} else {
 			if !math.Signbit(value) {
@@ -2748,7 +2492,7 @@ func (p *printer) printIf(s *js_ast.SIf) {
 
 func (p *printer) printIndentedComment(text string) {
 	// Avoid generating a comment containing the character sequence "</script"
-	text = strings.ReplaceAll(text, "</script", "<\\/script")
+	text = helpers.EscapeClosingTag(text, "/script")
 
 	if strings.HasPrefix(text, "/*") {
 		// Re-indent multi-line comments
@@ -3413,15 +3157,6 @@ func (p *printer) printStmt(stmt js_ast.Stmt) {
 	}
 }
 
-func (p *printer) shouldIgnoreSourceMap() bool {
-	for _, c := range p.sourceMap {
-		if c != ';' {
-			return false
-		}
-	}
-	return true
-}
-
 type Options struct {
 	OutputFormat                 config.Format
 	RemoveWhitespace             bool
@@ -3437,7 +3172,7 @@ type Options struct {
 
 	// If we're writing out a source map, this table of line start indices lets
 	// us do binary search on to figure out what line a given AST node came from
-	LineOffsetTables []LineOffsetTable
+	LineOffsetTables []sourcemap.LineOffsetTable
 
 	// This will be present if the input file had a source map. In that case we
 	// want to map all the way back to the original input file(s).
@@ -3453,28 +3188,13 @@ type RequireOrImportMeta struct {
 	IsWrapperAsync bool
 }
 
-type SourceMapChunk struct {
-	Buffer []byte
-
-	// This end state will be used to rewrite the start of the following source
-	// map chunk so that the delta-encoded VLQ numbers are preserved.
-	EndState SourceMapState
-
-	// There probably isn't a source mapping at the end of the file (nor should
-	// there be) but if we're appending another source map chunk after this one,
-	// we'll need to know how many characters were in the last line we generated.
-	FinalGeneratedColumn int
-
-	ShouldIgnore bool
-}
-
 type PrintResult struct {
 	JS []byte
 
 	// This source map chunk just contains the VLQ-encoded offsets for the "JS"
 	// field above. It's not a full source map. The bundler will be joining many
 	// source map chunks together to form the final source map.
-	SourceMapChunk SourceMapChunk
+	SourceMapChunk sourcemap.Chunk
 
 	ExtractedLegalComments map[string]bool
 }
@@ -3496,6 +3216,7 @@ func Print(tree js_ast.AST, symbols js_ast.SymbolMap, r renamer.Renamer, options
 		prevRegExpEnd:                  -1,
 		prevLoc:                        logger.Loc{Start: -1},
 		lineOffsetTables:               options.LineOffsetTables,
+		builder:                        sourcemap.MakeChunkBuilder(options.InputSourceMap, options.LineOffsetTables),
 
 		// We automatically repeat the previous source mapping if we ever generate
 		// a line that doesn't start with a mapping. This helps give files more
@@ -3525,16 +3246,9 @@ func Print(tree js_ast.AST, symbols js_ast.SymbolMap, r renamer.Renamer, options
 		}
 	}
 
-	p.updateGeneratedLineAndColumn()
-
 	return PrintResult{
 		JS:                     p.js,
 		ExtractedLegalComments: p.extractedLegalComments,
-		SourceMapChunk: SourceMapChunk{
-			Buffer:               p.sourceMap,
-			EndState:             p.prevState,
-			FinalGeneratedColumn: p.generatedColumn,
-			ShouldIgnore:         p.shouldIgnoreSourceMap(),
-		},
+		SourceMapChunk:         p.builder.GenerateChunk(p.js),
 	}
 }

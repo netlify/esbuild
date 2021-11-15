@@ -6,12 +6,10 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash"
-	"math/rand"
 	"path"
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/evanw/esbuild/internal/ast"
 	"github.com/evanw/esbuild/internal/compat"
@@ -55,10 +53,7 @@ type linkerContext struct {
 	// is shared between threads and must be treated as immutable.
 	dataForSourceMaps func() []dataForSourceMap
 
-	// The unique key prefix is a random string that is unique to every linking
-	// operation. It is used as a prefix for the unique keys assigned to every
-	// chunk. These unique keys are used to identify each chunk before the final
-	// output paths have been computed.
+	// This is passed to us from the bundling phase
 	uniqueKeyPrefix      string
 	uniqueKeyPrefixBytes []byte // This is just "uniqueKeyPrefix" in byte form
 }
@@ -122,6 +117,14 @@ type chunkImport struct {
 	importKind ast.ImportKind
 }
 
+type outputPieceIndexKind uint8
+
+const (
+	outputPieceNone outputPieceIndexKind = iota
+	outputPieceAssetIndex
+	outputPieceChunkIndex
+)
+
 // This is a chunk of source code followed by a reference to another chunk. For
 // example, the file "@import 'CHUNK0001'; body { color: black; }" would be
 // represented by two pieces, one with the data "@import '" and another with the
@@ -130,9 +133,11 @@ type chunkImport struct {
 type outputPiece struct {
 	data []byte
 
-	// Note: This may be invalid. For example, the chunk may not contain any
-	// imports, in which case there is one piece with data and no chunk index.
-	chunkIndex ast.Index32
+	// Note: The "kind" may be "outputPieceNone" in which case there is one piece
+	// with data and no chunk index. For example, the chunk may not contain any
+	// imports.
+	index uint32
+	kind  outputPieceIndexKind
 }
 
 type intermediateOutput struct {
@@ -207,6 +212,7 @@ func link(
 	res resolver.Resolver,
 	inputFiles []graph.InputFile,
 	entryPoints []graph.EntryPoint,
+	uniqueKeyPrefix string,
 	reachableFiles []uint32,
 	dataForSourceMaps func() []dataForSourceMap,
 ) []graph.OutputFile {
@@ -217,12 +223,14 @@ func link(
 
 	timer.Begin("Clone linker graph")
 	c := linkerContext{
-		options:           options,
-		timer:             timer,
-		log:               log,
-		fs:                fs,
-		res:               res,
-		dataForSourceMaps: dataForSourceMaps,
+		options:              options,
+		timer:                timer,
+		log:                  log,
+		fs:                   fs,
+		res:                  res,
+		dataForSourceMaps:    dataForSourceMaps,
+		uniqueKeyPrefix:      uniqueKeyPrefix,
+		uniqueKeyPrefixBytes: []byte(uniqueKeyPrefix),
 		graph: graph.CloneLinkerGraph(
 			inputFiles,
 			reachableFiles,
@@ -271,9 +279,6 @@ func link(
 		c.unboundModuleRef = js_ast.InvalidRef
 	}
 
-	if !c.generateUniqueKeyPrefix() {
-		return nil
-	}
 	c.scanImportsAndExports()
 
 	// Stop now if there were errors
@@ -297,20 +302,6 @@ func link(
 	js_ast.FollowAllSymbols(c.graph.Symbols)
 
 	return c.generateChunksInParallel(chunks)
-}
-
-func (c *linkerContext) generateUniqueKeyPrefix() bool {
-	var data [12]byte
-	rand.Seed(time.Now().UnixNano())
-	if _, err := rand.Read(data[:]); err != nil {
-		c.log.AddError(nil, logger.Loc{}, fmt.Sprintf("Failed to read from randomness source: %s", err.Error()))
-		return false
-	}
-
-	// This is 16 bytes and shouldn't generate escape characters when put into strings
-	c.uniqueKeyPrefix = base64.URLEncoding.EncodeToString(data[:])
-	c.uniqueKeyPrefixBytes = []byte(c.uniqueKeyPrefix)
-	return true
 }
 
 // Currently the automatic chunk generation algorithm should by construction
@@ -404,16 +395,21 @@ func (c *linkerContext) generateChunksInParallel(chunks []chunkInfo) []graph.Out
 
 			// Each file may optionally contain additional files to be copied to the
 			// output directory. This is used by the "file" loader.
+			var commentPrefix string
+			var commentSuffix string
 			switch chunkRepr := chunk.chunkRepr.(type) {
 			case *chunkReprJS:
 				for _, sourceIndex := range chunkRepr.filesInChunkInOrder {
 					outputFiles = append(outputFiles, c.graph.Files[sourceIndex].InputFile.AdditionalFiles...)
 				}
+				commentPrefix = "//"
 
 			case *chunkReprCSS:
 				for _, sourceIndex := range chunkRepr.filesInChunkInOrder {
 					outputFiles = append(outputFiles, c.graph.Files[sourceIndex].InputFile.AdditionalFiles...)
 				}
+				commentPrefix = "/*"
+				commentSuffix = " */"
 			}
 
 			// Path substitution for the chunk itself
@@ -457,14 +453,18 @@ func (c *linkerContext) generateChunksInParallel(chunks []chunkInfo) []graph.Out
 					importPath := c.pathBetweenChunks(finalRelDir, finalRelPathForSourceMap)
 					importPath = strings.TrimPrefix(importPath, "./")
 					outputContentsJoiner.EnsureNewlineAtEnd()
-					outputContentsJoiner.AddString("//# sourceMappingURL=")
+					outputContentsJoiner.AddString(commentPrefix)
+					outputContentsJoiner.AddString("# sourceMappingURL=")
 					outputContentsJoiner.AddString(importPath)
+					outputContentsJoiner.AddString(commentSuffix)
 					outputContentsJoiner.AddString("\n")
 
 				case config.SourceMapInline, config.SourceMapInlineAndExternal:
 					outputContentsJoiner.EnsureNewlineAtEnd()
-					outputContentsJoiner.AddString("//# sourceMappingURL=data:application/json;base64,")
+					outputContentsJoiner.AddString(commentPrefix)
+					outputContentsJoiner.AddString("# sourceMappingURL=data:application/json;base64,")
 					outputContentsJoiner.AddString(base64.StdEncoding.EncodeToString(outputSourceMap))
+					outputContentsJoiner.AddString(commentSuffix)
 					outputContentsJoiner.AddString("\n")
 				}
 
@@ -546,8 +546,25 @@ func (c *linkerContext) substituteFinalPaths(
 		shift.Before.Add(dataOffset)
 		shift.After.Add(dataOffset)
 
-		if piece.chunkIndex.IsValid() {
-			chunk := chunks[piece.chunkIndex.GetIndex()]
+		switch piece.kind {
+		case outputPieceAssetIndex:
+			file := c.graph.Files[piece.index]
+			if len(file.InputFile.AdditionalFiles) != 1 {
+				panic("Internal error")
+			}
+			relPath, _ := c.fs.Rel(c.options.AbsOutputDir, file.InputFile.AdditionalFiles[0].AbsPath)
+
+			// Make sure to always use forward slashes, even on Windows
+			relPath = strings.ReplaceAll(relPath, "\\", "/")
+
+			importPath := modifyPath(relPath)
+			j.AddString(importPath)
+			shift.Before.AdvanceString(file.InputFile.UniqueKeyForFileLoader)
+			shift.After.AdvanceString(importPath)
+			shifts = append(shifts, shift)
+
+		case outputPieceChunkIndex:
+			chunk := chunks[piece.index]
 			importPath := modifyPath(chunk.finalRelPath)
 			j.AddString(importPath)
 			shift.Before.AdvanceString(chunk.uniqueKey)
@@ -588,49 +605,25 @@ func (c *linkerContext) pathBetweenChunks(fromRelDir string, toRelPath string) s
 // Returns the path of this file relative to "outbase", which is then ready to
 // be joined with the absolute output directory path. The directory and name
 // components are returned separately for convenience.
-//
-// This makes sure to have the directory end in a slash so that it can be
-// substituted into a path template without necessarily having a "/" after it.
-// Extra slashes should get cleaned up automatically when we join it with the
-// output directory.
-func (c *linkerContext) pathRelativeToOutbase(
-	sourceIndex uint32,
-	entryPointBit uint,
+func pathRelativeToOutbase(
+	inputFile *graph.InputFile,
+	options *config.Options,
+	fs fs.FS,
 	stdExt string,
 	avoidIndex bool,
+	customFilePath string,
 ) (relDir string, baseName string, baseExt string) {
-	file := &c.graph.Files[sourceIndex]
 	relDir = "/"
 	baseExt = stdExt
+	absPath := inputFile.Source.KeyPath.Text
 
-	// If the output path was configured explicitly, use it verbatim
-	if c.options.AbsOutputFile != "" {
-		baseName = c.fs.Base(c.options.AbsOutputFile)
-
-		// Strip off the extension
-		ext := c.fs.Ext(baseName)
-		baseName = baseName[:len(baseName)-len(ext)]
-
-		// Use the extension from the explicit output file path. However, don't do
-		// that if this is a CSS chunk but the entry point file is not CSS. In that
-		// case use the standard extension. This happens when importing CSS into JS.
-		if _, ok := file.InputFile.Repr.(*graph.CSSRepr); ok || stdExt != c.options.OutputExtensionCSS {
-			baseExt = ext
-		}
-		return
-	}
-
-	absPath := file.InputFile.Source.KeyPath.Text
-	isCustomOutputPath := false
-
-	if outPath := c.graph.EntryPoints()[entryPointBit].OutputPath; outPath != "" {
+	if customFilePath != "" {
 		// Use the configured output path if present
-		absPath = outPath
-		if !c.fs.IsAbs(absPath) {
-			absPath = c.fs.Join(c.options.AbsOutputBase, absPath)
+		absPath = customFilePath
+		if !fs.IsAbs(absPath) {
+			absPath = fs.Join(options.AbsOutputBase, absPath)
 		}
-		isCustomOutputPath = true
-	} else if file.InputFile.Source.KeyPath.Namespace != "file" {
+	} else if inputFile.Source.KeyPath.Namespace != "file" {
 		// Come up with a path for virtual paths (i.e. non-file-system paths)
 		dir, base, _ := logger.PlatformIndependentPathDirBaseExt(absPath)
 		if avoidIndex && base == "index" {
@@ -645,24 +638,24 @@ func (c *linkerContext) pathRelativeToOutbase(
 		// dynamically-importing npm packages that make use of node's implicit
 		// "index" file name feature.
 		if avoidIndex {
-			base := c.fs.Base(absPath)
-			base = base[:len(base)-len(c.fs.Ext(base))]
+			base := fs.Base(absPath)
+			base = base[:len(base)-len(fs.Ext(base))]
 			if base == "index" {
-				absPath = c.fs.Dir(absPath)
+				absPath = fs.Dir(absPath)
 			}
 		}
 	}
 
 	// Try to get a relative path to the base directory
-	relPath, ok := c.fs.Rel(c.options.AbsOutputBase, absPath)
+	relPath, ok := fs.Rel(options.AbsOutputBase, absPath)
 	if !ok {
 		// This can fail in some situations such as on different drives on
 		// Windows. In that case we just use the file name.
-		baseName = c.fs.Base(absPath)
+		baseName = fs.Base(absPath)
 	} else {
 		// Now we finally have a relative path
-		relDir = c.fs.Dir(relPath) + "/"
-		baseName = c.fs.Base(relPath)
+		relDir = fs.Dir(relPath) + "/"
+		baseName = fs.Base(relPath)
 
 		// Use platform-independent slashes
 		relDir = strings.ReplaceAll(relDir, "\\", "/")
@@ -686,12 +679,18 @@ func (c *linkerContext) pathRelativeToOutbase(
 			// with a "." means that it will not be hidden on Unix.
 			relDir = strings.Repeat("_.._/", dotDotCount) + relDir[dotDotCount*3:]
 		}
+		for strings.HasSuffix(relDir, "/") {
+			relDir = relDir[:len(relDir)-1]
+		}
 		relDir = "/" + relDir
+		if strings.HasSuffix(relDir, "/.") {
+			relDir = relDir[:len(relDir)-1]
+		}
 	}
 
 	// Strip the file extension if the output path is an input file
-	if !isCustomOutputPath {
-		ext := c.fs.Ext(baseName)
+	if customFilePath == "" {
+		ext := fs.Ext(baseName)
 		baseName = baseName[:len(baseName)-len(ext)]
 	}
 	return
@@ -1066,7 +1065,8 @@ func (a stableRefArray) Len() int          { return len(a) }
 func (a stableRefArray) Swap(i int, j int) { a[i], a[j] = a[j], a[i] }
 func (a stableRefArray) Less(i int, j int) bool {
 	ai, aj := a[i], a[j]
-	return ai.StableSourceIndex < aj.StableSourceIndex || (ai.StableSourceIndex == aj.StableSourceIndex && ai.Ref.InnerIndex < aj.Ref.InnerIndex)
+	return ai.StableSourceIndex < aj.StableSourceIndex ||
+		(ai.StableSourceIndex == aj.StableSourceIndex && ai.Ref.InnerIndex < aj.Ref.InnerIndex)
 }
 
 // Sort cross-chunk exports by chunk name for determinism
@@ -2572,8 +2572,6 @@ func (c *linkerContext) markFileLiveForTreeShaking(sourceIndex uint32) {
 
 	switch repr := file.InputFile.Repr.(type) {
 	case *graph.JSRepr:
-		isTreeShakingEnabled := config.IsTreeShakingEnabled(c.options.Mode, c.options.OutputFormat)
-
 		// If the JavaScript stub for a CSS file is included, also include the CSS file
 		if repr.CSSSourceIndex.IsValid() {
 			c.markFileLiveForTreeShaking(repr.CSSSourceIndex.GetIndex())
@@ -2610,7 +2608,7 @@ func (c *linkerContext) markFileLiveForTreeShaking(sourceIndex uint32) {
 			// Include all parts in this file with side effects, or just include
 			// everything if tree-shaking is disabled. Note that we still want to
 			// perform tree-shaking on the runtime even if tree-shaking is disabled.
-			if !canBeRemovedIfUnused || (!part.ForceTreeShaking && !isTreeShakingEnabled && file.IsEntryPoint()) {
+			if !canBeRemovedIfUnused || (!part.ForceTreeShaking && !c.options.TreeShaking && file.IsEntryPoint()) {
 				c.markPartLiveForTreeShaking(sourceIndex, uint32(partIndex))
 			}
 		}
@@ -2795,7 +2793,7 @@ func (c *linkerContext) findImportedFilesInCSSOrder(entryPoints []uint32) (exter
 			// Iterate in the inverse order of top-level "@import" rules
 		outer:
 			for i := len(topLevelRules) - 1; i >= 0; i-- {
-				if atImport, ok := topLevelRules[i].(*css_ast.RAtImport); ok {
+				if atImport, ok := topLevelRules[i].Data.(*css_ast.RAtImport); ok {
 					if record := &repr.AST.ImportRecords[atImport.ImportRecordIndex]; record.SourceIndex.IsValid() {
 						// Follow internal dependencies
 						visit(record.SourceIndex.GetIndex(), ast.MakeIndex32(sourceIndex))
@@ -2989,7 +2987,7 @@ func (c *linkerContext) computeChunks() []chunkInfo {
 		// Assign a unique key to each chunk. This key encodes the index directly so
 		// we can easily recover it later without needing to look it up in a map. The
 		// last 8 numbers of the key are the chunk index.
-		chunk.uniqueKey = fmt.Sprintf("%s%08d", c.uniqueKeyPrefix, chunkIndex)
+		chunk.uniqueKey = fmt.Sprintf("%sC%08d", c.uniqueKeyPrefix, chunkIndex)
 
 		// Determine the standard file extension
 		var stdExt string
@@ -3004,12 +3002,39 @@ func (c *linkerContext) computeChunks() []chunkInfo {
 		var dir, base, ext string
 		var template []config.PathTemplate
 		if chunk.isEntryPoint {
-			if c.graph.Files[chunk.sourceIndex].IsUserSpecifiedEntryPoint() {
-				dir, base, ext = c.pathRelativeToOutbase(chunk.sourceIndex, chunk.entryPointBit, stdExt, false /* avoidIndex */)
+			// Only use the entry path template for user-specified entry points
+			file := &c.graph.Files[chunk.sourceIndex]
+			if file.IsUserSpecifiedEntryPoint() {
 				template = c.options.EntryPathTemplate
 			} else {
-				dir, base, ext = c.pathRelativeToOutbase(chunk.sourceIndex, chunk.entryPointBit, stdExt, true /* avoidIndex */)
 				template = c.options.ChunkPathTemplate
+			}
+
+			if c.options.AbsOutputFile != "" {
+				// If the output path was configured explicitly, use it verbatim
+				dir = "/"
+				base = c.fs.Base(c.options.AbsOutputFile)
+				originalExt := c.fs.Ext(base)
+				base = base[:len(base)-len(originalExt)]
+
+				// Use the extension from the explicit output file path. However, don't do
+				// that if this is a CSS chunk but the entry point file is not CSS. In that
+				// case use the standard extension. This happens when importing CSS into JS.
+				if _, ok := file.InputFile.Repr.(*graph.CSSRepr); ok || stdExt != c.options.OutputExtensionCSS {
+					ext = originalExt
+				} else {
+					ext = stdExt
+				}
+			} else {
+				// Otherwise, derive the output path from the input path
+				dir, base, ext = pathRelativeToOutbase(
+					&c.graph.Files[chunk.sourceIndex].InputFile,
+					c.options,
+					c.fs,
+					stdExt,
+					!file.IsUserSpecifiedEntryPoint(),
+					c.graph.EntryPoints()[chunk.entryPointBit].OutputPath,
+				)
 			}
 		} else {
 			dir = "/"
@@ -3306,7 +3331,7 @@ func (c *linkerContext) convertStmtsForChunk(sourceIndex uint32, stmtList *stmtL
 					// Turn this statement into "import * as ns from 'path'"
 					stmt.Data = &js_ast.SImport{
 						NamespaceRef:      s.NamespaceRef,
-						StarNameLoc:       &stmt.Loc,
+						StarNameLoc:       &logger.Loc{Start: stmt.Loc.Start},
 						ImportRecordIndex: s.ImportRecordIndex,
 					}
 
@@ -3734,7 +3759,7 @@ func (c *linkerContext) generateCodeForFileInChunkJS(
 	// Only generate a source map if needed
 	var addSourceMappings bool
 	var inputSourceMap *sourcemap.SourceMap
-	var lineOffsetTables []js_printer.LineOffsetTable
+	var lineOffsetTables []sourcemap.LineOffsetTable
 	if file.InputFile.Loader.CanHaveSourceMap() && c.options.SourceMap != config.SourceMapNone {
 		addSourceMappings = true
 		inputSourceMap = file.InputFile.InputSourceMap
@@ -4267,7 +4292,7 @@ func (c *linkerContext) renameSymbolsInChunk(chunk *chunkInfo, filesInOrder []ui
 		//
 		//   // foo.js
 		//   var foo, foo_exports = {};
-		//   __exports(foo_exports, {
+		//   __export(foo_exports, {
 		//     foo: () => foo
 		//   });
 		//   let init_foo = __esm(() => {
@@ -4535,7 +4560,7 @@ func (c *linkerContext) generateChunkJS(chunks []chunkInfo, chunkIndex int, chun
 	}
 
 	// Concatenate the generated JavaScript chunks together
-	var compileResultsForSourceMap []compileResultJS
+	var compileResultsForSourceMap []compileResultForSourceMap
 	var legalCommentList []string
 	var metaOrder []uint32
 	var metaByteCount map[string]int
@@ -4595,7 +4620,11 @@ func (c *linkerContext) generateChunkJS(chunks []chunkInfo, chunkIndex int, chun
 
 				// Include this file in the source map
 				if c.options.SourceMap != config.SourceMapNone {
-					compileResultsForSourceMap = append(compileResultsForSourceMap, compileResult)
+					compileResultsForSourceMap = append(compileResultsForSourceMap, compileResultForSourceMap{
+						sourceMapChunk:  compileResult.SourceMapChunk,
+						generatedOffset: compileResult.generatedOffset,
+						sourceIndex:     compileResult.sourceIndex,
+					})
 				}
 			}
 
@@ -4638,31 +4667,7 @@ func (c *linkerContext) generateChunkJS(chunks []chunkInfo, chunkIndex int, chun
 
 	// Make sure the file ends with a newline
 	j.EnsureNewlineAtEnd()
-
-	// Add all unique license comments to the end of the file. These are
-	// deduplicated because some projects have thousands of files with the same
-	// comment. The comment must be preserved in the output for legal reasons but
-	// at the same time we want to generate a small bundle when minifying.
-	if len(legalCommentList) > 0 {
-		sort.Strings(legalCommentList)
-
-		switch c.options.LegalComments {
-		case config.LegalCommentsEndOfFile:
-			for _, text := range legalCommentList {
-				j.AddString(text)
-				j.AddString("\n")
-			}
-
-		case config.LegalCommentsLinkedWithComment,
-			config.LegalCommentsExternalWithoutComment:
-			jComments := helpers.Joiner{}
-			for _, text := range legalCommentList {
-				jComments.AddString(text)
-				jComments.AddString("\n")
-			}
-			chunk.externalLegalComments = jComments.Done()
-		}
-	}
+	maybeAppendLegalComments(c.options.LegalComments, legalCommentList, chunk, &j, "/script")
 
 	if len(c.options.JSFooter) > 0 {
 		j.AddString(c.options.JSFooter)
@@ -4747,9 +4752,15 @@ func (c *linkerContext) generateGlobalNamePrefix() string {
 }
 
 type compileResultCSS struct {
-	printedCSS  string
+	css_printer.PrintResult
+
 	sourceIndex uint32
-	hasCharset  bool
+
+	// This is the line and column offset since the previous CSS string
+	// or the start of the file if this is the first CSS string.
+	generatedOffset sourcemap.LineColumnOffset
+
+	hasCharset bool
 }
 
 func (c *linkerContext) generateChunkCSS(chunks []chunkInfo, chunkIndex int, chunkWaitGroup *sync.WaitGroup) {
@@ -4764,26 +4775,35 @@ func (c *linkerContext) generateChunkCSS(chunks []chunkInfo, chunkIndex int, chu
 	}
 
 	chunkRepr := chunk.chunkRepr.(*chunkReprCSS)
-	compileResults := make([]compileResultCSS, 0, len(chunkRepr.filesInChunkInOrder))
+	compileResults := make([]compileResultCSS, len(chunkRepr.filesInChunkInOrder))
+	dataForSourceMaps := c.dataForSourceMaps()
+
+	// Note: This contains placeholders instead of what the placeholders are
+	// substituted with. That should be fine though because this should only
+	// ever be used for figuring out how many "../" to add to a relative path
+	// from a chunk whose final path hasn't been calculated yet to a chunk
+	// whose final path has already been calculated. That and placeholders are
+	// never substituted with something containing a "/" so substitution should
+	// never change the "../" count.
+	chunkAbsDir := c.fs.Dir(c.fs.Join(c.options.AbsOutputDir, config.TemplateToString(chunk.finalTemplate)))
 
 	// Generate CSS for each file in parallel
 	timer.Begin("Print CSS files")
 	waitGroup := sync.WaitGroup{}
-	for _, sourceIndex := range chunkRepr.filesInChunkInOrder {
+	for i, sourceIndex := range chunkRepr.filesInChunkInOrder {
 		// Create a goroutine for this file
-		compileResults = append(compileResults, compileResultCSS{})
-		compileResult := &compileResults[len(compileResults)-1]
 		waitGroup.Add(1)
 		go func(sourceIndex uint32, compileResult *compileResultCSS) {
 			file := &c.graph.Files[sourceIndex]
 			ast := file.InputFile.Repr.(*graph.CSSRepr).AST
 
 			// Filter out "@charset" and "@import" rules
-			rules := make([]css_ast.R, 0, len(ast.Rules))
+			rules := make([]css_ast.Rule, 0, len(ast.Rules))
+			hasCharset := false
 			for _, rule := range ast.Rules {
-				switch rule.(type) {
+				switch rule.Data.(type) {
 				case *css_ast.RAtCharset:
-					compileResult.hasCharset = true
+					hasCharset = true
 					continue
 				case *css_ast.RAtImport:
 					continue
@@ -4792,23 +4812,44 @@ func (c *linkerContext) generateChunkCSS(chunks []chunkInfo, chunkIndex int, chu
 			}
 			ast.Rules = rules
 
-			compileResult.printedCSS = css_printer.Print(ast, css_printer.Options{
-				RemoveWhitespace: c.options.RemoveWhitespace,
-				ASCIIOnly:        c.options.ASCIIOnly,
-			})
-			compileResult.sourceIndex = sourceIndex
+			// Only generate a source map if needed
+			var addSourceMappings bool
+			var inputSourceMap *sourcemap.SourceMap
+			var lineOffsetTables []sourcemap.LineOffsetTable
+			if file.InputFile.Loader.CanHaveSourceMap() && c.options.SourceMap != config.SourceMapNone {
+				addSourceMappings = true
+				inputSourceMap = file.InputFile.InputSourceMap
+				lineOffsetTables = dataForSourceMaps[sourceIndex].lineOffsetTables
+			}
+
+			cssOptions := css_printer.Options{
+				RemoveWhitespace:  c.options.RemoveWhitespace,
+				ASCIIOnly:         c.options.ASCIIOnly,
+				LegalComments:     c.options.LegalComments,
+				AddSourceMappings: addSourceMappings,
+				InputSourceMap:    inputSourceMap,
+				LineOffsetTables:  lineOffsetTables,
+			}
+			*compileResult = compileResultCSS{
+				PrintResult: css_printer.Print(ast, cssOptions),
+				sourceIndex: sourceIndex,
+				hasCharset:  hasCharset,
+			}
 			waitGroup.Done()
-		}(sourceIndex, compileResult)
+		}(sourceIndex, &compileResults[i])
 	}
 
 	waitGroup.Wait()
 	timer.End("Print CSS files")
 	timer.Begin("Join CSS files")
 	j := helpers.Joiner{}
+	prevOffset := sourcemap.LineColumnOffset{}
 	newlineBeforeComment := false
 
 	if len(c.options.CSSBanner) > 0 {
+		prevOffset.AdvanceString(c.options.CSSBanner)
 		j.AddString(c.options.CSSBanner)
+		prevOffset.AdvanceString("\n")
 		j.AddString("\n")
 	}
 
@@ -4819,7 +4860,7 @@ func (c *linkerContext) generateChunkCSS(chunks []chunkInfo, chunkIndex int, chu
 		// "@charset" is the only thing that comes before "@import"
 		for _, compileResult := range compileResults {
 			if compileResult.hasCharset {
-				tree.Rules = append(tree.Rules, &css_ast.RAtCharset{Encoding: "UTF-8"})
+				tree.Rules = append(tree.Rules, css_ast.Rule{Data: &css_ast.RAtCharset{Encoding: "UTF-8"}})
 				break
 			}
 		}
@@ -4827,10 +4868,10 @@ func (c *linkerContext) generateChunkCSS(chunks []chunkInfo, chunkIndex int, chu
 		// Insert all external "@import" rules at the front. In CSS, all "@import"
 		// rules must come first or the browser will just ignore them.
 		for _, external := range chunkRepr.externalImportsInOrder {
-			tree.Rules = append(tree.Rules, &css_ast.RAtImport{
+			tree.Rules = append(tree.Rules, css_ast.Rule{Data: &css_ast.RAtImport{
 				ImportRecordIndex: uint32(len(tree.ImportRecords)),
 				ImportConditions:  external.conditions,
-			})
+			}})
 			tree.ImportRecords = append(tree.ImportRecords, ast.ImportRecord{
 				Kind: ast.ImportAt,
 				Path: external.path,
@@ -4838,11 +4879,13 @@ func (c *linkerContext) generateChunkCSS(chunks []chunkInfo, chunkIndex int, chu
 		}
 
 		if len(tree.Rules) > 0 {
-			css := css_printer.Print(tree, css_printer.Options{
+			result := css_printer.Print(tree, css_printer.Options{
 				RemoveWhitespace: c.options.RemoveWhitespace,
+				ASCIIOnly:        c.options.ASCIIOnly,
 			})
-			if len(css) > 0 {
-				j.AddString(css)
+			if len(result.CSS) > 0 {
+				prevOffset.AdvanceBytes(result.CSS)
+				j.AddBytes(result.CSS)
 				newlineBeforeComment = true
 			}
 		}
@@ -4885,17 +4928,49 @@ func (c *linkerContext) generateChunkCSS(chunks []chunkInfo, chunkIndex int, chu
 	isFirstMeta := true
 
 	// Concatenate the generated CSS chunks together
+	var compileResultsForSourceMap []compileResultForSourceMap
+	var legalCommentList []string
+	legalCommentSet := make(map[string]bool)
 	for _, compileResult := range compileResults {
-		if c.options.Mode == config.ModeBundle && !c.options.RemoveWhitespace {
-			if newlineBeforeComment {
-				j.AddString("\n")
+		for text := range compileResult.ExtractedLegalComments {
+			if !legalCommentSet[text] {
+				legalCommentSet[text] = true
+				legalCommentList = append(legalCommentList, text)
 			}
-			j.AddString(fmt.Sprintf("/* %s */\n", c.graph.Files[compileResult.sourceIndex].InputFile.Source.PrettyPath))
 		}
-		if len(compileResult.printedCSS) > 0 {
+
+		if c.options.Mode == config.ModeBundle && !c.options.RemoveWhitespace {
+			var newline string
+			if newlineBeforeComment {
+				newline = "\n"
+			}
+			comment := fmt.Sprintf("%s/* %s */\n", newline, c.graph.Files[compileResult.sourceIndex].InputFile.Source.PrettyPath)
+			prevOffset.AdvanceString(comment)
+			j.AddString(comment)
+		}
+		if len(compileResult.CSS) > 0 {
 			newlineBeforeComment = true
 		}
-		j.AddString(compileResult.printedCSS)
+
+		// Save the offset to the start of the stored JavaScript
+		compileResult.generatedOffset = prevOffset
+		j.AddBytes(compileResult.CSS)
+
+		// Ignore empty source map chunks
+		if compileResult.SourceMapChunk.ShouldIgnore {
+			prevOffset.AdvanceBytes(compileResult.CSS)
+		} else {
+			prevOffset = sourcemap.LineColumnOffset{}
+
+			// Include this file in the source map
+			if c.options.SourceMap != config.SourceMapNone {
+				compileResultsForSourceMap = append(compileResultsForSourceMap, compileResultForSourceMap{
+					sourceMapChunk:  compileResult.SourceMapChunk,
+					generatedOffset: compileResult.generatedOffset,
+					sourceIndex:     compileResult.sourceIndex,
+				})
+			}
+		}
 
 		// Include this file in the metadata
 		if c.options.NeedsMetafile {
@@ -4906,12 +4981,13 @@ func (c *linkerContext) generateChunkCSS(chunks []chunkInfo, chunkIndex int, chu
 			}
 			jMeta.AddString(fmt.Sprintf("\n        %s: {\n          \"bytesInOutput\": %d\n        }",
 				js_printer.QuoteForJSON(c.graph.Files[compileResult.sourceIndex].InputFile.Source.PrettyPath, c.options.ASCIIOnly),
-				len(compileResult.printedCSS)))
+				len(compileResult.CSS)))
 		}
 	}
 
 	// Make sure the file ends with a newline
 	j.EnsureNewlineAtEnd()
+	maybeAppendLegalComments(c.options.LegalComments, legalCommentList, chunk, &j, "/style")
 
 	if len(c.options.CSSFooter) > 0 {
 		j.AddString(c.options.CSSFooter)
@@ -4921,6 +4997,13 @@ func (c *linkerContext) generateChunkCSS(chunks []chunkInfo, chunkIndex int, chu
 	// The CSS contents are done now that the source map comment is in
 	chunk.intermediateOutput = c.breakOutputIntoPieces(j, uint32(len(chunks)))
 	timer.End("Join CSS files")
+
+	if c.options.SourceMap != config.SourceMapNone {
+		timer.Begin("Generate source map")
+		canHaveShifts := chunk.intermediateOutput.pieces != nil
+		chunk.outputSourceMap = c.generateSourceMapForChunk(compileResultsForSourceMap, chunkAbsDir, dataForSourceMaps, canHaveShifts)
+		timer.End("Generate source map")
+	}
 
 	// End the metadata lazily. The final output size is not known until the
 	// final import paths are substituted into the output pieces generated below.
@@ -4936,6 +5019,39 @@ func (c *linkerContext) generateChunkCSS(chunks []chunkInfo, chunkIndex int, chu
 
 	c.generateIsolatedHashInParallel(chunk)
 	chunkWaitGroup.Done()
+}
+
+// Add all unique license comments to the end of the file. These are
+// deduplicated because some projects have thousands of files with the same
+// comment. The comment must be preserved in the output for legal reasons but
+// at the same time we want to generate a small bundle when minifying.
+func maybeAppendLegalComments(
+	legalComments config.LegalComments,
+	legalCommentList []string,
+	chunk *chunkInfo,
+	j *helpers.Joiner,
+	slashTag string,
+) {
+	if len(legalCommentList) > 0 {
+		sort.Strings(legalCommentList)
+
+		switch legalComments {
+		case config.LegalCommentsEndOfFile:
+			for _, text := range legalCommentList {
+				j.AddString(helpers.EscapeClosingTag(text, slashTag))
+				j.AddString("\n")
+			}
+
+		case config.LegalCommentsLinkedWithComment,
+			config.LegalCommentsExternalWithoutComment:
+			jComments := helpers.Joiner{}
+			for _, text := range legalCommentList {
+				jComments.AddString(text)
+				jComments.AddString("\n")
+			}
+			chunk.externalLegalComments = jComments.Done()
+		}
+	}
 }
 
 func appendIsolatedHashesForImportedChunks(
@@ -4976,27 +5092,47 @@ func (c *linkerContext) breakOutputIntoPieces(j helpers.Joiner, chunkCount uint3
 	output := j.Done()
 	prefix := c.uniqueKeyPrefixBytes
 	for {
-		// Scan for the next chunk path
+		// Scan for the next piece boundary
 		boundary := bytes.Index(output, prefix)
 
-		// Try to parse the chunk index
-		var chunkIndex uint32
+		// Try to parse the piece boundary
+		var kind outputPieceIndexKind
+		var index uint32
 		if boundary != -1 {
-			if start := boundary + len(prefix); start+8 > len(output) {
+			if start := boundary + len(prefix); start+9 > len(output) {
 				boundary = -1
 			} else {
-				for j := 0; j < 8; j++ {
+				switch output[start] {
+				case 'A':
+					kind = outputPieceAssetIndex
+				case 'C':
+					kind = outputPieceChunkIndex
+				}
+				for j := 1; j < 9; j++ {
 					c := output[start+j]
 					if c < '0' || c > '9' {
 						boundary = -1
 						break
 					}
-					chunkIndex = chunkIndex*10 + uint32(c) - '0'
+					index = index*10 + uint32(c) - '0'
 				}
 			}
-			if chunkIndex >= chunkCount {
+		}
+
+		// Validate the boundary
+		switch kind {
+		case outputPieceAssetIndex:
+			if index >= uint32(len(c.graph.Files)) {
 				boundary = -1
 			}
+
+		case outputPieceChunkIndex:
+			if index >= chunkCount {
+				boundary = -1
+			}
+
+		default:
+			boundary = -1
 		}
 
 		// If we're at the end, generate one final piece
@@ -5009,10 +5145,11 @@ func (c *linkerContext) breakOutputIntoPieces(j helpers.Joiner, chunkCount uint3
 
 		// Otherwise, generate an interior piece and continue
 		pieces = append(pieces, outputPiece{
-			data:       output[:boundary],
-			chunkIndex: ast.MakeIndex32(chunkIndex),
+			data:  output[:boundary],
+			index: index,
+			kind:  kind,
 		})
-		output = output[boundary+len(prefix)+8:]
+		output = output[boundary+len(prefix)+9:]
 	}
 	return intermediateOutput{pieces: pieces}
 }
@@ -5213,8 +5350,14 @@ func (c *linkerContext) preventExportsFromBeingRenamed(sourceIndex uint32) {
 	}
 }
 
+type compileResultForSourceMap struct {
+	sourceMapChunk  sourcemap.Chunk
+	generatedOffset sourcemap.LineColumnOffset
+	sourceIndex     uint32
+}
+
 func (c *linkerContext) generateSourceMapForChunk(
-	results []compileResultJS,
+	results []compileResultForSourceMap,
 	chunkAbsDir string,
 	dataForSourceMaps []dataForSourceMap,
 	canHaveShifts bool,
@@ -5323,10 +5466,10 @@ func (c *linkerContext) generateSourceMapForChunk(
 
 	// Write the mappings
 	mappingsStart := j.Length()
-	prevEndState := js_printer.SourceMapState{}
+	prevEndState := sourcemap.SourceMapState{}
 	prevColumnOffset := 0
 	for _, result := range results {
-		chunk := result.SourceMapChunk
+		chunk := result.sourceMapChunk
 		offset := result.generatedOffset
 		sourcesIndex := sourceIndexToSourcesIndex[result.sourceIndex]
 
@@ -5342,7 +5485,7 @@ func (c *linkerContext) generateSourceMapForChunk(
 		// index per entry point by modifying the first source mapping. This
 		// is done by AppendSourceMapChunk() using the source index passed
 		// here.
-		startState := js_printer.SourceMapState{
+		startState := sourcemap.SourceMapState{
 			SourceIndex:     sourcesIndex,
 			GeneratedLine:   offset.Lines,
 			GeneratedColumn: offset.Columns,
@@ -5352,7 +5495,7 @@ func (c *linkerContext) generateSourceMapForChunk(
 		}
 
 		// Append the precomputed source map chunk
-		js_printer.AppendSourceMapChunk(&j, prevEndState, startState, chunk.Buffer)
+		sourcemap.AppendSourceMapChunk(&j, prevEndState, startState, chunk.Buffer)
 
 		// Generate the relative offset to start from next time
 		prevEndState = chunk.EndState

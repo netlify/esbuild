@@ -108,7 +108,8 @@ function pushCommonFlags(flags: string[], options: CommonOptions, keys: OptionKe
   let minifyWhitespace = getFlag(options, keys, 'minifyWhitespace', mustBeBoolean);
   let minifyIdentifiers = getFlag(options, keys, 'minifyIdentifiers', mustBeBoolean);
   let charset = getFlag(options, keys, 'charset', mustBeString);
-  let treeShaking = getFlag(options, keys, 'treeShaking', mustBeStringOrBoolean);
+  let treeShaking = getFlag(options, keys, 'treeShaking', mustBeBoolean);
+  let ignoreAnnotations = getFlag(options, keys, 'ignoreAnnotations', mustBeBoolean);
   let jsx = getFlag(options, keys, 'jsx', mustBeString);
   let jsxFactory = getFlag(options, keys, 'jsxFactory', mustBeString);
   let jsxFragment = getFlag(options, keys, 'jsxFragment', mustBeString);
@@ -131,7 +132,8 @@ function pushCommonFlags(flags: string[], options: CommonOptions, keys: OptionKe
   if (minifyWhitespace) flags.push('--minify-whitespace');
   if (minifyIdentifiers) flags.push('--minify-identifiers');
   if (charset) flags.push(`--charset=${charset}`);
-  if (treeShaking !== void 0 && treeShaking !== true) flags.push(`--tree-shaking=${treeShaking}`);
+  if (treeShaking !== void 0) flags.push(`--tree-shaking=${treeShaking}`);
+  if (ignoreAnnotations) flags.push(`--ignore-annotations`);
 
   if (jsx) flags.push(`--jsx=${jsx}`);
   if (jsxFactory) flags.push(`--jsx-factory=${jsxFactory}`);
@@ -413,6 +415,14 @@ export interface StreamService {
     messages: types.PartialMessage[],
     options: types.FormatMessagesOptions,
     callback: (err: Error | null, res: string[] | null) => void,
+  }): void;
+
+  analyzeMetafile(args: {
+    callName: string,
+    refs: Refs | null,
+    metafile: string,
+    options: types.AnalyzeMetafileOptions | undefined,
+    callback: (err: Error | null, res: string | null) => void,
   }): void;
 }
 
@@ -1242,6 +1252,7 @@ export function createChannel(streamIn: StreamIn): StreamOut {
 
     if (write && streamIn.isBrowser) throw new Error(`Cannot enable "write" in the browser`);
     if (incremental && streamIn.isSync) throw new Error(`Cannot use "incremental" with a synchronous build`);
+    if (watch && streamIn.isSync) throw new Error(`Cannot use "watch" with a synchronous build`);
     sendRequest<protocol.BuildRequest, protocol.BuildResponse>(refs, request, (error, response) => {
       if (error) return callback(new Error(error), null);
       if (serve) {
@@ -1380,6 +1391,24 @@ export function createChannel(streamIn: StreamIn): StreamOut {
     });
   };
 
+  let analyzeMetafile: StreamService['analyzeMetafile'] = ({ callName, refs, metafile, options, callback }) => {
+    if (options === void 0) options = {}
+    let keys: OptionKeys = {};
+    let color = getFlag(options, keys, 'color', mustBeBoolean);
+    let verbose = getFlag(options, keys, 'verbose', mustBeBoolean);
+    checkForInvalidFlags(options, keys, `in ${callName}() call`);
+    let request: protocol.AnalyzeMetafileRequest = {
+      command: 'analyze-metafile',
+      metafile,
+    }
+    if (color !== void 0) request.color = color;
+    if (verbose !== void 0) request.verbose = verbose;
+    sendRequest<protocol.AnalyzeMetafileRequest, protocol.AnalyzeMetafileResponse>(refs, request, (error, response) => {
+      if (error) return callback(new Error(error), null);
+      callback(null, response!.result);
+    });
+  };
+
   return {
     readFromStdout,
     afterClose,
@@ -1387,6 +1416,7 @@ export function createChannel(streamIn: StreamIn): StreamOut {
       buildOrServe,
       transform,
       formatMessages,
+      analyzeMetafile,
     },
   };
 }

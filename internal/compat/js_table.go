@@ -52,6 +52,7 @@ const (
 	ClassPrivateStaticAccessor
 	ClassPrivateStaticField
 	ClassPrivateStaticMethod
+	ClassStaticBlocks
 	ClassStaticField
 	Const
 	DefaultArgument
@@ -87,8 +88,9 @@ func (features JSFeature) Has(feature JSFeature) bool {
 
 var jsTable = map[JSFeature]map[Engine][]int{
 	ArbitraryModuleNamespaceNames: {
-		Chrome: {90},
-		Node:   {16},
+		Chrome:  {90},
+		Firefox: {87},
+		Node:    {16},
 	},
 	ArraySpread: {
 		Chrome:  {46},
@@ -156,16 +158,23 @@ var jsTable = map[JSFeature]map[Engine][]int{
 		Chrome:  {84},
 		Edge:    {84},
 		Firefox: {90},
+		IOS:     {15},
 		Node:    {14, 6},
+		Safari:  {15},
 	},
 	ClassPrivateBrandCheck: {
 		Chrome:  {91},
+		Edge:    {91},
 		Firefox: {90},
+		IOS:     {15},
+		Node:    {16, 9},
+		Safari:  {15},
 	},
 	ClassPrivateField: {
 		Chrome:  {84},
 		Edge:    {84},
 		Firefox: {90},
+		IOS:     {15},
 		Node:    {14, 6},
 		Safari:  {14, 1},
 	},
@@ -173,18 +182,23 @@ var jsTable = map[JSFeature]map[Engine][]int{
 		Chrome:  {84},
 		Edge:    {84},
 		Firefox: {90},
+		IOS:     {15},
 		Node:    {14, 6},
+		Safari:  {15},
 	},
 	ClassPrivateStaticAccessor: {
 		Chrome:  {84},
 		Edge:    {84},
 		Firefox: {90},
+		IOS:     {15},
 		Node:    {14, 6},
+		Safari:  {15},
 	},
 	ClassPrivateStaticField: {
 		Chrome:  {74},
 		Edge:    {79},
 		Firefox: {90},
+		IOS:     {15},
 		Node:    {12, 0},
 		Safari:  {14, 1},
 	},
@@ -192,12 +206,19 @@ var jsTable = map[JSFeature]map[Engine][]int{
 		Chrome:  {84},
 		Edge:    {84},
 		Firefox: {90},
+		IOS:     {15},
 		Node:    {14, 6},
+		Safari:  {15},
+	},
+	ClassStaticBlocks: {
+		Chrome: {91},
+		Node:   {16, 11},
 	},
 	ClassStaticField: {
 		Chrome:  {73},
 		Edge:    {79},
 		Firefox: {75},
+		IOS:     {15},
 		Node:    {12, 0},
 		Safari:  {14, 1},
 	},
@@ -312,6 +333,7 @@ var jsTable = map[JSFeature]map[Engine][]int{
 	LogicalAssignment: {
 		Chrome:  {85},
 		Edge:    {85},
+		ES:      {2021},
 		Firefox: {79},
 		IOS:     {14},
 		Node:    {15, 0},
@@ -378,12 +400,12 @@ var jsTable = map[JSFeature]map[Engine][]int{
 		Safari:  {11, 1},
 	},
 	OptionalChain: {
-		Chrome:  {80},
-		Edge:    {80},
+		Chrome:  {91},
+		Edge:    {91},
 		ES:      {2020},
 		Firefox: {74},
 		IOS:     {13, 4},
-		Node:    {14, 0},
+		Node:    {16, 9},
 		Safari:  {13, 1},
 	},
 	RestArgument: {
@@ -405,8 +427,11 @@ var jsTable = map[JSFeature]map[Engine][]int{
 		Safari:  {9},
 	},
 	TopLevelAwait: {
-		Chrome: {89},
-		Node:   {14, 8},
+		Chrome:  {89},
+		Edge:    {89},
+		Firefox: {89},
+		Node:    {14, 8},
+		Safari:  {15},
 	},
 	UnicodeEscapes: {
 		Chrome:  {44},

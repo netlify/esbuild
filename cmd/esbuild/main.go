@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"runtime/debug"
 	"strings"
@@ -40,8 +41,8 @@ var helpText = func(colors logger.Colors) string {
                         bundling, otherwise default is iife when platform
                         is browser and cjs when platform is node)
   --loader:X=L          Use loader L to load file extension X, where L is
-                        one of: js | jsx | ts | tsx | json | text | base64 |
-                        file | dataurl | binary
+                        one of: js | jsx | ts | tsx | css | json | text | 
+												base64 | file | dataurl | binary
   --minify              Minify the output (sets all --minify-* flags)
   --outdir=...          The output directory (for multiple entry points)
   --outfile=...         The output file (for one entry point)
@@ -56,6 +57,8 @@ var helpText = func(colors logger.Colors) string {
 
 ` + colors.Bold + `Advanced options:` + colors.Reset + `
   --allow-overwrite         Allow output files to overwrite input files
+  --analyze                 Print a report about the contents of the bundle
+                            (use "--analyze=verbose" for a detailed report)
   --asset-names=...         Path template to use for "file" loader files
                             (default "[name]-[hash]")
   --banner:T=...            Text to be prepended to each output file of type T
@@ -69,6 +72,8 @@ var helpText = func(colors logger.Colors) string {
   --footer:T=...            Text to be appended to each output file of type T
                             where T is one of: css | js
   --global-name=...         The name of the global for the IIFE format
+  --ignore-annotations      Enable this to work with packages that have
+                            incorrect tree-shaking annotations
   --inject:F                Import the file F into all input files and
                             automatically replace matching globals with imports
   --jsx-factory=...         What to use for JSX instead of React.createElement
@@ -102,8 +107,7 @@ var helpText = func(colors logger.Colors) string {
   --sourcemap=external      Do not link to the source map with a comment
   --sourcemap=inline        Emit the source map with an inline data URL
   --sources-content=false   Omit "sourcesContent" in generated source maps
-  --tree-shaking=...        Set to "ignore-annotations" to work with packages
-                            that have incorrect tree-shaking annotations
+  --tree-shaking=...        Force tree shaking on or off (false | true)
   --tsconfig=...            Use this tsconfig.json file instead of other ones
   --version                 Print the current version (` + esbuildVersion + `) and exit
 
@@ -201,7 +205,8 @@ func main() {
 	}
 
 	// Print help text when there are no arguments
-	if len(osArgs) == 0 && logger.GetTerminalInfo(os.Stdin).IsTTY {
+	isStdinTTY := logger.GetTerminalInfo(os.Stdin).IsTTY
+	if len(osArgs) == 0 && isStdinTTY {
 		logger.PrintText(os.Stdout, logger.LevelSilent, osArgs, helpText)
 		os.Exit(0)
 	}
@@ -253,20 +258,46 @@ func main() {
 			}
 		} else {
 			// Don't disable the GC if this is a long-running process
-			isServe := false
+			isServeOrWatch := false
 			for _, arg := range osArgs {
 				if arg == "--serve" || arg == "--watch" || strings.HasPrefix(arg, "--serve=") {
-					isServe = true
+					isServeOrWatch = true
 					break
 				}
 			}
 
-			// Disable the GC since we're just going to allocate a bunch of memory
-			// and then exit anyway. This speedup is not insignificant. Make sure to
-			// only do this here once we know that we're not going to be a long-lived
-			// process though.
-			if !isServe {
+			if !isServeOrWatch {
+				// Disable the GC since we're just going to allocate a bunch of memory
+				// and then exit anyway. This speedup is not insignificant. Make sure to
+				// only do this here once we know that we're not going to be a long-lived
+				// process though.
 				debug.SetGCPercent(-1)
+			} else if !isStdinTTY {
+				// If stdin isn't a TTY, watch stdin and abort in case it is closed.
+				// This is necessary when the esbuild binary executable is invoked via
+				// the Erlang VM, which doesn't provide a way to exit a child process.
+				// See: https://github.com/brunch/brunch/issues/920.
+				//
+				// We don't do this when stdin is a TTY because that interferes with
+				// the Unix background job system. If we read from stdin then Ctrl+Z
+				// to move the process to the background will incorrectly cause the
+				// job to stop. See: https://github.com/brunch/brunch/issues/998.
+				go func() {
+					// This just discards information from stdin because we don't use
+					// it and we can avoid unnecessarily allocating space for it
+					buffer := make([]byte, 512)
+					for {
+						_, err := os.Stdin.Read(buffer)
+						if err != nil {
+							// Only exit cleanly if stdin was closed cleanly
+							if err == io.EOF {
+								os.Exit(0)
+							} else {
+								os.Exit(1)
+							}
+						}
+					}
+				}()
 			}
 
 			exitCode = cli.Run(osArgs)

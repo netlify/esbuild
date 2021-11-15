@@ -1,5 +1,1702 @@
 # Changelog
 
+## 0.13.13
+
+* Add more information about skipping `"main"` in `package.json` ([#1754](https://github.com/evanw/esbuild/issues/1754))
+
+    Configuring `mainFields: []` breaks most npm packages since it tells esbuild to ignore the `"main"` field in `package.json`, which most npm packages use to specify their entry point. This is not a bug with esbuild because esbuild is just doing what it was told to do. However, people may do this without understanding how npm packages work, and then be confused about why it doesn't work. This release now includes additional information in the error message:
+
+    ```
+     > foo.js:1:27: error: Could not resolve "events" (use "--platform=node" when building for node)
+         1 │ var EventEmitter = require('events')
+           ╵                            ~~~~~~~~
+       node_modules/events/package.json:20:2: note: The "main" field was ignored because the list of main fields to use is currently set to []
+        20 │   "main": "./events.js",
+           ╵   ~~~~~~
+    ```
+
+* Fix a tree-shaking bug with `var exports` ([#1739](https://github.com/evanw/esbuild/issues/1739))
+
+    This release fixes a bug where a variable named `var exports = {}` was incorrectly removed by tree-shaking (i.e. dead code elimination). The `exports` variable is a special variable in CommonJS modules that is automatically provided by the CommonJS runtime. CommonJS modules are transformed into something like this before being run:
+
+    ```js
+    function(exports, module, require) {
+      var exports = {}
+    }
+    ```
+
+    So using `var exports = {}` should have the same effect as `exports = {}` because the variable `exports` should already be defined. However, esbuild was incorrectly overwriting the definition of the `exports` variable with the one provided by CommonJS. This release merges the definitions together so both are included, which fixes the bug.
+
+* Merge adjacent CSS selector rules with duplicate content ([#1755](https://github.com/evanw/esbuild/issues/1755))
+
+    With this release, esbuild will now merge adjacent selectors when minifying if they have the same content:
+
+    ```css
+    /* Original code */
+    a { color: red }
+    b { color: red }
+
+    /* Old output (with --minify) */
+    a{color:red}b{color:red}
+
+    /* New output (with --minify) */
+    a,b{color:red}
+    ```
+
+* Shorten `top`, `right`, `bottom`, `left` CSS property into `inset` when it is supported ([#1758](https://github.com/evanw/esbuild/pull/1758))
+
+    This release enables collapsing of `inset` related properties:
+
+    ```css
+    /* Original code */
+    div {
+      top: 0;
+      right: 0;
+      bottom: 0;
+      left: 0;
+    }
+
+    /* Output with "--minify-syntax" */
+    div {
+      inset: 0;
+    }
+    ```
+
+    This minification rule is only enabled when `inset` property is supported by the target environment. Make sure to set esbuild's `target` setting correctly when minifying if the code will be running in an older environment (e.g. earlier than Chrome 87).
+
+    This feature was contributed by [@sapphi-red](https://github.com/sapphi-red).
+
+## 0.13.12
+
+* Implement initial support for simplifying `calc()` expressions in CSS ([#1607](https://github.com/evanw/esbuild/issues/1607))
+
+    This release includes basic simplification of `calc()` expressions in CSS when minification is enabled. The approach mainly follows the official CSS specification, which means it should behave the way browsers behave: https://www.w3.org/TR/css-values-4/#calc-func. This is a basic implementation so there are probably some `calc()` expressions that can be reduced by other tools but not by esbuild. This release mainly focuses on setting up the parsing infrastructure for `calc()` expressions to make it straightforward to implement additional simplifications in the future. Here's an example of this new functionality:
+
+    ```css
+    /* Input CSS */
+    div {
+      width: calc(60px * 4 - 5px * 2);
+      height: calc(100% / 4);
+    }
+
+    /* Output CSS (with --minify-syntax) */
+    div {
+      width: 230px;
+      height: 25%;
+    }
+    ```
+
+    Expressions that can't be fully simplified will still be partially simplified into a reduced `calc()` expression:
+
+    ```css
+    /* Input CSS */
+    div {
+      width: calc(100% / 5 - 2 * 1em - 2 * 1px);
+    }
+
+    /* Output CSS (with --minify-syntax) */
+    div {
+      width: calc(20% - 2em - 2px);
+    }
+    ```
+
+    Note that this transformation doesn't attempt to modify any expression containing a `var()` CSS variable reference. These variable references can contain any number of tokens so it's not safe to move forward with a simplification assuming that `var()` is a single token. For example, `calc(2px * var(--x) * 3)` is not transformed into `calc(6px * var(--x))` in case `var(--x)` contains something like `4 + 5px` (`calc(2px * 4 + 5px * 3)` evaluates to `23px` while `calc(6px * 4 + 5px)` evaluates to `29px`).
+
+* Fix a crash with a legal comment followed by an import ([#1730](https://github.com/evanw/esbuild/issues/1730))
+
+    Version 0.13.10 introduced parsing for CSS legal comments but caused a regression in the code that checks whether there are any rules that come before `@import`. This is not desired because browsers ignore `@import` rules after other non-`@import` rules, so esbuild warns you when you do this. However, legal comments are modeled as rules in esbuild's internal AST even though they aren't actual CSS rules, and the code that performs this check wasn't updated. This release fixes the crash.
+
+## 0.13.11
+
+* Implement class static blocks ([#1558](https://github.com/evanw/esbuild/issues/1558))
+
+    This release adds support for a new upcoming JavaScript feature called [class static blocks](https://github.com/tc39/proposal-class-static-block) that lets you evaluate code inside of a class body. It looks like this:
+
+    ```js
+    class Foo {
+      static {
+        this.foo = 123
+      }
+    }
+    ```
+
+    This can be useful when you want to use `try`/`catch` or access private `#name` fields during class initialization. Doing that without this feature is quite hacky and basically involves creating temporary static fields containing immediately-invoked functions and then deleting the fields after class initialization. Static blocks are much more ergonomic and avoid performance loss due to `delete` changing the object shape.
+
+    Static blocks are transformed for older browsers by moving the static block outside of the class body and into an immediately invoked arrow function after the class definition:
+
+    ```js
+    // The transformed version of the example code above
+    const _Foo = class {
+    };
+    let Foo = _Foo;
+    (() => {
+      _Foo.foo = 123;
+    })();
+    ```
+
+    In case you're wondering, the additional `let` variable is to guard against the potential reassignment of `Foo` during evaluation such as what happens below. The value of `this` must be bound to the original class, not to the current value of `Foo`:
+
+    ```js
+    let bar
+    class Foo {
+      static {
+        bar = () => this
+      }
+    }
+    Foo = null
+    console.log(bar()) // This should not be "null"
+    ```
+
+* Fix issues with `super` property accesses
+
+    Code containing `super` property accesses may need to be transformed even when they are supported. For example, in ES6 `async` methods are unsupported while `super` properties are supported. An `async` method containing `super` property accesses requires those uses of `super` to be transformed (the `async` function is transformed into a nested generator function and the `super` keyword cannot be used inside nested functions).
+
+    Previously esbuild transformed `super` property accesses into a function call that returned the corresponding property. However, this was incorrect for uses of `super` that write to the inherited setter since a function call is not a valid assignment target. This release fixes writing to a `super` property:
+
+    ```js
+    // Original code
+    class Base {
+      set foo(x) { console.log('set foo to', x) }
+    }
+    class Derived extends Base {
+      async bar() { super.foo = 123 }
+    }
+    new Derived().bar()
+
+    // Old output with --target=es6 (contains a syntax error)
+    class Base {
+      set foo(x) {
+        console.log("set foo to", x);
+      }
+    }
+    class Derived extends Base {
+      bar() {
+        var __super = (key) => super[key];
+        return __async(this, null, function* () {
+          __super("foo") = 123;
+        });
+      }
+    }
+    new Derived().bar();
+
+    // New output with --target=es6 (works correctly)
+    class Base {
+      set foo(x) {
+        console.log("set foo to", x);
+      }
+    }
+    class Derived extends Base {
+      bar() {
+        var __superSet = (key, value) => super[key] = value;
+        return __async(this, null, function* () {
+          __superSet("foo", 123);
+        });
+      }
+    }
+    new Derived().bar();
+    ```
+
+    All known edge cases for assignment to a `super` property should now be covered including destructuring assignment and using the unary assignment operators with BigInts.
+
+    In addition, this release also fixes a bug where a `static` class field containing a `super` property access was not transformed when it was moved outside of the class body, which can happen when `static` class fields aren't supported.
+
+    ```js
+    // Original code
+    class Base {
+      static get foo() {
+        return 123
+      }
+    }
+    class Derived extends Base {
+      static bar = super.foo
+    }
+
+    // Old output with --target=es6 (contains a syntax error)
+    class Base {
+      static get foo() {
+        return 123;
+      }
+    }
+    class Derived extends Base {
+    }
+    __publicField(Derived, "bar", super.foo);
+
+    // New output with --target=es6 (works correctly)
+    class Base {
+      static get foo() {
+        return 123;
+      }
+    }
+    const _Derived = class extends Base {
+    };
+    let Derived = _Derived;
+    __publicField(Derived, "bar", __superStaticGet(_Derived, "foo"));
+    ```
+
+    All known edge cases for `super` inside `static` class fields should be handled including accessing `super` after prototype reassignment of the enclosing class object.
+
+## 0.13.10
+
+* Implement legal comment preservation for CSS ([#1539](https://github.com/evanw/esbuild/issues/1539))
+
+    This release adds support for legal comments in CSS the same way they are already supported for JS. A legal comment is one that starts with `/*!` or that contains the text `@license` or `@preserve`. These comments are preserved in output files by esbuild since that follows the intent of the original authors of the code. The specific behavior is controlled via `--legal-comments=` in the CLI and `legalComments` in the JS API, which can be set to any of the following options:
+
+    * `none`: Do not preserve any legal comments
+    * `inline`: Preserve all rule-level legal comments
+    * `eof`: Move all rule-level legal comments to the end of the file
+    * `linked`: Move all rule-level legal comments to a `.LEGAL.txt` file and link to them with a comment
+    * `external`: Move all rule-level legal comments to a `.LEGAL.txt` file but to not link to them
+
+    The default behavior is `eof` when bundling and `inline` otherwise.
+
+* Allow uppercase `es*` targets ([#1717](https://github.com/evanw/esbuild/issues/1717))
+
+    With this release, you can now use target names such as `ESNext` instead of `esnext` as the target name in the CLI and JS API. This is important because people don't want to have to call `.toLowerCase()` on target strings from TypeScript's `tsconfig.json` file before passing it to esbuild (TypeScript uses case-agnostic target names).
+
+    This feature was contributed by [@timse](https://github.com/timse).
+
+* Update to Unicode 14.0.0
+
+    The character tables that determine which characters form valid JavaScript identifiers have been updated from Unicode version 13.0.0 to the newly release Unicode version 14.0.0. I'm not putting an example in the release notes because all of the new characters will likely just show up as little squares since fonts haven't been updated yet. But you can read https://www.unicode.org/versions/Unicode14.0.0/#Summary for more information about the changes.
+
+## 0.13.9
+
+* Add support for `imports` in `package.json` ([#1691](https://github.com/evanw/esbuild/issues/1691))
+
+    This release adds basic support for the `imports` field in `package.json`. It behaves similarly to the `exports` field but only applies to import paths that start with `#`. The `imports` field provides a way for a package to remap its own internal imports for itself, while the `exports` field provides a way for a package to remap its external exports for other packages. This is useful because the `imports` field respects the currently-configured conditions which means that the import mapping can change at run-time. For example:
+
+    ```
+    $ cat entry.mjs
+    import '#example'
+
+    $ cat package.json
+    {
+      "imports": {
+        "#example": {
+          "foo": "./example.foo.mjs",
+          "default": "./example.mjs"
+        }
+      }
+    }
+
+    $ cat example.foo.mjs
+    console.log('foo is enabled')
+
+    $ cat example.mjs
+    console.log('foo is disabled')
+
+    $ node entry.mjs
+    foo is disabled
+
+    $ node --conditions=foo entry.mjs
+    foo is enabled
+    ```
+
+    Now that esbuild supports this feature too, import paths starting with `#` and any provided conditions will be respected when bundling:
+
+    ```
+    $ esbuild --bundle entry.mjs | node
+    foo is disabled
+
+    $ esbuild --conditions=foo --bundle entry.mjs | node
+    foo is enabled
+    ```
+
+* Fix using `npm rebuild` with the `esbuild` package ([#1703](https://github.com/evanw/esbuild/issues/1703))
+
+    Version 0.13.4 accidentally introduced a regression in the install script where running `npm rebuild` multiple times could fail after the second time. The install script creates a copy of the binary executable using [`link`](https://man7.org/linux/man-pages/man2/link.2.html) followed by [`rename`](https://www.man7.org/linux/man-pages/man2/rename.2.html). Using `link` creates a hard link which saves space on the file system, and `rename` is used for safety since it atomically replaces the destination.
+
+    However, the `rename` syscall has an edge case where it silently fails if the source and destination are both the same link. This meant that the install script would fail after being run twice in a row. With this release, the install script now deletes the source after calling `rename` in case it has silently failed, so this issue should now be fixed. It should now be safe to use `npm rebuild` with the `esbuild` package.
+
+* Fix invalid CSS minification of `border-radius` ([#1702](https://github.com/evanw/esbuild/issues/1702))
+
+    CSS minification does collapsing of `border-radius` related properties. For example:
+
+    ```css
+    /* Original CSS */
+    div {
+      border-radius: 1px;
+      border-top-left-radius: 5px;
+    }
+
+    /* Minified CSS */
+    div{border-radius:5px 1px 1px}
+    ```
+
+    However, this only works for numeric tokens, not identifiers. For example:
+
+    ```css
+    /* Original CSS */
+    div {
+      border-radius: 1px;
+      border-top-left-radius: inherit;
+    }
+
+    /* Minified CSS */
+    div{border-radius:1px;border-top-left-radius:inherit}
+    ```
+
+    Transforming this to `div{border-radius:inherit 1px 1px}`, as was done in previous releases of esbuild, is an invalid transformation and results in incorrect CSS. This release of esbuild fixes this CSS transformation bug.
+
+## 0.13.8
+
+* Fix `super` inside arrow function inside lowered `async` function ([#1425](https://github.com/evanw/esbuild/issues/1425))
+
+    When an `async` function is transformed into a regular function for target environments that don't support `async` such as `--target=es6`, references to `super` inside that function must be transformed too since the `async`-to-regular function transformation moves the function body into a nested function, so the `super` references are no longer syntactically valid. However, this transform didn't handle an edge case and `super` references inside of an arrow function were overlooked. This release fixes this bug:
+
+    ```js
+    // Original code
+    class Foo extends Bar {
+      async foo() {
+        return () => super.foo()
+      }
+    }
+
+    // Old output (with --target=es6)
+    class Foo extends Bar {
+      foo() {
+        return __async(this, null, function* () {
+          return () => super.foo();
+        });
+      }
+    }
+
+    // New output (with --target=es6)
+    class Foo extends Bar {
+      foo() {
+        var __super = (key) => super[key];
+        return __async(this, null, function* () {
+          return () => __super("foo").call(this);
+        });
+      }
+    }
+    ```
+
+* Remove the implicit `/` after `[dir]` in entry names ([#1661](https://github.com/evanw/esbuild/issues/1661))
+
+    The "entry names" feature lets you customize the way output file names are generated. The `[dir]` and `[name]` placeholders are filled in with the directory name and file name of the corresponding entry point file, respectively.
+
+    Previously `--entry-names=[dir]/[name]` and `--entry-names=[dir][name]` behaved the same because the value used for `[dir]` always had an implicit trailing slash, since it represents a directory. However, some people want to be able to remove the file name with `--entry-names=[dir]` and the implicit trailing slash gets in the way.
+
+    With this release, you can now use the `[dir]` placeholder without an implicit trailing slash getting in the way. For example, the command `esbuild foo/bar/index.js --outbase=. --outdir=out --entry-names=[dir]` previously generated the file `out/foo/bar/.js` but will now generate the file `out/foo/bar.js`.
+
+## 0.13.7
+
+* Minify CSS alpha values correctly ([#1682](https://github.com/evanw/esbuild/issues/1682))
+
+    When esbuild uses the `rgba()` syntax for a color instead of the 8-character hex code (e.g. when `target` is set to Chrome 61 or earlier), the 0-to-255 integer alpha value must be printed as a floating-point fraction between 0 and 1. The fraction was only printed to three decimal places since that is the minimal number of decimal places required for all 256 different alpha values to be uniquely determined. However, using three decimal places does not necessarily result in the shortest result. For example, `128 / 255` is `0.5019607843137255` which is printed as `".502"` using three decimal places, but `".5"` is equivalent because `round(0.5 * 255) == 128`, so printing `".5"` would be better. With this release, esbuild will always use the minimal numeric representation for the alpha value:
+
+    ```css
+    /* Original code */
+    a { color: #FF800080 }
+
+    /* Old output (with --minify --target=chrome61) */
+    a{color:rgba(255,128,0,.502)}
+
+    /* New output (with --minify --target=chrome61) */
+    a{color:rgba(255,128,0,.5)}
+    ```
+
+* Match node's behavior for core module detection ([#1680](https://github.com/evanw/esbuild/issues/1680))
+
+    Node has a hard-coded list of core modules (e.g. `fs`) that, when required, short-circuit the module resolution algorithm and instead return the corresponding internal core module object. When you pass `--platform=node` to esbuild, esbuild also implements this short-circuiting behavior and doesn't try to bundle these import paths. This was implemented in esbuild using the existing `external` feature (e.g. essentially `--external:fs`). However, there is an edge case where esbuild's `external` feature behaved differently than node.
+
+    Modules specified via esbuild's `external` feature also cause all sub-paths to be excluded as well, so for example `--external:foo` excludes both `foo` and `foo/bar` from the bundle. However, node's core module check is only an exact equality check, so for example `fs` is a core module and bypasses the module resolution algorithm but `fs/foo` is not a core module and causes the module resolution algorithm to search the file system.
+
+    This behavior can be used to load a module on the file system with the same name as one of node's core modules. For example, `require('fs/')` will load the module `fs` from the file system instead of loading node's core `fs` module. With this release, esbuild will now match node's behavior in this edge case. This means the external modules that are automatically added by `--platform=node` now behave subtly differently than `--external:`, which allows code that relies on this behavior to be bundled correctly.
+
+* Fix WebAssembly builds on Go 1.17.2+ ([#1684](https://github.com/evanw/esbuild/pull/1684))
+
+    Go 1.17.2 introduces a change (specifically a [fix for CVE-2021-38297](https://go-review.googlesource.com/c/go/+/354591/)) that causes Go's WebAssembly bootstrap script to throw an error when it's run in situations with many environment variables. One such situation is when the bootstrap script is run inside [GitHub Actions](https://github.com/features/actions). This change was introduced because the bootstrap script writes a copy of the environment variables into WebAssembly memory without any bounds checking, and writing more than 4096 bytes of data ends up writing past the end of the buffer and overwriting who-knows-what. So throwing an error in this situation is an improvement. However, this breaks esbuild which previously (at least seemingly) worked fine.
+
+    With this release, esbuild's WebAssembly bootstrap script that calls out to Go's WebAssembly bootstrap script will now delete all environment variables except for the ones that esbuild checks for, of which there are currently only four: `NO_COLOR`, `NODE_PATH`, `npm_config_user_agent`, and `WT_SESSION`. This should avoid a crash when esbuild is built using Go 1.17.2+ and should reduce the likelihood of memory corruption when esbuild is built using Go 1.17.1 or earlier. This release also updates the Go version that esbuild ships with to version 1.17.2. Note that this problem only affects the `esbuild-wasm` package. The `esbuild` package is not affected.
+
+    See also:
+
+    * https://github.com/golang/go/issues/48797
+    * https://github.com/golang/go/issues/49011
+
+## 0.13.6
+
+* Emit decorators for `declare` class fields ([#1675](https://github.com/evanw/esbuild/issues/1675))
+
+    In version 3.7, TypeScript introduced the `declare` keyword for class fields that avoids generating any code for that field:
+
+    ```ts
+    // TypeScript input
+    class Foo {
+      a: number
+      declare b: number
+    }
+
+    // JavaScript output
+    class Foo {
+      a;
+    }
+    ```
+
+    However, it turns out that TypeScript still emits decorators for these omitted fields. With this release, esbuild will now do this too:
+
+    ```ts
+    // TypeScript input
+    class Foo {
+      @decorator a: number;
+      @decorator declare b: number;
+    }
+
+    // Old JavaScript output
+    class Foo {
+      a;
+    }
+    __decorateClass([
+      decorator
+    ], Foo.prototype, "a", 2);
+
+    // New JavaScript output
+    class Foo {
+      a;
+    }
+    __decorateClass([
+      decorator
+    ], Foo.prototype, "a", 2);
+    __decorateClass([
+      decorator
+    ], Foo.prototype, "b", 2);
+    ```
+
+* Experimental support for esbuild on NetBSD ([#1624](https://github.com/evanw/esbuild/pull/1624))
+
+    With this release, esbuild now has a published binary executable for [NetBSD](https://www.netbsd.org/) in the [`esbuild-netbsd-64`](https://www.npmjs.com/package/esbuild-netbsd-64) npm package, and esbuild's installer has been modified to attempt to use it when on NetBSD. Hopefully this makes installing esbuild via npm work on NetBSD. This change was contributed by [@gdt](https://github.com/gdt).
+
+    ⚠️ Note: NetBSD is not one of [Node's supported platforms](https://nodejs.org/api/process.html#process_process_platform), so installing esbuild may or may not work on NetBSD depending on how Node has been patched. This is not a problem with esbuild. ⚠️
+
+* Disable the "esbuild was bundled" warning if `ESBUILD_BINARY_PATH` is provided ([#1678](https://github.com/evanw/esbuild/pull/1678))
+
+    The `ESBUILD_BINARY_PATH` environment variable allows you to substitute an alternate binary executable for esbuild's JavaScript API. This is useful in certain cases such as when debugging esbuild. The JavaScript API has some code that throws an error if it detects that it was bundled before being run, since bundling prevents esbuild from being able to find the path to its binary executable. However, that error is unnecessary if `ESBUILD_BINARY_PATH` is present because an alternate path has been provided. This release disables the warning when `ESBUILD_BINARY_PATH` is present so that esbuild can be used when bundled as long as you also manually specify `ESBUILD_BINARY_PATH`.
+
+    This change was contributed by [@heypiotr](https://github.com/heypiotr).
+
+* Remove unused `catch` bindings when minifying ([#1660](https://github.com/evanw/esbuild/pull/1660))
+
+    With this release, esbuild will now remove unused `catch` bindings when minifying:
+
+    ```js
+    // Original code
+    try {
+      throw 0;
+    } catch (e) {
+    }
+
+    // Old output (with --minify)
+    try{throw 0}catch(t){}
+
+    // New output (with --minify)
+    try{throw 0}catch{}
+    ```
+
+    This takes advantage of the new [optional catch binding](https://github.com/tc39/proposal-optional-catch-binding) syntax feature that was introduced in ES2019. This minification rule is only enabled when optional catch bindings are supported by the target environment. Specifically, it's not enabled when using `--target=es2018` or older. Make sure to set esbuild's `target` setting correctly when minifying if the code will be running in an older JavaScript environment.
+
+    This change was contributed by [@sapphi-red](https://github.com/sapphi-red).
+
+## 0.13.5
+
+* Improve watch mode accuracy ([#1113](https://github.com/evanw/esbuild/issues/1113))
+
+    Watch mode is enabled by `--watch` and causes esbuild to become a long-running process that automatically rebuilds output files when input files are changed. It's implemented by recording all calls to esbuild's internal file system interface and then invalidating the build whenever these calls would return different values. For example, a call to esbuild's internal `ReadFile()` function is considered to be different if either the presence of the file has changed (e.g. the file didn't exist before but now exists) or the presence of the file stayed the same but the content of the file has changed.
+
+    Previously esbuild's watch mode operated at the `ReadFile()` and `ReadDirectory()` level. When esbuild checked whether a directory entry existed or not (e.g. whether a directory contains a `node_modules` subdirectory or a `package.json` file), it called `ReadDirectory()` which then caused the build to depend on that directory's set of entries. This meant the build would be invalidated even if a new unrelated entry was added or removed, since that still changes the set of entries. This is problematic when using esbuild in environments that constantly create and destroy temporary directory entries in your project directory. In that case, esbuild's watch mode would constantly rebuild as the directory was constantly considered to be dirty.
+
+    With this release, watch mode now operates at the `ReadFile()` and `ReadDirectory().Get()` level. So when esbuild checks whether a directory entry exists or not, the build should now only depend on the presence status for that one directory entry. This should avoid unnecessary rebuilds due to unrelated directory entries being added or removed. The log messages generated using `--watch` will now also mention the specific directory entry whose presence status was changed if a build is invalidated for this reason.
+
+    Note that this optimization does not apply to plugins using the `watchDirs` return value because those paths are only specified at the directory level and do not describe individual directory entries. You can use `watchFiles` or `watchDirs` on the individual entries inside the directory to get a similar effect instead.
+
+* Disallow certain uses of `<` in `.mts` and `.cts` files
+
+    The upcoming version 4.5 of TypeScript is introducing the `.mts` and `.cts` extensions that turn into the `.mjs` and `.cjs` extensions when compiled. However, unlike the existing `.ts` and `.tsx` extensions, expressions that start with `<` are disallowed when they would be ambiguous depending on whether they are parsed in `.ts` or `.tsx` mode. The ambiguity is caused by the overlap between the syntax for JSX elements and the old deprecated syntax for type casts:
+
+    | Syntax                        | `.ts`                | `.tsx`           | `.mts`/`.cts`        |
+    |-------------------------------|----------------------|------------------|----------------------|
+    | `<x>y`                        | ✅ Type cast         | 🚫 Syntax error   | 🚫 Syntax error      |
+    | `<T>() => {}`                 | ✅ Arrow function    | 🚫 Syntax error   | 🚫 Syntax error      |
+    | `<x>y</x>`                    | 🚫 Syntax error      | ✅ JSX element    | 🚫 Syntax error      |
+    | `<T>() => {}</T>`             | 🚫 Syntax error      | ✅ JSX element    | 🚫 Syntax error      |
+    | `<T extends>() => {}</T>`     | 🚫 Syntax error      | ✅ JSX element    | 🚫 Syntax error      |
+    | `<T extends={0}>() => {}</T>` | 🚫 Syntax error      | ✅ JSX element    | 🚫 Syntax error      |
+    | `<T,>() => {}`                | ✅ Arrow function    | ✅ Arrow function | ✅ Arrow function    |
+    | `<T extends X>() => {}`       | ✅ Arrow function    | ✅ Arrow function | ✅ Arrow function    |
+
+    This release of esbuild introduces a syntax error for these ambiguous syntax constructs in `.mts` and `.cts` files to match the new behavior of the TypeScript compiler.
+
+* Do not remove empty `@keyframes` rules ([#1665](https://github.com/evanw/esbuild/issues/1665))
+
+    CSS minification in esbuild automatically removes empty CSS rules, since they have no effect. However, empty `@keyframes` rules still trigger JavaScript animation events so it's incorrect to remove them. To demonstrate that empty `@keyframes` rules still have an effect, here is a bug report for Firefox where it was incorrectly not triggering JavaScript animation events for empty `@keyframes` rules: https://bugzilla.mozilla.org/show_bug.cgi?id=1004377.
+
+    With this release, empty `@keyframes` rules are now preserved during minification:
+
+    ```css
+    /* Original CSS */
+    @keyframes foo {
+      from {}
+      to {}
+    }
+
+    /* Old output (with --minify) */
+
+    /* New output (with --minify) */
+    @keyframes foo{}
+    ```
+
+    This fix was contributed by [@eelco](https://github.com/eelco).
+
+* Fix an incorrect duplicate label error ([#1671](https://github.com/evanw/esbuild/pull/1671))
+
+    When labeling a statement in JavaScript, the label must be unique within the enclosing statements since the label determines the jump target of any labeled `break` or `continue` statement:
+
+    ```js
+    // This code is valid
+    x: y: z: break x;
+
+    // This code is invalid
+    x: y: x: break x;
+    ```
+
+    However, an enclosing label with the same name *is* allowed as long as it's located in a different function body. Since `break` and `continue` statements can't jump across function boundaries, the label is not ambiguous. This release fixes a bug where esbuild incorrectly treated this valid code as a syntax error:
+
+    ```js
+    // This code is valid, but was incorrectly considered a syntax error
+    x: (() => {
+      x: break x;
+    })();
+    ```
+
+    This fix was contributed by [@nevkontakte](https://github.com/nevkontakte).
+
+## 0.13.4
+
+* Fix permission issues with the install script ([#1642](https://github.com/evanw/esbuild/issues/1642))
+
+    The `esbuild` package contains a small JavaScript stub file that implements the CLI (command-line interface). Its only purpose is to spawn the binary esbuild executable as a child process and forward the command-line arguments to it.
+
+    The install script contains an optimization that replaces this small JavaScript stub with the actual binary executable at install time to avoid the overhead of unnecessarily creating a new `node` process. This optimization can't be done at package publish time because there is only one `esbuild` package but there are many supported platforms, so the binary executable for the current platform must live outside of the `esbuild` package.
+
+    However, the optimization was implemented with an [unlink](https://www.man7.org/linux/man-pages/man2/unlink.2.html) operation followed by a [link](https://www.man7.org/linux/man-pages/man2/link.2.html) operation. This means that if the first step fails, the package is left in a broken state since the JavaScript stub file is deleted but not yet replaced.
+
+    With this release, the optimization is now implemented with a [link](https://www.man7.org/linux/man-pages/man2/link.2.html) operation followed by a [rename](https://www.man7.org/linux/man-pages/man2/rename.2.html) operation. This should always leave the package in a working state even if either step fails.
+
+* Add a fallback for `npm install esbuild --no-optional` ([#1647](https://github.com/evanw/esbuild/issues/1647))
+
+    The installation method for esbuild's platform-specific binary executable was recently changed in version 0.13.0. Before that version esbuild downloaded it in an install script, and after that version esbuild lets the package manager download it using the `optionalDependencies` feature in `package.json`. This change was made because downloading the binary executable in an install script never really fully worked. The reasons are complex but basically there are a variety of edge cases where people people want to install esbuild in environments that they have customized such that downloading esbuild isn't possible. Using `optionalDependencies` instead lets the package manager deal with it instead, which should work fine in all cases (either that or your package manager has a bug, but that's not esbuild's problem).
+
+    There is one case where this new installation method doesn't work: if you pass the `--no-optional` flag to npm to disable the `optionalDependencies` feature. If you do this, you prevent esbuild from being installed. This is not a problem with esbuild because you are manually enabling a flag to change npm's behavior such that esbuild doesn't install correctly. However, people still want to do this.
+
+    With this release, esbuild will now fall back to the old installation method if the new installation method fails. **THIS MAY NOT WORK.** The new `optionalDependencies` installation method is the only supported way to install esbuild with npm. The old downloading installation method was removed because it doesn't always work. The downloading method is only being provided to try to be helpful but it's not the supported installation method. If you pass `--no-optional` and the download fails due to some environment customization you did, the recommended fix is to just remove the `--no-optional` flag.
+
+* Support the new `.mts` and `.cts` TypeScript file extensions
+
+    The upcoming version 4.5 of TypeScript has two new file extensions: `.mts` and `.cts`. Files with these extensions can be imported using the `.mjs` and `.cjs`, respectively. So the statement `import "./foo.mjs"` in TypeScript can actually succeed even if the file `./foo.mjs` doesn't exist on the file system as long as the file `./foo.mts` does exist. The import path with the `.mjs` extension is automatically re-routed to the corresponding file with the `.mts` extension at type-checking time by the TypeScript compiler. See [the TypeScript 4.5 beta announcement](https://devblogs.microsoft.com/typescript/announcing-typescript-4-5-beta/#new-file-extensions) for details.
+
+    With this release, esbuild will also automatically rewrite `.mjs` to `.mts` and `.cjs` to `.cts` when resolving import paths to files on the file system. This should make it possible to bundle code written in this new style. In addition, the extensions `.mts` and `.cts` are now also considered valid TypeScript file extensions by default along with the `.ts` extension.
+
+* Fix invalid CSS minification of `margin` and `padding` ([#1657](https://github.com/evanw/esbuild/issues/1657))
+
+    CSS minification does collapsing of `margin` and `padding` related properties. For example:
+
+    ```css
+    /* Original CSS */
+    div {
+      margin: auto;
+      margin-top: 5px;
+      margin-left: 5px;
+    }
+
+    /* Minified CSS */
+    div{margin:5px auto auto 5px}
+    ```
+
+    However, while this works for the `auto` keyword, it doesn't work for other keywords. For example:
+
+    ```css
+    /* Original CSS */
+    div {
+      margin: inherit;
+      margin-top: 5px;
+      margin-left: 5px;
+    }
+
+    /* Minified CSS */
+    div{margin:inherit;margin-top:5px;margin-left:5px}
+    ```
+
+    Transforming this to `div{margin:5px inherit inherit 5px}`, as was done in previous releases of esbuild, is an invalid transformation and results in incorrect CSS. This release of esbuild fixes this CSS transformation bug.
+
+## 0.13.3
+
+* Support TypeScript type-only import/export specifiers ([#1637](https://github.com/evanw/esbuild/pull/1637))
+
+    This release adds support for a new TypeScript syntax feature in the upcoming version 4.5 of TypeScript. This feature lets you prefix individual imports and exports with the `type` keyword to indicate that they are types instead of values. This helps tools such as esbuild omit them from your source code, and is necessary because esbuild compiles files one-at-a-time and doesn't know at parse time which imports/exports are types and which are values. The new syntax looks like this:
+
+    ```ts
+    // Input TypeScript code
+    import { type Foo } from 'foo'
+    export { type Bar }
+
+    // Output JavaScript code (requires "importsNotUsedAsValues": "preserve" in "tsconfig.json")
+    import {} from "foo";
+    export {};
+    ```
+
+    See [microsoft/TypeScript#45998](https://github.com/microsoft/TypeScript/pull/45998) for full details. From what I understand this is a purely ergonomic improvement since this was already previously possible using a type-only import/export statements like this:
+
+    ```ts
+    // Input TypeScript code
+    import type { Foo } from 'foo'
+    export type { Bar }
+    import 'foo'
+    export {}
+
+    // Output JavaScript code (requires "importsNotUsedAsValues": "preserve" in "tsconfig.json")
+    import "foo";
+    export {};
+    ```
+
+    This feature was contributed by [@g-plane](https://github.com/g-plane).
+
+## 0.13.2
+
+* Fix `export {}` statements with `--tree-shaking=true` ([#1628](https://github.com/evanw/esbuild/issues/1628))
+
+    The new `--tree-shaking=true` option allows you to force-enable tree shaking in cases where it wasn't previously possible. One such case is when bundling is disabled and there is no output format configured, in which case esbuild just preserves the format of whatever format the input code is in. Enabling tree shaking in this context caused a bug where `export {}` statements were stripped. This release fixes the bug so `export {}` statements should now be preserved when you pass `--tree-shaking=true`. This bug only affected this new functionality and didn't affect existing scenarios.
+
+## 0.13.1
+
+* Fix the `esbuild` package in yarn 2+
+
+    The [yarn package manager](https://yarnpkg.com/) version 2 and above has a mode called [PnP](https://next.yarnpkg.com/features/pnp/) that installs packages inside zip files instead of using individual files on disk, and then hijacks node's `fs` module to pretend that paths to files inside the zip file are actually individual files on disk so that code that wasn't written specifically for yarn still works. Unfortunately that hijacking is incomplete and it still causes certain things to break such as using these zip file paths to create a JavaScript worker thread or to create a child process.
+
+    This was an issue for the new `optionalDependencies` package installation strategy that was just released in version 0.13.0 since the binary executable is now inside of an installed package instead of being downloaded using an install script. When it's installed with yarn 2+ in PnP mode the binary executable is inside a zip file and can't be run. To work around this, esbuild detects yarn's PnP mode and copies the binary executable to a real file outside of the zip file.
+
+    Unfortunately the code to do this didn't create the parent directory before writing to the file path. That caused esbuild's API to crash when it was run for the first time. This didn't come up during testing because the parent directory already existed when the tests were run. This release changes the location of the binary executable from a shared cache directory to inside the esbuild package itself, which should fix this crash. This problem only affected esbuild's JS API when it was run through yarn 2+ with PnP mode active.
+
+## 0.13.0
+
+**This release contains backwards-incompatible changes.** Since esbuild is before version 1.0.0, these changes have been released as a new minor version to reflect this (as [recommended by npm](https://docs.npmjs.com/cli/v6/using-npm/semver/)). You should either be pinning the exact version of `esbuild` in your `package.json` file or be using a version range syntax that only accepts patch upgrades such as `~0.12.0`. See the documentation about [semver](https://docs.npmjs.com/cli/v6/using-npm/semver/) for more information.
+
+* Allow tree shaking to be force-enabled and force-disabled ([#1518](https://github.com/evanw/esbuild/issues/1518), [#1610](https://github.com/evanw/esbuild/issues/1610), [#1611](https://github.com/evanw/esbuild/issues/1611), [#1617](https://github.com/evanw/esbuild/pull/1617))
+
+    This release introduces a breaking change that gives you more control over when tree shaking happens ("tree shaking" here refers to declaration-level dead code removal). Previously esbuild's tree shaking was automatically enabled or disabled for you depending on the situation and there was no manual override to change this. Specifically, tree shaking was only enabled either when bundling was enabled or when the output format was set to `iife` (i.e. wrapped in an immediately-invoked function expression). This was done to avoid issues with people appending code to output files in the `cjs` and `esm` formats and expecting that code to be able to reference code in the output file that isn't otherwise referenced.
+
+    You now have the ability to explicitly force-enable or force-disable tree shaking to bypass this default behavior. This is a breaking change because there is already a setting for tree shaking that does something else, and it has been moved to a separate setting instead. The previous setting allowed you to control whether or not to ignore manual side-effect annotations, which is related to tree shaking since only side-effect free code can be removed as dead code. Specifically you can annotate function calls with `/* @__PURE__ */` to indicate that they can be removed if they are not used, and you can annotate packages with `"sideEffects": false` to indicate that imports of that package can be removed if they are not used. Being able to ignore these annotations is necessary because [they are sometimes incorrect](https://github.com/tensorflow/tfjs/issues/4248). This previous setting has been moved to a separate setting because it actually impacts dead-code removal within expressions, which also applies when minifying with tree-shaking disabled.
+
+    ### Old behavior
+
+    * CLI
+        * Ignore side-effect annotations: `--tree-shaking=ignore-annotations`
+    * JS
+        * Ignore side-effect annotations: `treeShaking: 'ignore-annotations'`
+    * Go
+        * Ignore side-effect annotations: `TreeShaking: api.TreeShakingIgnoreAnnotations`
+
+    ### New behavior
+
+    * CLI
+        * Ignore side-effect annotations: `--ignore-annotations`
+        * Force-disable tree shaking: `--tree-shaking=false`
+        * Force-enable tree shaking: `--tree-shaking=true`
+    * JS
+        * Ignore side-effect annotations: `ignoreAnnotations: true`
+        * Force-disable tree shaking: `treeShaking: false`
+        * Force-enable tree shaking: `treeShaking: true`
+    * Go
+        * Ignore side-effect annotations: `IgnoreAnnotations: true`
+        * Force-disable tree shaking: `TreeShaking: api.TreeShakingFalse`
+        * Force-enable tree shaking: `TreeShaking: api.TreeShakingTrue`
+
+* The npm package now uses `optionalDependencies` to install the platform-specific binary executable ([#286](https://github.com/evanw/esbuild/issues/286), [#291](https://github.com/evanw/esbuild/issues/291), [#319](https://github.com/evanw/esbuild/issues/319), [#347](https://github.com/evanw/esbuild/issues/347), [#369](https://github.com/evanw/esbuild/issues/369), [#547](https://github.com/evanw/esbuild/issues/547), [#565](https://github.com/evanw/esbuild/issues/565), [#789](https://github.com/evanw/esbuild/issues/789), [#921](https://github.com/evanw/esbuild/issues/921), [#1193](https://github.com/evanw/esbuild/issues/1193), [#1270](https://github.com/evanw/esbuild/issues/1270), [#1382](https://github.com/evanw/esbuild/issues/1382), [#1422](https://github.com/evanw/esbuild/issues/1422), [#1450](https://github.com/evanw/esbuild/issues/1450), [#1485](https://github.com/evanw/esbuild/issues/1485), [#1546](https://github.com/evanw/esbuild/issues/1546), [#1547](https://github.com/evanw/esbuild/pull/1547), [#1574](https://github.com/evanw/esbuild/issues/1574), [#1609](https://github.com/evanw/esbuild/issues/1609))
+
+    This release changes esbuild's installation strategy in an attempt to improve compatibility with edge cases such as custom registries, custom proxies, offline installations, read-only file systems, or when post-install scripts are disabled. It's being treated as a breaking change out of caution because it's a significant change to how esbuild works with JS package managers, and hasn't been widely tested yet.
+
+    **The old installation strategy** manually downloaded the correct binary executable in a [post-install script](https://docs.npmjs.com/cli/v7/using-npm/scripts). The binary executable is hosted in a separate platform-specific npm package such as [`esbuild-darwin-64`](https://www.npmjs.com/package/esbuild-darwin-64). The install script first attempted to download the package via the `npm` command in case npm had custom network settings configured. If that didn't work, the install script attempted to download the package from https://registry.npmjs.org/ before giving up. This was problematic for many reasons including:
+
+    * Not all of npm's settings can be forwarded due to npm bugs such as https://github.com/npm/cli/issues/2284, and npm has said these bugs will never be fixed.
+    * Some people have configured their network environments such that downloading from https://registry.npmjs.org/ will hang instead of either succeeding or failing.
+    * The installed package was broken if you used `npm --ignore-scripts` because then the post-install script wasn't run. Some people enable this option so that malicious packages must be run first before being able to do malicious stuff.
+
+    **The new installation strategy** automatically downloads the correct binary executable using npm's `optionalDependencies` feature to depend on all esbuild packages for all platforms but only have the one for the current platform be installed. This is a built-in part of the package manager so my assumption is that it should work correctly in all of these edge cases that currently don't work. And if there's an issue with this, then the problem is with the package manager instead of with esbuild so this should hopefully reduce the maintenance burden on esbuild itself. Changing to this installation strategy has these drawbacks:
+
+    * Old versions of certain package managers (specifically npm and yarn) print lots of useless log messages during the installation, at least one for each platform other than the current one. These messages are harmless and can be ignored. However, they are annoying. There is nothing I can do about this. If you have this problem, one solution is to upgrade your package manager to a newer version.
+
+    * Installation will be significantly slower in old versions of npm, old versions of pnpm, and all versions of yarn. These package managers download all packages for all platforms even though they aren't needed and actually cannot be used. This problem has been fixed in npm and pnpm and the problem has been communicated to yarn: https://github.com/yarnpkg/berry/issues/3317. If you have this problem, one solution is to use a newer version of npm or pnpm as your package manager.
+
+    * This installation strategy does not work if you use `npm --no-optional` since then the package with the binary executable is not installed. If you have this problem, the solution is to not pass the `--no-optional` flag when installing packages.
+
+    * There is still a small post-install script but it's now optional in that the `esbuild` package should still function correctly if post-install scripts are disabled (such as with `npm --ignore-scripts`). This post-install script optimizes the installed package by replacing the `esbuild` JavaScript command shim with the actual binary executable at install time. This avoids the overhead of launching another `node` process when using the `esbuild` command. So keep in mind that installing with `--ignore-scripts` will result in a slower `esbuild` command.
+
+    Despite the drawbacks of the new installation strategy, I believe this change is overall a good thing to move forward with. It should fix edge case scenarios where installing esbuild currently doesn't work at all, and this only comes at the expense of the install script working in a less-optimal way (but still working) if you are using an old version of npm. So I'm going to switch installation strategies and see how it goes.
+
+    The platform-specific binary executables are still hosted on npm in the same way, so anyone who wrote code that downloads builds from npm using the instructions here should not have to change their code: https://esbuild.github.io/getting-started/#download-a-build. However, note that these platform-specific packages no longer specify the `bin` field in `package.json` so the `esbuild` command will no longer be automatically put on your path. The `bin` field had to be removed because of a collision with the `bin` field of the `esbuild` package (now that the `esbuild` package depends on all of these platform-specific packages as optional dependencies).
+
+In addition to the breaking changes above, the following features are also included in this release:
+
+* Treat `x` guarded by `typeof x !== 'undefined'` as side-effect free
+
+    This is a small tree-shaking (i.e. dead code removal) improvement. Global identifier references are considered to potentially have side effects since they will throw a reference error if the global identifier isn't defined, and code with side effects cannot be removed as dead code. However, there's a somewhat-common case where the identifier reference is guarded by a `typeof` check to check that it's defined before accessing it. With this release, code that does this will now be considered to have no side effects which allows it to be tree-shaken:
+
+    ```js
+    // Original code
+    var __foo = typeof foo !== 'undefined' && foo;
+    var __bar = typeof bar !== 'undefined' && bar;
+    console.log(__bar);
+
+    // Old output (with --bundle, which enables tree-shaking)
+    var __foo = typeof foo !== 'undefined' && foo;
+    var __bar = typeof bar !== 'undefined' && bar;
+    console.log(__bar);
+
+    // New output (with --bundle, which enables tree-shaking)
+    var __bar = typeof bar !== 'undefined' && bar;
+    console.log(__bar);
+    ```
+
+## 0.12.29
+
+* Fix compilation of abstract class fields in TypeScript ([#1623](https://github.com/evanw/esbuild/issues/1623))
+
+    This release fixes a bug where esbuild could incorrectly include a TypeScript abstract class field in the compiled JavaScript output. This is incorrect because the official TypeScript compiler never does this. Note that this only happened in scenarios where TypeScript's `useDefineForClassFields` setting was set to `true` (or equivalently where TypeScript's `target` setting was set to `ESNext`). Here is the difference:
+
+    ```js
+    // Original code
+    abstract class Foo {
+      abstract foo: any;
+    }
+
+    // Old output
+    class Foo {
+      foo;
+    }
+
+    // New output
+    class Foo {
+    }
+    ```
+
+* Proxy from the `__require` shim to `require` ([#1614](https://github.com/evanw/esbuild/issues/1614))
+
+    Some background: esbuild's bundler emulates a CommonJS environment. The bundling process replaces the literal syntax `require(<string>)` with the referenced module at compile-time. However, other uses of `require` such as `require(someFunction())` are not bundled since the value of `someFunction()` depends on code evaluation, and esbuild does not evaluate code at compile-time. So it's possible for some references to `require` to remain after bundling.
+
+    This was causing problems for some CommonJS code that was run in the browser and that expected `typeof require === 'function'` to be true (see [#1202](https://github.com/evanw/esbuild/issues/1202)), since the browser does not provide a global called `require`. Thus esbuild introduced a shim `require` function called `__require` (shown below) and replaced all references to `require` in the bundled code with `__require`:
+
+    ```js
+    var __require = x => {
+      if (typeof require !== 'undefined') return require(x);
+      throw new Error('Dynamic require of "' + x + '" is not supported');
+    };
+    ```
+
+    However, this broke code that referenced `require.resolve` inside the bundle, which could hypothetically actually work since you could assign your own implementation to `window.require.resolve` (see [#1579](https://github.com/evanw/esbuild/issues/1579)). So the implementation of `__require` was changed to this:
+
+    ```js
+    var __require = typeof require !== 'undefined' ? require : x => {
+      throw new Error('Dynamic require of "' + x + '" is not supported');
+    };
+    ```
+
+    However, that broke code that assigned to `window.require` later on after the bundle was loaded ([#1614](https://github.com/evanw/esbuild/issues/1614)). So with this release, the code for `__require` now handles all of these edge cases:
+
+    * `typeof require` is still `function` even if `window.require` is undefined
+    * `window.require` can be assigned to either before or after the bundle is loaded
+    * `require.resolve` and arbitrary other properties can still be accessed
+    * `require` will now forward any number of arguments, not just the first one
+
+    Handling all of these edge cases is only possible with the [Proxy API](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy). So the implementation of `__require` now looks like this:
+
+    ```js
+    var __require = (x =>
+      typeof require !== 'undefined' ? require :
+      typeof Proxy !== 'undefined' ? new Proxy(x, {
+        get: (a, b) => (typeof require !== 'undefined' ? require : a)[b]
+      }) : x
+    )(function(x) {
+      if (typeof require !== 'undefined') return require.apply(this, arguments);
+      throw new Error('Dynamic require of "' + x + '" is not supported');
+    });
+    ```
+
+* Consider `typeof x` to have no side effects
+
+    The `typeof` operator does not itself trigger any code evaluation so it can safely be removed if evaluating the operand does not cause any side effects. However, there is a special case of the `typeof` operator when the operand is an identifier expression. In that case no reference error is thrown if the referenced symbol does not exist (e.g. `typeof x` does not throw an error if there is no symbol named `x`). With this release, esbuild will now consider `typeof x` to have no side effects even if evaluating `x` would have side effects (i.e. would throw a reference error):
+
+    ```js
+    // Original code
+    var unused = typeof React !== 'undefined';
+
+    // Old output
+    var unused = typeof React !== 'undefined';
+
+    // New output
+    ```
+
+    Note that there is actually an edge case where `typeof x` *can* throw an error: when `x` is being referenced inside of its TDZ, or temporal dead zone (i.e. before it's declared). This applies to `let`, `const`, and `class` symbols. However, esbuild doesn't currently handle TDZ rules so the possibility of errors thrown due to TDZ rules is not currently considered. This typically doesn't matter in real-world code so this hasn't been a priority to fix (and is actually tricky to fix with esbuild's current bundling approach). So esbuild may incorrectly remove a `typeof` expression that actually has side effects. However, esbuild already incorrectly did this in previous releases so its behavior regarding `typeof` and TDZ rules hasn't changed in this release.
+
+## 0.12.28
+
+* Fix U+30FB and U+FF65 in identifier names in ES5 vs. ES6+ ([#1599](https://github.com/evanw/esbuild/issues/1599))
+
+    The ES6 specification caused two code points that were previously valid in identifier names in ES5 to no longer be valid in identifier names in ES6+. The two code points are:
+
+    * `U+30FB` i.e. `KATAKANA MIDDLE DOT` i.e. `・`
+    * `U+FF65` i.e. `HALFWIDTH KATAKANA MIDDLE DOT` i.e. `･`
+
+    This means that using ES6+ parsing rules will fail to parse some valid ES5 code, and generating valid ES5 code may fail to be parsed using ES6+ parsing rules. For example, esbuild would previously fail to parse `x.y･` even though it's valid ES5 code (since it's not valid ES6+ code) and esbuild could generate `{y･:x}` when minifying even though it's not valid ES6+ code (since it's valid ES5 code). This problem is the result of my incorrect assumption that ES6 is a superset of ES5.
+
+    As of this release, esbuild will now parse a superset of ES5 and ES6+ and will now quote identifier names when possible if it's not considered to be a valid identifier name in either ES5 or ES6+. In other words, a union of ES5 and ES6 rules is used for parsing and the intersection of ES5 and ES6 rules is used for printing.
+
+* Fix `++` and `--` on class private fields when used with big integers ([#1600](https://github.com/evanw/esbuild/issues/1600))
+
+    Previously when esbuild lowered class private fields (e.g. `#foo`) to older JavaScript syntax, the transform of the `++` and `--` was not correct if the value is a big integer such as `123n`. The transform in esbuild is similar to Babel's transform which [has the same problem](https://github.com/babel/babel/issues/13756). Specifically, the code was transformed into code that either adds or subtracts the number `1` and `123n + 1` throws an exception in JavaScript. This problem has been fixed so this should now work fine starting with this release.
+
+## 0.12.27
+
+* Update JavaScript syntax feature compatibility tables ([#1594](https://github.com/evanw/esbuild/issues/1594))
+
+    Most JavaScript syntax feature compatibility data is able to be obtained automatically via https://kangax.github.io/compat-table/. However, they are missing data for quite a few new JavaScript features (see ([kangax/compat-table#1034](https://github.com/kangax/compat-table/issues/1034))) so data on these new features has to be added manually. This release manually adds a few new entries:
+
+    * Top-level await
+
+        This feature lets you use `await` at the top level of a module, outside of an `async` function. Doing this holds up the entire module instantiation operation until the awaited expression is resolved or rejected. This release marks this feature as supported in Edge 89, Firefox 89, and Safari 15 (it was already marked as supported in Chrome 89 and Node 14.8). The data source for this is https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/await.
+
+    * Arbitrary module namespace identifier names
+
+        This lets you use arbitrary strings as module namespace identifier names as long as they are valid UTF-16 strings. An example is `export { x as "🍕" }` which can then be imported as `import { "🍕" as y } from "./example.js"`. This release marks this feature as supported in Firefox 87 (it was already marked as supported in Chrome 90 and Node 16). The data source for this is https://bugzilla.mozilla.org/show_bug.cgi?id=1670044.
+
+    I would also like to add data for Safari. They have recently added support for arbitrary module namespace identifier names (https://bugs.webkit.org/show_bug.cgi?id=217576) and `export * as` (https://bugs.webkit.org/show_bug.cgi?id=214379). However, I have no idea how to determine which Safari release these bugs correspond to so this compatibility data for Safari has been omitted.
+
+* Avoid unnecessary additional log messages after the server is stopped ([#1589](https://github.com/evanw/esbuild/issues/1589))
+
+    There is a development server built in to esbuild which is accessible via the `serve()` API call. This returns a promise that resolves to an object with a `stop()` method that immediately terminates the development server. Previously calling this could cause esbuild to print stray log messages since `stop()` could cause plugins to be unregistered while a build is still in progress. With this release, calling `stop()` no longer terminates the development server immediately. It now waits for any active builds to finish first so the builds are not interrupted and left in a confusing state.
+
+* Fix an accidental dependency on Go ≥1.17.0 ([#1585](https://github.com/evanw/esbuild/pull/1585))
+
+    The source code of this release no longer uses the `math.MaxInt` constant that was introduced in Go version 1.17.0. This constant was preventing esbuild from being compiled on Go version <1.17.0. This fix was contributed by [@davezuko](https://github.com/davezuko).
+
+## 0.12.26
+
+* Add `--analyze` to print information about the bundle ([#1568](https://github.com/evanw/esbuild/issues/1568))
+
+    The `--metafile=` flag tells esbuild to write information about the bundle into the provided metadata file in JSON format. It contains information about the input files and which other files each one imports, as well as the output files and which input files they include. This information is sufficient to answer many questions such as:
+
+    * Which files are in my bundle?
+    * What's are the biggest files in my bundle?
+    * Why is this file included in my bundle?
+
+    Previously you had to either write your own code to answer these questions, or use another tool such as https://bundle-buddy.com/esbuild to visualize the data. Starting with this release you can now also use `--analyze` to enable esbuild's built-in visualizer. It looks like this:
+
+    ```
+    $ esbuild --bundle example.jsx --outfile=out.js --minify --analyze
+
+      out.js  27.6kb
+
+    ⚡ Done in 6ms
+
+      out.js                                                                    27.6kb  100.0%
+       ├ node_modules/react-dom/cjs/react-dom-server.browser.production.min.js  19.2kb   69.8%
+       ├ node_modules/react/cjs/react.production.min.js                          5.9kb   21.4%
+       ├ node_modules/object-assign/index.js                                     965b     3.4%
+       ├ example.jsx                                                             137b     0.5%
+       ├ node_modules/react-dom/server.browser.js                                 50b     0.2%
+       └ node_modules/react/index.js                                              50b     0.2%
+    ```
+
+    This tells you what input files were bundled into each output file as well as the final minified size contribution of each input file as well as the percentage of the output file it takes up. You can also enable verbose analysis with `--analyze=verbose` to see why each input file was included (i.e. which files imported it from the entry point file):
+
+    ```
+    $ esbuild --bundle example.jsx --outfile=out.js --minify --analyze=verbose
+
+      out.js  27.6kb
+
+    ⚡ Done in 6ms
+
+      out.js ─────────────────────────────────────────────────────────────────── 27.6kb ─ 100.0%
+       ├ node_modules/react-dom/cjs/react-dom-server.browser.production.min.js ─ 19.2kb ── 69.8%
+       │  └ node_modules/react-dom/server.browser.js
+       │     └ example.jsx
+       ├ node_modules/react/cjs/react.production.min.js ───────────────────────── 5.9kb ── 21.4%
+       │  └ node_modules/react/index.js
+       │     └ example.jsx
+       ├ node_modules/object-assign/index.js ──────────────────────────────────── 965b ──── 3.4%
+       │  └ node_modules/react-dom/cjs/react-dom-server.browser.production.min.js
+       │     └ node_modules/react-dom/server.browser.js
+       │        └ example.jsx
+       ├ example.jsx ──────────────────────────────────────────────────────────── 137b ──── 0.5%
+       ├ node_modules/react-dom/server.browser.js ──────────────────────────────── 50b ──── 0.2%
+       │  └ example.jsx
+       └ node_modules/react/index.js ───────────────────────────────────────────── 50b ──── 0.2%
+          └ example.jsx
+    ```
+
+    There is also a JS API for this:
+
+    ```js
+    const result = await esbuild.build({
+      metafile: true,
+      ...
+    })
+    console.log(await esbuild.analyzeMetafile(result.metafile, {
+      verbose: true,
+    }))
+    ```
+
+    and a Go API:
+
+    ```js
+    result := api.Build(api.BuildOptions{
+      Metafile: true,
+      ...
+    })
+    fmt.Println(api.AnalyzeMetafile(result.Metafile, api.AnalyzeMetafileOptions{
+      Verbose: true,
+    }))
+    ```
+
+    Note that this is not the only way to visualize this data. If you want a visualization that's different than the information displayed here, you can easily build it yourself using the information in the metafile that is generated with the `--metafile=` flag.
+
+    Also note that this data is intended for humans, not machines. The specific format of this data may change over time which will likely break any tools that try to parse it. You should not write a tool to parse this data. You should be using the information in the JSON metadata file instead. Everything in this visualization is derived from the JSON metadata so you are not losing out on any information by not using esbuild's output.
+
+* Allow `require.resolve` in non-node builds ([#1579](https://github.com/evanw/esbuild/issues/1579))
+
+    With this release, you can now use `require.resolve` in builds when the target platform is set to `browser` instead of `node` as long as the function `window.require.resolve` exists somehow. This was already possible when the platform is `node` but when the platform is `browser`, esbuild generates a no-op shim `require` function for compatibility reasons (e.g. because some code expects `typeof require` must be `"function"` even in the browser). The shim previously had a fallback to `window.require` if it exists, but additional properties of the `require` function such as `require.resolve` were not copied over to the shim. Now the shim function is only used if `window.require` is undefined so additional properties such as `require.resolve` should now work.
+
+    This change was contributed by [@screetBloom](https://github.com/screetBloom).
+
+## 0.12.25
+
+* Fix a TypeScript parsing edge case with the postfix `!` operator ([#1560](https://github.com/evanw/esbuild/issues/1560))
+
+    This release fixes a bug with esbuild's TypeScript parser where the postfix `!` operator incorrectly terminated a member expression after the `new` operator:
+
+    ```js
+    // Original input
+    new Foo!.Bar();
+
+    // Old output
+    new Foo().Bar();
+
+    // New output
+    new Foo.Bar();
+    ```
+
+    The problem was that `!` was considered a postfix operator instead of part of a member expression. It is now considered to be part of a member expression instead, which fixes this edge case.
+
+* Fix a parsing crash with nested private brand checks
+
+    This release fixes a bug in the parser where code of the form `#a in #b in c` caused a crash. This code now causes a syntax error instead. Private identifiers are allowed when followed by `in`, but only if the operator precedence level is such that the `in` operator is allowed. The parser was missing the operator precedence check.
+
+* Publish x86-64 binary executables for illumos ([#1562](https://github.com/evanw/esbuild/pull/1562))
+
+    This release adds support for the [illumos](https://www.illumos.org/) operating system, which is related to Solaris and SunOS. Support for this platform was contributed by [@hadfl](https://github.com/hadfl).
+
+## 0.12.24
+
+* Fix an edge case with direct `eval` and variable renaming
+
+    Use of the direct `eval` construct causes all variable names in the scope containing the direct `eval` and all of its parent scopes to become "pinned" and unable to be renamed. This is because the dynamically-evaluated code is allowed to reference any of those variables by name. When this happens esbuild avoids renaming any of these variables, which effectively disables minification for most of the file, and avoids renaming any non-pinned variables to the name of a pinned variable.
+
+    However, there was previously a bug where the pinned variable name avoidance only worked for pinned variables in the top-level scope but not in nested scopes. This could result in a non-pinned variable being incorrectly renamed to the name of a pinned variable in certain cases. For example:
+
+    ```js
+    // Input to esbuild
+    return function($) {
+      function foo(arg) {
+        return arg + $;
+      }
+      // Direct "eval" here prevents "$" from being renamed
+      // Repeated "$" puts "$" at the top of the character frequency histogram
+      return eval(foo($$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$))
+    }(2);
+    ```
+
+    When this code is minified with `--minify-identifiers`, the non-pinned variable `arg` is incorrectly transformed into `$` resulting in a name collision with the nested pinned variable `$`:
+
+    ```js
+    // Old output from esbuild (incorrect)
+    return function($) {
+      function foo($) {
+        return $ + $;
+      }
+      return eval(foo($$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$));
+    }(2);
+    ```
+
+    This is because the non-pinned variable `arg` is renamed to the top character in the character frequency histogram `$` (esbuild uses a character frequency histogram for smaller gzipped output sizes) and the pinned variable `$` was incorrectly not present in the list of variable names to avoid. With this release, the output is now correct:
+
+    ```js
+    // New output from esbuild (correct)
+    return function($) {
+      function foo(n) {
+        return n + $;
+      }
+      return eval(foo($$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$));
+    }(2);
+    ```
+
+    Note that even when esbuild handles direct `eval` correctly, using direct `eval` is not recommended because it disables minification for the file and likely won't work correctly in the presence of scope hoisting optimizations. See https://esbuild.github.io/link/direct-eval for more details.
+
+## 0.12.23
+
+* Parsing of rest arguments in certain TypeScript types ([#1553](https://github.com/evanw/esbuild/issues/1553))
+
+    This release implements parsing of rest arguments inside object destructuring inside arrow functions inside TypeScript type declarations. Support for rest arguments in this specific syntax was not previously implemented. The following code was incorrectly considered a syntax error before this release, but is no longer considered a syntax error:
+
+    ```ts
+    type F = ({ ...rest }) => void;
+    ```
+
+* Fix error message for `watch: true` and `buildSync` ([#1552](https://github.com/evanw/esbuild/issues/1552))
+
+    Watch mode currently only works with the `build` API. Previously using watch mode with the `buildSync` API caused a confusing error message. This release explicitly disallows doing this, so the error message is now more clear.
+
+* Fix an minification bug with the `--keep-names` option ([#1552](https://github.com/evanw/esbuild/issues/1552))
+
+    This release fixes a subtle bug that happens with `--keep-names --minify` and nested function declarations in strict mode code. It can be triggered by the following code, which was being compiled incorrectly under those flags:
+
+    ```js
+    export function outer() {
+      {
+        function inner() {
+          return Math.random();
+        }
+        const x = inner();
+        console.log(x);
+      }
+    }
+    outer();
+    ```
+
+    The bug was caused by an unfortunate interaction between a few of esbuild's behaviors:
+
+    1. Function declarations inside of nested scopes behave differently in different situations, so esbuild rewrites this function declaration to a local variable initialized to a function expression instead so that it behaves the same in all situations.
+
+        More specifically, the interpretation of such function declarations depends on whether or not it currently exists in a strict mode context:
+
+        ```
+        > (function(){ { function x(){} } return x })()
+        function x() {}
+
+        > (function(){ 'use strict'; { function x(){} } return x })()
+        ❌ Uncaught ReferenceError: x is not defined
+        ```
+
+        The bundling process sometimes erases strict mode context. For example, different files may have different strict mode status but may be merged into a single file which all shares the same strict mode status. Also, files in ESM format are automatically in strict mode but a bundle output file in IIFE format may not be executed in strict mode. Transforming the nested `function` to a `let` in strict mode and a `var` in non-strict mode means esbuild's output will behave reliably in different environments.
+
+    2. The "keep names" feature adds automatic calls to the built-in `__name` helper function to assign the original name to the `.name` property of the minified function object at run-time. That transforms the code into this:
+
+        ```js
+        let inner = function() {
+          return Math.random();
+        };
+        __name(inner, "inner");
+        const x = inner();
+        console.log(x);
+        ```
+
+        This injected helper call does not count as a use of the associated function object so that dead-code elimination will still remove the function object as dead code if nothing else uses it. Otherwise dead-code elimination would stop working when the "keep names" feature is enabled.
+
+    3. Minification enables an optimization where an initialized variable with a single use immediately following that variable is transformed by inlining the initializer into the use. So for example `var a = 1; return a` is transformed into `return 1`. This code matches this pattern (initialized single-use variable + use immediately following that variable) so the optimization does the inlining, which transforms the code into this:
+
+        ```js
+        __name(function() {
+          return Math.random();
+        }, "inner");
+        const x = inner();
+        console.log(x);
+        ```
+
+        The code is now incorrect because `inner` actually has two uses, although only one was actually counted.
+
+    This inlining optimization will now be avoided in this specific case, which fixes the bug without regressing dead-code elimination or initialized variable inlining in any other cases.
+
+## 0.12.22
+
+* Make HTTP range requests more efficient ([#1536](https://github.com/evanw/esbuild/issues/1536))
+
+    The local HTTP server built in to esbuild supports [range requests](https://developer.mozilla.org/en-US/docs/Web/HTTP/Range_requests), which are necessary for video playback in Safari. This means you can now use `<video>` tags in your HTML pages with esbuild's local HTTP server.
+
+    Previously this was implemented inefficiently for files that aren't part of the build, but that are read from the underlying fallback directory. In that case the entire file was being read even though only part of the file was needed. In this release, only the part of the file that is needed is read so using HTTP range requests with esbuild in this case will now use less memory.
+
+* Fix CSS minification bug with `box-shadow` and `var()` ([#1538](https://github.com/evanw/esbuild/issues/1538))
+
+    The `box-shadow` property can be specified using 2, 3, or 4 numbers. The 3rd and 4th numbers are the blur radius and spread radius, and can be omitted if zero. When minifying, esbuild has an optimization that removes trailing zeros from runs of numbers within the `box-shadow` property. However, that optimization is not correct in the presence of tokens that are neither a number, a color, nor the token `insert`. These edge cases include `var()` or `calc()` tokens. With this release, esbuild will now do stronger validation and will only remove trailing zeros if the contents of the `box-shadow` property matches the underlying CSS grammar exactly.
+
+    ```css
+    /* Original code */
+    button {
+      box-shadow: 0 0 0 var(--spread) red;
+    }
+
+    /* Old minified output */
+    button{box-shadow:0 0 var(--spread) red}
+
+    /* New minified output */
+    button{box-shadow:0 0 0 var(--spread) red}
+    ```
+
+## 0.12.21
+
+* Add support for native esbuild on Windows 64-bit ARM ([#995](https://github.com/evanw/esbuild/issues/995))
+
+    The newly-released Go version 1.17.0 [adds support for Windows 64-bit ARM CPUs](https://golang.org/doc/go1.17#windows), so esbuild can now support these CPUs as well. This release introduces support for `npm install esbuild` on Windows 64-bit ARM.
+
+## 0.12.20
+
+* Avoid the sequence `</style` in CSS output ([#1509](https://github.com/evanw/esbuild/issues/1509))
+
+    The CSS code generator now avoids generating the character sequence `</style` in case you want to embed the CSS output in a `<style>...</style>` tag inside HTML:
+
+    ```css
+    /* Original code */
+    a:after {
+      content: "</style>";
+    }
+
+    /* Old output */
+    a:after {
+      content: "</style>";
+    }
+
+    /* New output */
+    a:after {
+      content: "<\/style>";
+    }
+    ```
+
+    This mirrors how the JS code generator similarly avoids the character sequence `</script`.
+
+    In addition, the check that escapes `</style` and `</script` is now case-insensitive to match how the browser's HTML parser behaves. So `</STYLE` and `</SCRIPT` are now escaped as well.
+
+* Fix a TypeScript parsing edge case with ASI (Automatic Semicolon Insertion) ([#1512](https://github.com/evanw/esbuild/issues/1512))
+
+    This fixes a parsing bug where TypeScript types consisting of multiple identifiers joined together with a `.` could incorrectly extend onto the next line if the next line started with `<`. This problem was due to ASI; esbuild should be automatically inserting a semicolon at the end of the line:
+
+    ```ts
+    let x: {
+      <A extends B>(): c.d /* A semicolon should be automatically inserted here */
+      <E extends F>(): g.h
+    }
+    ```
+
+    Previously the above code was incorrectly considered a syntax error since esbuild attempted to parse the parameterized type `c.d<E extends F ? ...>`. With this release, this code is now parsed correctly.
+
+## 0.12.19
+
+* Add support for CSS source maps ([#519](https://github.com/evanw/esbuild/issues/519))
+
+    With this release, esbuild will now generate source maps for CSS output files when `--sourcemap` is enabled. This supports all of the same options as JS source maps including `--sourcemap=inline` and `--sourcemap=external`. In addition, CSS input files with embedded `/*# sourceMappingURL=... */` comments will cause the CSS output file source map to map all the way back to the original inputs. CSS source maps are used by the browser's style inspector to link back to the original source code instead of linking to the bundled source code.
+
+* Fix computed class fields in TypeScript edge case ([#1507](https://github.com/evanw/esbuild/issues/1507))
+
+    If TypeScript code contains computed class fields, the target environment supports class fields so syntax lowering is not necessary, and TypeScript's `useDefineForClassFields` setting is set to `true`, then esbuild had a bug where the computed property names were computed after the class definition and were undefined. Note that TypeScript's `useDefineForClassFields` setting defaults to `true` if `tsconfig.json` contains `"target": "ESNext"`.
+
+    ```ts
+    // Original code
+    class Foo {
+      [foo] = 1;
+      @bar [baz] = 2;
+    }
+
+    // Old output
+    var _a, _b;
+    var Foo = class {
+      [_a] = 1;
+      [_b] = 2;
+    };
+    _a = foo, _b = baz;
+    __decorateClass([
+      bar
+    ], Foo.prototype, _b, 2);
+
+    // New output
+    var _a;
+    var Foo = class {
+      [foo] = 1;
+      [_a = baz] = 2;
+    };
+    __decorateClass([
+      bar
+    ], Foo.prototype, _a, 2);
+    ```
+
+    The problem in this case is that normally TypeScript moves class field initializers into the special `constructor` method (automatically generating one if one doesn't already exist) so the side effects for class field property names must happen after the class body. But if class fields are supported by the target environment then the side effects must happen inline instead.
+
+## 0.12.18
+
+* Allow implicit `./` in CSS `@import` paths ([#1494](https://github.com/evanw/esbuild/pull/1494))
+
+    In the browser, the paths inside CSS `@import` rules are implicitly relative to the path of the current CSS style sheet. Previously esbuild used node's JS path resolution rules in CSS as well, which required a `./` or `../` prefix for a path to be considered a relative path. Paths without that prefix are considered package paths and are searched for inside `node_modules` instead.
+
+    With this release, esbuild will now first try to interpret the path as a relative path and then fall back to interpreting it as a package path if nothing exists at that relative path. This feature was originally added in version 0.7.18 but only worked for CSS `url()` tokens. In this release it now also works for `@import` rules.
+
+    This feature was contributed by [@pd4d10](https://github.com/pd4d10).
+
+* Fix lowering of nullish coalescing assignment edge case ([#1493](https://github.com/evanw/esbuild/issues/1493))
+
+    This release fixes a bug where lowering of the `??=` nullish coalescing assignment operator failed when the target environment supported nullish coalescing and private class fields but not nullish coalescing assignment. An example target environment with this specific feature support matrix combination is node 14.8. This edge case is now lowered correctly:
+
+    ```js
+    // Original code
+    class A {
+      #a;
+      f() {
+        this.#a ??= 1;
+      }
+    }
+
+    // Old output (with --target=node14.8)
+    panic: Unexpected expression of type *js_ast.EPrivateIdentifier
+
+    // New output (with --target=node14.8)
+    class A {
+      #a;
+      f() {
+        this.#a ?? (this.#a = 1);
+      }
+    }
+    ```
+
+* Fix public fields being inserted before `super()` call ([#1497](https://github.com/evanw/esbuild/issues/1497))
+
+    The helper function that esbuild uses to emulate the new public class field syntax can potentially be inserted into the class constructor before the `super()` call. That is problematic because the helper function makes use of `this`, and `this` must only be used after the `super()` call. This release fixes a case where this happens when minification is enabled:
+
+    ```js
+    // Original code
+    class A extends B {
+      x;
+      constructor() {
+        f();
+        super();
+      }
+    }
+
+    // Old output (with --minify-syntax --target=es6)
+    class A extends B {
+      constructor() {
+        __publicField(this, "x");
+        f(), super();
+      }
+    }
+
+    // New output (with --minify-syntax --target=es6)
+    class A extends B {
+      constructor() {
+        f();
+        super();
+        __publicField(this, "x");
+      }
+    }
+    ```
+
+* Fix lowering of static private methods in class expressions ([#1498](https://github.com/evanw/esbuild/issues/1498))
+
+    Previously static private methods were lowered incorrectly when present in class expressions. The class expression itself was missing in the output due to an oversight (variable shadowing). This issue has been fixed:
+
+    ```js
+    // Original code
+    (class {
+      static #x() {}
+    });
+
+    // Old output (with --target=es6)
+    var _x, _a, x_fn;
+    __privateAdd(_a, _x), _x = new WeakSet(), x_fn = function() {
+    }, __privateAdd(_a, _x), _a;
+
+    // New output (with --target=es6)
+    var _x, _a, x_fn;
+    _a = class {
+    }, _x = new WeakSet(), x_fn = function() {
+    }, __privateAdd(_a, _x), _a;
+    ```
+
+## 0.12.17
+
+* Fix a bug with private fields and logical assignment operators ([#1418](https://github.com/evanw/esbuild/issues/1418))
+
+    This release fixes a bug where code using private fields in combination with [logical assignment operators](https://github.com/tc39/proposal-logical-assignment) was transformed incorrectly if the target environment supported logical assignment operators but not private fields. Since logical assignment operators are assignment operators, the entire operator must be transformed even if the operator is supported. This should now work correctly:
+
+    ```js
+    // Original code
+    class Foo {
+      #x
+      foo() {
+        this.#x &&= 2
+        this.#x ||= 2
+        this.#x ??= 2
+      }
+    }
+
+    // Old output
+    var _x;
+    class Foo {
+      constructor() {
+        __privateAdd(this, _x, void 0);
+      }
+      foo() {
+        this._x &&= 2;
+        this._x ||= 2;
+        this._x ??= 2;
+      }
+    }
+    _x = new WeakMap();
+
+    // New output
+    var _x, _a;
+    class Foo {
+      constructor() {
+        __privateAdd(this, _x, void 0);
+      }
+      foo() {
+        __privateGet(this, _x) && __privateSet(this, _x, 2);
+        __privateGet(this, _x) || __privateSet(this, _x, 2);
+        __privateGet(this, _x) ?? __privateSet(this, _x, 2);
+      }
+    }
+    _x = new WeakMap();
+    ```
+
+* Fix a hoisting bug in the bundler ([#1455](https://github.com/evanw/esbuild/issues/1455))
+
+    This release fixes a bug where variables declared using `var` inside of top-level `for` loop initializers were not hoisted inside lazily-initialized ES modules (such as those that are generated when bundling code that loads an ES module using `require`). This meant that hoisted function declarations incorrectly didn't have access to these loop variables:
+
+    ```js
+    // entry.js
+    console.log(require('./esm-file').test())
+
+    // esm-file.js
+    for (var i = 0; i < 10; i++) ;
+    export function test() { return i }
+    ```
+
+    Old output (incorrect):
+
+    ```js
+    // esm-file.js
+    var esm_file_exports = {};
+    __export(esm_file_exports, {
+      test: () => test
+    });
+    function test() {
+      return i;
+    }
+    var init_esm_file = __esm({
+      "esm-file.js"() {
+        for (var i = 0; i < 10; i++)
+          ;
+      }
+    });
+
+    // entry.js
+    console.log((init_esm_file(), esm_file_exports).test());
+    ```
+
+    New output (correct):
+
+    ```js
+    // esm-file.js
+    var esm_file_exports = {};
+    __export(esm_file_exports, {
+      test: () => test
+    });
+    function test() {
+      return i;
+    }
+    var i;
+    var init_esm_file = __esm({
+      "esm-file.js"() {
+        for (i = 0; i < 10; i++)
+          ;
+      }
+    });
+
+    // entry.js
+    console.log((init_esm_file(), esm_file_exports).test());
+    ```
+
+* Fix a code generation bug for private methods ([#1424](https://github.com/evanw/esbuild/issues/1424))
+
+    This release fixes a bug where when private methods are transformed and the target environment is one that supports private methods (such as `esnext`), the member function name was uninitialized and took on the zero value by default. This resulted in the member function name becoming `__create` instead of the correct name since that's the name of the symbol at index 0. Now esbuild always generates a private method symbol even when private methods are supported, so this is no longer an issue:
+
+    ```js
+    // Original code
+    class Foo {
+      #a() { return 'a' }
+      #b() { return 'b' }
+      static c
+    }
+
+    // Old output
+    var _a, __create, _b, __create;
+    var Foo = class {
+      constructor() {
+        __privateAdd(this, _a);
+        __privateAdd(this, _b);
+      }
+    };
+    _a = new WeakSet();
+    __create = function() {
+      return "a";
+    };
+    _b = new WeakSet();
+    __create = function() {
+      return "b";
+    };
+    __publicField(Foo, "c");
+
+    // New output
+    var _a, a_fn, _b, b_fn;
+    var Foo = class {
+      constructor() {
+        __privateAdd(this, _a);
+        __privateAdd(this, _b);
+      }
+    };
+    _a = new WeakSet();
+    a_fn = function() {
+      return "a";
+    };
+    _b = new WeakSet();
+    b_fn = function() {
+      return "b";
+    };
+    __publicField(Foo, "c");
+    ```
+
+* The CLI now stops watch and serve mode when stdin is closed ([#1449](https://github.com/evanw/esbuild/pull/1449))
+
+    To facilitate esbuild being called from the Erlang VM, esbuild's command-line interface will now exit when in `--watch` or `--serve` mode if stdin is closed. This change is necessary because the Erlang VM doesn't have an API for terminating a child process, so it instead closes stdin to indicate that the process is no longer needed.
+
+    Note that this only happens when stdin is not a TTY (i.e. only when the CLI is being used non-interactively) to avoid disrupting the use case of manually moving esbuild to a background job using a Unix terminal.
+
+    This change was contributed by [@josevalim](https://github.com/josevalim).
+
+## 0.12.16
+
+* Remove warning about bad CSS `@`-rules ([#1426](https://github.com/evanw/esbuild/issues/1426))
+
+    The CSS bundler built in to esbuild is only designed with real CSS in mind. Running other languages that compile down to CSS through esbuild without compiling them down to CSS first can be a bad idea since esbuild applies browser-style error recovery to invalid syntax and uses browser-style import order that other languages might not be expecting. This is why esbuild previously generated warnings when it encountered unknown CSS `@`-rules.
+
+    However, some people want to run other non-CSS languages through esbuild's CSS bundler anyway. So with this release, esbuild will no longer generate any warnings if you do this. But keep in mind that doing this is still potentially unsafe. Depending on the input language, using esbuild's CSS bundler to bundle non-CSS code can still potentially alter the semantics of your code.
+
+* Allow `ES2021` in `tsconfig.json` ([#1470](https://github.com/evanw/esbuild/issues/1470))
+
+    TypeScript recently [added support for `ES2021`](https://github.com/microsoft/TypeScript/pull/41239) in `tsconfig.json` so esbuild now supports this too. This has the same effect as if you passed `--target=es2021` to esbuild. Keep in mind that the value of `target` in `tsconfig.json` is only respected if you did not pass a `--target=` value to esbuild.
+
+* Avoid using the `worker_threads` optimization in certain old node versions ([#1462](https://github.com/evanw/esbuild/issues/1462))
+
+    The `worker_threads` optimization makes esbuild's synchronous API calls go much faster than they would otherwise. However, it turns out this optimization cannot be used in certain node versions older than `v12.17.0`, where node throws an error when trying to create the worker. This optimization is now disabled in these scenarios.
+
+    Note that these old node versions are [currently in maintenance](https://nodejs.org/en/about/releases/). I recommend upgrading to a modern version of node if run-time performance is important to you.
+
+* Paths starting with `node:` are implicitly external when bundling for node ([#1466](https://github.com/evanw/esbuild/issues/1466))
+
+    This replicates a new node feature where you can [prefix an import path with `node:`](https://nodejs.org/api/esm.html#esm_node_imports) to load a native node module by that name (such as `import fs from "node:fs/promises"`). These paths also [have special behavior](https://nodejs.org/api/modules.html#modules_core_modules):
+
+    > Core modules can also be identified using the `node:` prefix, in which case it bypasses the `require` cache. For instance, `require('node:http')` will always return the built in HTTP module, even if there is `require.cache` entry by that name.
+
+    With this release, esbuild's built-in resolver will now automatically consider all import paths starting with `node:` as external. This new behavior is only active when the current platform is set to node such as with `--platform=node`. If you need to customize this behavior, you can write a plugin to intercept these paths and treat them differently.
+
+* Consider `\` and `/` to be the same in file paths ([#1459](https://github.com/evanw/esbuild/issues/1459))
+
+    On Windows, there are many different file paths that can refer to the same underlying file. Windows uses a case-insensitive file system so for example `foo.js` and `Foo.js` are the same file. When bundling, esbuild needs to treat both of these paths as the same to avoid incorrectly bundling the file twice. This is case is already handled by identifying files by their lower-case file path.
+
+    The case that wasn't being handled is the fact that Windows supports two different path separators, `/` and `\`, both of which mean the same thing. For example `foo/bar.js` and `foo\bar.js` are the same file. With this release, this case is also handled by esbuild. Files that are imported in multiple places with inconsistent path separators will now be considered the same file instead of bundling the file multiple times.
+
+## 0.12.15
+
+* Fix a bug with `var()` in CSS color lowering ([#1421](https://github.com/evanw/esbuild/issues/1421))
+
+    This release fixes a bug with esbuild's handling of the `rgb` and `hsl` color functions when they contain `var()`. Each `var()` token sequence can be substituted for any number of tokens including zero or more than one, but previously esbuild's output was only correct if each `var()` inside of `rgb` or `hsl` contained exactly one token. With this release, esbuild will now not attempt to transform newer CSS color syntax to older CSS color syntax if it contains `var()`:
+
+    ```
+    /* Original code */
+    a {
+      color: hsl(var(--hs), var(--l));
+    }
+
+    /* Old output */
+    a {
+      color: hsl(var(--hs), ,, var(--l));
+    }
+
+    /* New output */
+    a {
+      color: hsl(var(--hs), var(--l));
+    }
+    ```
+
+    The bug with the old output above happened because esbuild considered the arguments to `hsl` as matching the pattern `hsl(h s l)` which is the new space-separated form allowed by [CSS Color Module Level 4](https://drafts.csswg.org/css-color/#the-hsl-notation). Then esbuild tried to convert this to the form `hsl(h, s, l)` which is more widely supported by older browsers. But this substitution doesn't work in the presence of `var()`, so it has now been disabled in that case.
+
+## 0.12.14
+
+* Fix the `file` loader with custom namespaces ([#1404](https://github.com/evanw/esbuild/issues/1404))
+
+    This fixes a regression from version 0.12.12 where using a plugin to load an input file with the `file` loader in a custom namespace caused esbuild to write the contents of that input file to the path associated with that namespace instead of to a path inside of the output directory. With this release, the `file` loader should now always copy the file somewhere inside of the output directory.
+
+## 0.12.13
+
+* Fix using JS synchronous API from from non-main threads ([#1406](https://github.com/evanw/esbuild/issues/1406))
+
+    This release fixes an issue with the new implementation of the synchronous JS API calls (`transformSync` and `buildSync`) when they are used from a thread other than the main thread. The problem happened because esbuild's new implementation uses node's `worker_threads` library internally and non-main threads were incorrectly assumed to be esbuild's internal thread instead of potentially another unrelated thread. Now esbuild's synchronous JS APIs should work correctly when called from non-main threads.
+
+## 0.12.12
+
+* Fix `file` loader import paths when subdirectories are present ([#1044](https://github.com/evanw/esbuild/issues/1044))
+
+    Using the `file` loader for a file type causes importing affected files to copy the file into the output directory and to embed the path to the copied file into the code that imported it. However, esbuild previously always embedded the path relative to the output directory itself. This is problematic when the importing code is generated within a subdirectory inside the output directory, since then the relative path is wrong. For example:
+
+    ```
+    $ cat src/example/entry.css
+    div {
+      background: url(../images/image.png);
+    }
+
+    $ esbuild --bundle src/example/entry.css --outdir=out --outbase=src --loader:.png=file
+
+    $ find out -type f
+    out/example/entry.css
+    out/image-55DNWN2R.png
+
+    $ cat out/example/entry.css
+    /* src/example/entry.css */
+    div {
+      background: url(./image-55DNWN2R.png);
+    }
+    ```
+
+    This is output from the previous version of esbuild. The above asset reference in `out/example/entry.css` is wrong. The path should start with `../` because the two files are in different directories.
+
+    With this release, the asset references present in output files will now be the full relative path from the output file to the asset, so imports should now work correctly when the entry point is in a subdirectory within the output directory. This change affects asset reference paths in both CSS and JS output files.
+
+    Note that if you want asset reference paths to be independent of the subdirectory in which they reside, you can use the `--public-path` setting to provide the common path that all asset reference paths should be constructed relative to. Specifically `--public-path=.` should bring back the old problematic behavior in case you need it.
+
+* Add support for `[dir]` in `--asset-names` ([#1196](https://github.com/evanw/esbuild/pull/1196))
+
+    You can now use path templates such as `--asset-names=[dir]/[name]-[hash]` to copy the input directory structure of your asset files (i.e. input files loaded with the `file` loader) to the output directory. Here's an example:
+
+    ```
+    $ cat entry.css
+    header {
+      background: url(images/common/header.png);
+    }
+    main {
+      background: url(images/home/hero.png);
+    }
+
+    $ esbuild --bundle entry.css --outdir=out --asset-names=[dir]/[name]-[hash] --loader:.png=file
+
+    $ find out -type f
+    out/images/home/hero-55DNWN2R.png
+    out/images/common/header-55DNWN2R.png
+    out/entry.css
+
+    $ cat out/entry.css
+    /* entry.css */
+    header {
+      background: url(./images/common/header-55DNWN2R.png);
+    }
+    main {
+      background: url(./images/home/hero-55DNWN2R.png);
+    }
+    ```
+
+## 0.12.11
+
+* Enable faster synchronous transforms with the JS API by default ([#1000](https://github.com/evanw/esbuild/issues/1000))
+
+    Currently the synchronous JavaScript API calls `transformSync` and `buildSync` spawn a new child process on every call. This is due to limitations with node's `child_process` API. Doing this means `transformSync` and `buildSync` are much slower than `transform` and `build`, which share the same child process across calls.
+
+    This release improves the performance of `transformSync` and `buildSync` by up to 20x. It enables a hack where node's `worker_threads` API and atomics are used to block the main thread while asynchronous communication with a single long-lived child process happens in a worker. Previously this was only enabled when the `ESBUILD_WORKER_THREADS` environment variable was set to `1`. But this experiment has been available for a while (since version 0.9.6) without any reported issues. Now this hack will be enabled by default. It can be disabled by setting `ESBUILD_WORKER_THREADS` to `0` before running node.
+
+* Fix nested output directories with WebAssembly on Windows ([#1399](https://github.com/evanw/esbuild/issues/1399))
+
+    Many functions in Go's standard library have a bug where they do not work on Windows when using Go with WebAssembly. This is a long-standing bug and is a fault with the design of the standard library, so it's unlikely to be fixed. Basically Go's standard library is designed to bake "Windows or not" decision into the compiled executable, but WebAssembly is platform-independent which makes "Windows or not" is a run-time decision instead of a compile-time decision. Oops.
+
+    I have been working around this by trying to avoid using path-related functions in the Go standard library and doing all path manipulation by myself instead. This involved completely replacing Go's `path/filepath` library. However, I missed the `os.MkdirAll` function which is also does path manipulation but is outside of the `path/filepath` package. This meant that nested output directories failed to be created on Windows, which caused a build error. This problem only affected the `esbuild-wasm` package.
+
+    This release manually reimplements nested output directory creation to work around this bug in the Go standard library. So nested output directories should now work on Windows with the `esbuild-wasm` package.
+
+## 0.12.10
+
+* Add a target for ES2021
+
+    It's now possible to use `--target=es2021` to target the newly-released JavaScript version ES2021. The only difference between that and `--target=es2020` is that logical assignment operators such as `a ||= b` are not converted to regular assignment operators such as `a || (a = b)`.
+
+* Minify the syntax `Infinity` to `1 / 0` ([#1385](https://github.com/evanw/esbuild/pull/1385))
+
+	The `--minify-syntax` flag (automatically enabled by `--minify`) will now minify the expression `Infinity` to `1 / 0`, which uses fewer bytes:
+
+	```js
+	// Original code
+	const a = Infinity;
+
+	// Output with "--minify-syntax"
+	const a = 1 / 0;
+	```
+
+    This change was contributed by [@Gusted](https://github.com/Gusted).
+
+* Minify syntax in the CSS `transform` property ([#1390](https://github.com/evanw/esbuild/pull/1390))
+
+    This release includes various size reductions for CSS transform matrix syntax when minification is enabled:
+
+    ```css
+    /* Original code */
+    div {
+      transform: translate3d(0, 0, 10px) scale3d(200%, 200%, 1) rotate3d(0, 0, 1, 45deg);
+    }
+
+    /* Output with "--minify-syntax" */
+    div {
+      transform: translateZ(10px) scale(2) rotate(45deg);
+    }
+    ```
+
+    The `translate3d` to `translateZ` conversion was contributed by [@steambap](https://github.com/steambap).
+
+* Support for the case-sensitive flag in CSS attribute selectors ([#1397](https://github.com/evanw/esbuild/issues/1397))
+
+    You can now use the case-sensitive CSS attribute selector flag `s` such as in `[type="a" s] { list-style: lower-alpha; }`. Previously doing this caused a warning about unrecognized syntax.
+
+## 0.12.9
+
+* Allow `this` with `--define` ([#1361](https://github.com/evanw/esbuild/issues/1361))
+
+    You can now override the default value of top-level `this` with the `--define` feature. Top-level `this` defaults to being `undefined` in ECMAScript modules and `exports` in CommonJS modules. For example:
+
+    ```js
+    // Original code
+    ((obj) => {
+      ...
+    })(this);
+
+    // Output with "--define:this=window"
+    ((obj) => {
+      ...
+    })(window);
+    ```
+
+    Note that overriding what top-level `this` is will likely break code that uses it correctly. So this new feature is only useful in certain cases.
+
+* Fix CSS minification issue with `!important` and duplicate declarations ([#1372](https://github.com/evanw/esbuild/issues/1372))
+
+    Previously CSS with duplicate declarations for the same property where the first one was marked with `!important` was sometimes minified incorrectly. For example:
+
+    ```css
+    .selector {
+      padding: 10px !important;
+      padding: 0;
+    }
+    ```
+
+    This was incorrectly minified as `.selector{padding:0}`. The bug affected three properties: `padding`, `margin`, and `border-radius`. With this release, this code will now be minified as `.selector{padding:10px!important;padding:0}` instead which means there is no longer a difference between minified and non-minified code in this case.
+
 ## 0.12.8
 
 * Plugins can now specify `sideEffects: false` ([#1009](https://github.com/evanw/esbuild/issues/1009))
@@ -3021,7 +4718,7 @@ In addition to the breaking changes above, the following features are also inclu
 
 * Allow namespaced names in JSX syntax ([#702](https://github.com/evanw/esbuild/issues/702))
 
-    XML-style namespaced names with a `:` in the middle are a part of the [JSX specification](http://facebook.github.io/jsx/) but they are explicitly unimplemented by React and TypeScript so esbuild doesn't currently support them. However, there was a user request to support this feature since it's part of the JSX specification and esbuild's JSX support can be used for non-React purposes. So this release now supports namespaced names in JSX expressions:
+    XML-style namespaced names with a `:` in the middle are a part of the [JSX specification](https://facebook.github.io/jsx/) but they are explicitly unimplemented by React and TypeScript so esbuild doesn't currently support them. However, there was a user request to support this feature since it's part of the JSX specification and esbuild's JSX support can be used for non-React purposes. So this release now supports namespaced names in JSX expressions:
 
     ```jsx
     let xml =
@@ -6228,7 +7925,7 @@ Note that you can also just use `--strict` to enable strictness for all transfor
 
 * Special-case `require` in browserify bundles ([#80](https://github.com/evanw/esbuild/issues/80) and [#90](https://github.com/evanw/esbuild/issues/90))
 
-    [Browserify](http://browserify.org/) generates code containing the expression `typeof require == "function" && require` which then ends up in a lot of npm packages. This expression is problematic because bundling involves statically determining all source files and their dependencies. Using `require` dynamically like this defeats the static analysis. It's also problematic because esbuild replaces `typeof require == "function"` with `true` since `require` is a function at compile-time when bundling. Then `true && require` becomes `require` in the generated code, which crashes at run time.
+    [Browserify](https://browserify.org/) generates code containing the expression `typeof require == "function" && require` which then ends up in a lot of npm packages. This expression is problematic because bundling involves statically determining all source files and their dependencies. Using `require` dynamically like this defeats the static analysis. It's also problematic because esbuild replaces `typeof require == "function"` with `true` since `require` is a function at compile-time when bundling. Then `true && require` becomes `require` in the generated code, which crashes at run time.
 
     Previously esbuild would generate an error for these expressions. Now esbuild replaces `typeof require == "function" && require` with `false` when targeting the browser and `require` when targeting node. This matches the intent of the browserify prelude snippet and allows esbuild to build libraries containing this code without errors or warnings.
 
@@ -6246,7 +7943,7 @@ Note that you can also just use `--strict` to enable strictness for all transfor
 
 * Fix interpretation of legacy `-->` single-line HTML comments
 
-    The `-->` sequence starts a single-line comment similar to `//`. This is legacy behavior from [annex B](http://www.ecma-international.org/ecma-262/6.0/#sec-html-like-comments) under the name `SingleLineHTMLCloseComment`. However, `-->` was incorrectly treated as the start of a comment even when it didn't come at the beginning of the line. Now `-->` only starts a comment if there are no tokens before it on that line.
+    The `-->` sequence starts a single-line comment similar to `//`. This is legacy behavior from [annex B](https://www.ecma-international.org/ecma-262/6.0/#sec-html-like-comments) under the name `SingleLineHTMLCloseComment`. However, `-->` was incorrectly treated as the start of a comment even when it didn't come at the beginning of the line. Now `-->` only starts a comment if there are no tokens before it on that line.
 
 * Allow shadowing of CommonJS variables ([#165](https://github.com/evanw/esbuild/issues/165))
 

@@ -24,8 +24,10 @@ import (
 // representation that helps provide good parsing and printing performance.
 
 type AST struct {
-	ImportRecords []ast.ImportRecord
-	Rules         []R
+	ImportRecords        []ast.ImportRecord
+	Rules                []Rule
+	SourceMapComment     logger.Span
+	ApproximateLineCount int32
 }
 
 // We create a lot of tokens, so make sure this layout is memory-efficient.
@@ -69,6 +71,13 @@ type Token struct {
 	// be altered by processing in certain situations (e.g. minification).
 	Whitespace WhitespaceFlags // 1 byte
 }
+
+type WhitespaceFlags uint8
+
+const (
+	WhitespaceBefore WhitespaceFlags = 1 << iota
+	WhitespaceAfter
+)
 
 func (a Token) Equal(b Token) bool {
 	if a.Kind == b.Kind && a.Text == b.Text && a.ImportRecordIndex == b.ImportRecordIndex && a.Whitespace == b.Whitespace {
@@ -136,6 +145,18 @@ func TokensEqualIgnoringWhitespace(a []Token, b []Token) bool {
 	return true
 }
 
+func TokensAreCommaSeparated(tokens []Token) bool {
+	if n := len(tokens); (n & 1) != 0 {
+		for i := 1; i < n; i += 2 {
+			if tokens[i].Kind != css_lexer.TComma {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 func (t Token) FractionForPercentage() (float64, bool) {
 	if t.Kind == css_lexer.TPercentage {
 		if f, err := strconv.ParseFloat(t.PercentageValue(), 64); err == nil {
@@ -163,12 +184,14 @@ func (t *Token) TurnLengthIntoNumberIfZero() bool {
 	return false
 }
 
-type WhitespaceFlags uint8
-
-const (
-	WhitespaceBefore WhitespaceFlags = 1 << iota
-	WhitespaceAfter
-)
+func (t *Token) TurnLengthOrPercentageIntoNumberIfZero() bool {
+	if t.Kind == css_lexer.TPercentage && t.PercentageValue() == "0" {
+		t.Kind = css_lexer.TNumber
+		t.Text = "0"
+		return true
+	}
+	return t.TurnLengthIntoNumberIfZero()
+}
 
 func (t Token) PercentageValue() string {
 	return t.Text[:len(t.Text)-1]
@@ -182,27 +205,40 @@ func (t Token) DimensionUnit() string {
 	return t.Text[t.UnitOffset:]
 }
 
+func (t Token) IsZero() bool {
+	return t.Kind == css_lexer.TNumber && t.Text == "0"
+}
+
+func (t Token) IsOne() bool {
+	return t.Kind == css_lexer.TNumber && t.Text == "1"
+}
+
+type Rule struct {
+	Loc  logger.Loc
+	Data R
+}
+
 type R interface {
 	Equal(rule R) bool
 	Hash() (uint32, bool)
 }
 
-func RulesEqual(a []R, b []R) bool {
+func RulesEqual(a []Rule, b []Rule) bool {
 	if len(a) != len(b) {
 		return false
 	}
 	for i, c := range a {
-		if !c.Equal(b[i]) {
+		if !c.Data.Equal(b[i].Data) {
 			return false
 		}
 	}
 	return true
 }
 
-func HashRules(hash uint32, rules []R) uint32 {
+func HashRules(hash uint32, rules []Rule) uint32 {
 	hash = helpers.HashCombine(hash, uint32(len(rules)))
 	for _, child := range rules {
-		if childHash, ok := child.Hash(); ok {
+		if childHash, ok := child.Data.Hash(); ok {
 			hash = helpers.HashCombine(hash, childHash)
 		} else {
 			hash = helpers.HashCombine(hash, 0)
@@ -247,7 +283,7 @@ type RAtKeyframes struct {
 
 type KeyframeBlock struct {
 	Selectors []string
-	Rules     []R
+	Rules     []Rule
 }
 
 func (a *RAtKeyframes) Equal(rule R) bool {
@@ -290,7 +326,7 @@ func (r *RAtKeyframes) Hash() (uint32, bool) {
 type RKnownAt struct {
 	AtToken string
 	Prelude []Token
-	Rules   []R
+	Rules   []Rule
 }
 
 func (a *RKnownAt) Equal(rule R) bool {
@@ -327,41 +363,17 @@ func (r *RUnknownAt) Hash() (uint32, bool) {
 
 type RSelector struct {
 	Selectors []ComplexSelector
-	Rules     []R
+	Rules     []Rule
 }
 
 func (a *RSelector) Equal(rule R) bool {
 	b, ok := rule.(*RSelector)
 	if ok && len(a.Selectors) == len(b.Selectors) {
-		for i, ai := range a.Selectors {
-			bi := b.Selectors[i]
-			if len(ai.Selectors) != len(bi.Selectors) {
+		for i, sel := range a.Selectors {
+			if !sel.Equal(b.Selectors[i]) {
 				return false
 			}
-
-			for j, aj := range ai.Selectors {
-				bj := bi.Selectors[j]
-				if aj.HasNestPrefix != bj.HasNestPrefix || aj.Combinator != bj.Combinator {
-					return false
-				}
-
-				if ats, bts := aj.TypeSelector, bj.TypeSelector; (ats == nil) != (bts == nil) {
-					return false
-				} else if ats != nil && bts != nil && !ats.Equal(*bts) {
-					return false
-				}
-
-				if len(aj.SubclassSelectors) != len(bj.SubclassSelectors) {
-					return false
-				}
-				for k, ak := range aj.SubclassSelectors {
-					if !ak.Equal(bj.SubclassSelectors[k]) {
-						return false
-					}
-				}
-			}
 		}
-
 		return RulesEqual(a.Rules, b.Rules)
 	}
 
@@ -392,7 +404,7 @@ func (r *RSelector) Hash() (uint32, bool) {
 
 type RQualified struct {
 	Prelude []Token
-	Rules   []R
+	Rules   []Rule
 }
 
 func (a *RQualified) Equal(rule R) bool {
@@ -442,8 +454,53 @@ func (r *RBadDeclaration) Hash() (uint32, bool) {
 	return hash, true
 }
 
+type RComment struct {
+	Text string
+}
+
+func (a *RComment) Equal(rule R) bool {
+	b, ok := rule.(*RComment)
+	return ok && a.Text == b.Text
+}
+
+func (r *RComment) Hash() (uint32, bool) {
+	hash := uint32(9)
+	hash = helpers.HashCombineString(hash, r.Text)
+	return hash, true
+}
+
 type ComplexSelector struct {
 	Selectors []CompoundSelector
+}
+
+func (a ComplexSelector) Equal(b ComplexSelector) bool {
+	if len(a.Selectors) != len(b.Selectors) {
+		return false
+	}
+
+	for i, ai := range a.Selectors {
+		bi := b.Selectors[i]
+		if ai.HasNestPrefix != bi.HasNestPrefix || ai.Combinator != bi.Combinator {
+			return false
+		}
+
+		if ats, bts := ai.TypeSelector, bi.TypeSelector; (ats == nil) != (bts == nil) {
+			return false
+		} else if ats != nil && bts != nil && !ats.Equal(*bts) {
+			return false
+		}
+
+		if len(ai.SubclassSelectors) != len(bi.SubclassSelectors) {
+			return false
+		}
+		for j, aj := range ai.SubclassSelectors {
+			if !aj.Equal(bi.SubclassSelectors[j]) {
+				return false
+			}
+		}
+	}
+
+	return true
 }
 
 type CompoundSelector struct {

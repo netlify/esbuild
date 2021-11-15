@@ -1504,7 +1504,6 @@ func TestTreeShakingUnaryOperators(t *testing.T) {
 				let REMOVE;
 				!REMOVE;
 				void REMOVE;
-				typeof REMOVE;
 			`,
 		},
 		entryPaths: []string{"/entry.js"},
@@ -1652,6 +1651,313 @@ func TestTreeShakingInESMWrapper(t *testing.T) {
 			Mode:          config.ModeBundle,
 			OutputFormat:  config.FormatESModule,
 			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+func TestDCETypeOf(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				// These should be removed because they have no side effects
+				typeof x_REMOVE
+				typeof v_REMOVE
+				typeof f_REMOVE
+				typeof g_REMOVE
+				typeof a_REMOVE
+				var v_REMOVE
+				function f_REMOVE() {}
+				function* g_REMOVE() {}
+				async function a_REMOVE() {}
+
+				// These technically have side effects due to TDZ, but this is not currently handled
+				typeof c_remove
+				typeof l_remove
+				typeof s_remove
+				const c_remove = 0
+				let l_remove
+				class s_remove {}
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			OutputFormat:  config.FormatESModule,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+func TestDCETypeOfEqualsString(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				var hasBar = typeof bar !== 'undefined'
+				if (false) console.log(hasBar)
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			OutputFormat:  config.FormatIIFE,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+func TestDCETypeOfEqualsStringMangle(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				// Everything here should be removed as dead code due to tree shaking
+				var hasBar = typeof bar !== 'undefined'
+				if (false) console.log(hasBar)
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			OutputFormat:  config.FormatIIFE,
+			MangleSyntax:  true,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+func TestDCETypeOfEqualsStringGuardCondition(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				// Everything here should be removed as dead code due to tree shaking
+				var REMOVE_1 = typeof x !== 'undefined' ? x : null
+				var REMOVE_1 = typeof x != 'undefined' ? x : null
+				var REMOVE_1 = typeof x === 'undefined' ? null : x
+				var REMOVE_1 = typeof x == 'undefined' ? null : x
+				var REMOVE_1 = typeof x !== 'undefined' && x
+				var REMOVE_1 = typeof x != 'undefined' && x
+				var REMOVE_1 = typeof x === 'undefined' || x
+				var REMOVE_1 = typeof x == 'undefined' || x
+				var REMOVE_1 = 'undefined' !== typeof x ? x : null
+				var REMOVE_1 = 'undefined' != typeof x ? x : null
+				var REMOVE_1 = 'undefined' === typeof x ? null : x
+				var REMOVE_1 = 'undefined' == typeof x ? null : x
+				var REMOVE_1 = 'undefined' !== typeof x && x
+				var REMOVE_1 = 'undefined' != typeof x && x
+				var REMOVE_1 = 'undefined' === typeof x || x
+				var REMOVE_1 = 'undefined' == typeof x || x
+
+				// Everything here should be removed as dead code due to tree shaking
+				var REMOVE_2 = typeof x === 'object' ? x : null
+				var REMOVE_2 = typeof x == 'object' ? x : null
+				var REMOVE_2 = typeof x !== 'object' ? null : x
+				var REMOVE_2 = typeof x != 'object' ? null : x
+				var REMOVE_2 = typeof x === 'object' && x
+				var REMOVE_2 = typeof x == 'object' && x
+				var REMOVE_2 = typeof x !== 'object' || x
+				var REMOVE_2 = typeof x != 'object' || x
+				var REMOVE_2 = 'object' === typeof x ? x : null
+				var REMOVE_2 = 'object' == typeof x ? x : null
+				var REMOVE_2 = 'object' !== typeof x ? null : x
+				var REMOVE_2 = 'object' != typeof x ? null : x
+				var REMOVE_2 = 'object' === typeof x && x
+				var REMOVE_2 = 'object' == typeof x && x
+				var REMOVE_2 = 'object' !== typeof x || x
+				var REMOVE_2 = 'object' != typeof x || x
+
+				// Everything here should be kept as live code because it has side effects
+				var keep_1 = typeof x !== 'object' ? x : null
+				var keep_1 = typeof x != 'object' ? x : null
+				var keep_1 = typeof x === 'object' ? null : x
+				var keep_1 = typeof x == 'object' ? null : x
+				var keep_1 = typeof x !== 'object' && x
+				var keep_1 = typeof x != 'object' && x
+				var keep_1 = typeof x === 'object' || x
+				var keep_1 = typeof x == 'object' || x
+				var keep_1 = 'object' !== typeof x ? x : null
+				var keep_1 = 'object' != typeof x ? x : null
+				var keep_1 = 'object' === typeof x ? null : x
+				var keep_1 = 'object' == typeof x ? null : x
+				var keep_1 = 'object' !== typeof x && x
+				var keep_1 = 'object' != typeof x && x
+				var keep_1 = 'object' === typeof x || x
+				var keep_1 = 'object' == typeof x || x
+
+				// Everything here should be kept as live code because it has side effects
+				var keep_2 = typeof x !== 'undefined' ? y : null
+				var keep_2 = typeof x != 'undefined' ? y : null
+				var keep_2 = typeof x === 'undefined' ? null : y
+				var keep_2 = typeof x == 'undefined' ? null : y
+				var keep_2 = typeof x !== 'undefined' && y
+				var keep_2 = typeof x != 'undefined' && y
+				var keep_2 = typeof x === 'undefined' || y
+				var keep_2 = typeof x == 'undefined' || y
+				var keep_2 = 'undefined' !== typeof x ? y : null
+				var keep_2 = 'undefined' != typeof x ? y : null
+				var keep_2 = 'undefined' === typeof x ? null : y
+				var keep_2 = 'undefined' == typeof x ? null : y
+				var keep_2 = 'undefined' !== typeof x && y
+				var keep_2 = 'undefined' != typeof x && y
+				var keep_2 = 'undefined' === typeof x || y
+				var keep_2 = 'undefined' == typeof x || y
+
+				// Everything here should be kept as live code because it has side effects
+				var keep_3 = typeof x !== 'undefined' ? null : x
+				var keep_3 = typeof x != 'undefined' ? null : x
+				var keep_3 = typeof x === 'undefined' ? x : null
+				var keep_3 = typeof x == 'undefined' ? x : null
+				var keep_3 = typeof x !== 'undefined' || x
+				var keep_3 = typeof x != 'undefined' || x
+				var keep_3 = typeof x === 'undefined' && x
+				var keep_3 = typeof x == 'undefined' && x
+				var keep_3 = 'undefined' !== typeof x ? null : x
+				var keep_3 = 'undefined' != typeof x ? null : x
+				var keep_3 = 'undefined' === typeof x ? x : null
+				var keep_3 = 'undefined' == typeof x ? x : null
+				var keep_3 = 'undefined' !== typeof x || x
+				var keep_3 = 'undefined' != typeof x || x
+				var keep_3 = 'undefined' === typeof x && x
+				var keep_3 = 'undefined' == typeof x && x
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			OutputFormat:  config.FormatIIFE,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+// These unused imports should be removed since they aren't used, and removing
+// them makes the code shorter.
+func TestRemoveUnusedImports(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				import a from 'a'
+				import * as b from 'b'
+				import {c} from 'c'
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModePassThrough,
+			MangleSyntax:  true,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+// These unused imports should be kept since the direct eval could potentially
+// reference them, even though they appear to be unused.
+func TestRemoveUnusedImportsEval(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				import a from 'a'
+				import * as b from 'b'
+				import {c} from 'c'
+				eval('foo(a, b, c)')
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModePassThrough,
+			MangleSyntax:  true,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+// These unused imports should be removed even though there is a direct eval
+// because they may be types, not values, so keeping them will likely cause
+// module instantiation failures. It's still true that direct eval could
+// access them of course, but that's very unlikely while module instantiation
+// failure is very likely so we bias towards the likely case here instead.
+func TestRemoveUnusedImportsEvalTS(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				import a from 'a'
+				import * as b from 'b'
+				import {c} from 'c'
+				eval('foo(a, b, c)')
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModePassThrough,
+			MangleSyntax:  true,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+func TestDCEClassStaticBlocks(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				class A_REMOVE {
+					static {}
+				}
+				class B_REMOVE {
+					static { 123 }
+				}
+				class C_REMOVE {
+					static { /* @__PURE__*/ foo() }
+				}
+				class D_REMOVE {
+					static { try {} catch {} }
+				}
+				class E_REMOVE {
+					static { try { /* @__PURE__*/ foo() } catch {} }
+				}
+				class F_REMOVE {
+					static { try { 123 } catch { 123 } finally { 123 } }
+				}
+
+				class A_keep {
+					static { foo }
+				}
+				class B_keep {
+					static { this.foo }
+				}
+				class C_keep {
+					static { try { foo } catch {} }
+				}
+				class D_keep {
+					static { try {} finally { foo } }
+				}
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+func TestDCEVarExports(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/a.js": `
+				var foo = { bar: 123 }
+				module.exports = foo
+			`,
+			"/b.js": `
+				var exports = { bar: 123 }
+				module.exports = exports
+			`,
+			"/c.js": `
+				var module = { bar: 123 }
+				exports.foo = module
+			`,
+		},
+		entryPaths: []string{"/a.js", "/b.js", "/c.js"},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
 		},
 	})
 }

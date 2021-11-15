@@ -4,6 +4,143 @@ TestBase64LoaderRemoveUnused
 console.log("unused import");
 
 ================================================================================
+TestDCEClassStaticBlocks
+---------- /out.js ----------
+// entry.ts
+var A_keep = class {
+  static {
+    foo;
+  }
+};
+var B_keep = class {
+  static {
+    this.foo;
+  }
+};
+var C_keep = class {
+  static {
+    try {
+      foo;
+    } catch {
+    }
+  }
+};
+var D_keep = class {
+  static {
+    try {
+    } finally {
+      foo;
+    }
+  }
+};
+
+================================================================================
+TestDCETypeOf
+---------- /out.js ----------
+
+================================================================================
+TestDCETypeOfEqualsString
+---------- /out.js ----------
+(() => {
+  // entry.js
+  if (false)
+    console.log(hasBar);
+})();
+
+================================================================================
+TestDCETypeOfEqualsStringGuardCondition
+---------- /out.js ----------
+(() => {
+  // entry.js
+  var keep_1 = typeof x !== "object" ? x : null;
+  var keep_1 = typeof x != "object" ? x : null;
+  var keep_1 = typeof x === "object" ? null : x;
+  var keep_1 = typeof x == "object" ? null : x;
+  var keep_1 = typeof x !== "object" && x;
+  var keep_1 = typeof x != "object" && x;
+  var keep_1 = typeof x === "object" || x;
+  var keep_1 = typeof x == "object" || x;
+  var keep_1 = typeof x !== "object" ? x : null;
+  var keep_1 = typeof x != "object" ? x : null;
+  var keep_1 = typeof x === "object" ? null : x;
+  var keep_1 = typeof x == "object" ? null : x;
+  var keep_1 = typeof x !== "object" && x;
+  var keep_1 = typeof x != "object" && x;
+  var keep_1 = typeof x === "object" || x;
+  var keep_1 = typeof x == "object" || x;
+  var keep_2 = typeof x !== "undefined" ? y : null;
+  var keep_2 = typeof x != "undefined" ? y : null;
+  var keep_2 = typeof x === "undefined" ? null : y;
+  var keep_2 = typeof x == "undefined" ? null : y;
+  var keep_2 = typeof x !== "undefined" && y;
+  var keep_2 = typeof x != "undefined" && y;
+  var keep_2 = typeof x === "undefined" || y;
+  var keep_2 = typeof x == "undefined" || y;
+  var keep_2 = typeof x !== "undefined" ? y : null;
+  var keep_2 = typeof x != "undefined" ? y : null;
+  var keep_2 = typeof x === "undefined" ? null : y;
+  var keep_2 = typeof x == "undefined" ? null : y;
+  var keep_2 = typeof x !== "undefined" && y;
+  var keep_2 = typeof x != "undefined" && y;
+  var keep_2 = typeof x === "undefined" || y;
+  var keep_2 = typeof x == "undefined" || y;
+  var keep_3 = typeof x !== "undefined" ? null : x;
+  var keep_3 = typeof x != "undefined" ? null : x;
+  var keep_3 = typeof x === "undefined" ? x : null;
+  var keep_3 = typeof x == "undefined" ? x : null;
+  var keep_3 = typeof x !== "undefined" || x;
+  var keep_3 = typeof x != "undefined" || x;
+  var keep_3 = typeof x === "undefined" && x;
+  var keep_3 = typeof x == "undefined" && x;
+  var keep_3 = typeof x !== "undefined" ? null : x;
+  var keep_3 = typeof x != "undefined" ? null : x;
+  var keep_3 = typeof x === "undefined" ? x : null;
+  var keep_3 = typeof x == "undefined" ? x : null;
+  var keep_3 = typeof x !== "undefined" || x;
+  var keep_3 = typeof x != "undefined" || x;
+  var keep_3 = typeof x === "undefined" && x;
+  var keep_3 = typeof x == "undefined" && x;
+})();
+
+================================================================================
+TestDCETypeOfEqualsStringMangle
+---------- /out.js ----------
+(() => {
+})();
+
+================================================================================
+TestDCEVarExports
+---------- /out/a.js ----------
+// a.js
+var require_a = __commonJS({
+  "a.js"(exports, module) {
+    var foo = { bar: 123 };
+    module.exports = foo;
+  }
+});
+export default require_a();
+
+---------- /out/b.js ----------
+// b.js
+var require_b = __commonJS({
+  "b.js"(exports, module) {
+    var exports = { bar: 123 };
+    module.exports = exports;
+  }
+});
+export default require_b();
+
+---------- /out/c.js ----------
+// c.js
+var require_c = __commonJS({
+  "c.js"(exports, module) {
+    var module = { bar: 123 };
+    exports.foo = module;
+  }
+});
+export default require_c();
+
+================================================================================
 TestDataURLLoaderRemoveUnused
 ---------- /out.js ----------
 // entry.js
@@ -570,6 +707,26 @@ TestRemoveUnusedImportMeta
 ---------- /out.js ----------
 // entry.js
 console.log("foo is unused");
+
+================================================================================
+TestRemoveUnusedImports
+---------- /out.js ----------
+import "a";
+import "b";
+import "c";
+
+================================================================================
+TestRemoveUnusedImportsEval
+---------- /out.js ----------
+import a from "a";
+import * as b from "b";
+import { c } from "c";
+eval("foo(a, b, c)");
+
+================================================================================
+TestRemoveUnusedImportsEvalTS
+---------- /out.js ----------
+eval("foo(a, b, c)");
 
 ================================================================================
 TestRemoveUnusedPureCommentCalls
