@@ -451,43 +451,6 @@ type printer struct {
 	callTarget                     js_ast.E
 	intToBytesBuffer               [64]byte
 	builder                        sourcemap.ChunkBuilder
-
-	// For source maps
-	sourceMap           []byte
-	prevLoc             logger.Loc
-	prevState           SourceMapState
-	lastGeneratedUpdate int
-	generatedColumn     int
-	hasPrevState        bool
-	lineOffsetTables    []LineOffsetTable
-
-	// This is a workaround for a bug in the popular "source-map" library:
-	// https://github.com/mozilla/source-map/issues/261. The library will
-	// sometimes return null when querying a source map unless every line
-	// starts with a mapping at column zero.
-	//
-	// The workaround is to replicate the previous mapping if a line ends
-	// up not starting with a mapping. This is done lazily because we want
-	// to avoid replicating the previous mapping if we don't need to.
-	lineStartsWithMapping     bool
-	coverLinesWithoutMappings bool
-}
-
-type LineOffsetTable struct {
-	byteOffsetToStartOfLine int32
-
-	// The source map specification is very loose and does not specify what
-	// column numbers actually mean. The popular "source-map" library from Mozilla
-	// appears to interpret them as counts of UTF-16 code units, so we generate
-	// those too for compatibility.
-	//
-	// We keep mapping tables around to accelerate conversion from byte offsets
-	// to UTF-16 code unit counts. However, this mapping takes up a lot of memory
-	// and generates a lot of garbage. Since most JavaScript is ASCII and the
-	// mapping for ASCII is 1:1, we avoid creating a table for ASCII-only lines
-	// as an optimization.
-	byteOffsetToFirstNonASCII int32
-	columnsForNonASCII        []int32
 }
 
 func (p *printer) print(text string) {
@@ -3214,22 +3177,7 @@ func Print(tree js_ast.AST, symbols js_ast.SymbolMap, r renamer.Renamer, options
 		prevOpEnd:                      -1,
 		prevNumEnd:                     -1,
 		prevRegExpEnd:                  -1,
-		prevLoc:                        logger.Loc{Start: -1},
-		lineOffsetTables:               options.LineOffsetTables,
 		builder:                        sourcemap.MakeChunkBuilder(options.InputSourceMap, options.LineOffsetTables),
-
-		// We automatically repeat the previous source mapping if we ever generate
-		// a line that doesn't start with a mapping. This helps give files more
-		// complete mapping coverage without gaps.
-		//
-		// However, we probably shouldn't do this if the input file has a nested
-		// source map that we will be remapping through. We have no idea what state
-		// that source map is in and it could be pretty scrambled.
-		//
-		// I've seen cases where blindly repeating the last mapping for subsequent
-		// lines gives very strange and unhelpful results with source maps from
-		// other tools.
-		coverLinesWithoutMappings: options.InputSourceMap == nil,
 	}
 
 	// Add the top-level directive if present

@@ -996,6 +996,8 @@ func (*SLocal) isStmt()         {}
 func (*SBreak) isStmt()         {}
 func (*SContinue) isStmt()      {}
 
+func (*SImportDynamicExpressionShim) isStmt() {}
+
 type SBlock struct {
 	Stmts []Stmt
 }
