@@ -1,5 +1,5 @@
 {
-  "name": "esbuild-netbsd-64",
+  "name": "@netlify/esbuild-netbsd-64",
   "version": "0.13.13",
   "description": "The NetBSD AMD64 binary for esbuild, a JavaScript bundler.",
   "repository": "https://github.com/evanw/esbuild",

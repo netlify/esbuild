@@ -369,7 +369,7 @@ publish-windows-32: platform-windows-32
 	test -n "$(OTP)" && cd npm/esbuild-windows-32 && npm publish --access=public --otp="$(OTP)"
 
 publish-windows-arm64: platform-windows-arm64
-	test -n "$(OTP)" && cd npm/esbuild-windows-arm64 && npm publish --otp="$(OTP)"
+	test -n "$(OTP)" && cd npm/esbuild-windows-arm64 && npm publish --access=public --otp="$(OTP)"
 
 publish-android-arm64: platform-android-arm64
 	test -n "$(OTP)" && cd npm/esbuild-android-arm64 && npm publish --access=public --otp="$(OTP)"
@@ -387,7 +387,7 @@ publish-freebsd-arm64: platform-freebsd-arm64
 	test -n "$(OTP)" && cd npm/esbuild-freebsd-arm64 && npm publish --access=public --otp="$(OTP)"
 
 publish-netbsd: platform-netbsd
-	test -n "$(OTP)" && cd npm/esbuild-netbsd-64 && npm publish --otp="$(OTP)"
+	test -n "$(OTP)" && cd npm/esbuild-netbsd-64 && npm publish --access=public --otp="$(OTP)"
 
 publish-openbsd: platform-openbsd
 	test -n "$(OTP)" && cd npm/esbuild-openbsd-64 && npm publish --access=public --otp="$(OTP)"
@@ -411,7 +411,7 @@ publish-linux-ppc64le: platform-linux-ppc64le
 	test -n "$(OTP)" && cd npm/esbuild-linux-ppc64le && npm publish --access=public --otp="$(OTP)"
 
 publish-sunos: platform-sunos
-	test -n "$(OTP)" && cd npm/esbuild-sunos-64 && npm publish --otp="$(OTP)"
+	test -n "$(OTP)" && cd npm/esbuild-sunos-64 && npm publish --access=public --otp="$(OTP)"
 
 publish-wasm: platform-wasm
 	test -n "$(OTP)" && cd npm/esbuild-wasm && npm publish --access=public --otp="$(OTP)"
