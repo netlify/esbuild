@@ -153,6 +153,50 @@ const tests = {
     assert.deepStrictEqual(jsNative, jsWASM);
   },
 
+  outfileNestedTest({ testDir, esbuildPathWASM }) {
+    const outfile = path.join(testDir, 'a', 'b', 'c', 'd', 'out.js');
+    child_process.execFileSync('node', [
+      esbuildPathWASM,
+      '--bundle',
+      '--format=cjs',
+      '--outfile=' + outfile,
+      '--log-level=warning',
+    ], {
+      stdio: ['pipe', 'pipe', 'inherit'],
+      cwd: testDir,
+      input: `export default 123`,
+    }).toString();
+
+    // Check that the bundle is valid
+    const exports = require(outfile);
+    assert.deepStrictEqual(exports.default, 123);
+  },
+
+  metafileNestedTest({ testDir, esbuildPathWASM }) {
+    const outfile = path.join(testDir, 'out.js');
+    const metafile = path.join(testDir, 'a', 'b', 'c', 'd', 'meta.json');
+    const cwd = path.join(testDir, 'a', 'b')
+    fs.mkdirSync(cwd, { recursive: true })
+    child_process.execFileSync('node', [
+      esbuildPathWASM,
+      '--bundle',
+      '--format=cjs',
+      '--outfile=' + outfile,
+      '--metafile=' + metafile,
+      '--log-level=warning',
+    ], {
+      stdio: ['pipe', 'pipe', 'inherit'],
+      cwd,
+      input: `export default 123`,
+    }).toString();
+
+    // Check that the bundle is valid
+    const exports = require(outfile);
+    assert.deepStrictEqual(exports.default, 123);
+    const json = JSON.parse(fs.readFileSync(metafile, 'utf8'));
+    assert.deepStrictEqual(json.outputs['../../out.js'].entryPoint, '<stdin>');
+  },
+
   importRelativeFileTest({ testDir, esbuildPathWASM }) {
     const outfile = path.join(testDir, 'out.js')
     const packageJSON = path.join(__dirname, '..', 'npm', 'esbuild-wasm', 'package.json');

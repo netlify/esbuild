@@ -574,6 +574,20 @@ func TestRegExp(t *testing.T) {
 `)
 }
 
+func TestUnicodeIdentifierNames(t *testing.T) {
+	// There are two code points that are valid in identifiers in ES5 but not in ES6+:
+	//
+	//   U+30FB KATAKANA MIDDLE DOT
+	//   U+FF65 HALFWIDTH KATAKANA MIDDLE DOT
+	//
+	expectPrinted(t, "x = {x・: 0}", "x = { \"x・\": 0 };\n")
+	expectPrinted(t, "x = {x･: 0}", "x = { \"x･\": 0 };\n")
+	expectPrinted(t, "x = {xπ: 0}", "x = { xπ: 0 };\n")
+	expectPrinted(t, "x = y.x・", "x = y[\"x・\"];\n")
+	expectPrinted(t, "x = y.x･", "x = y[\"x･\"];\n")
+	expectPrinted(t, "x = y.xπ", "x = y.xπ;\n")
+}
+
 func TestIdentifierEscapes(t *testing.T) {
 	expectPrinted(t, "var _\\u0076\\u0061\\u0072", "var _var;\n")
 	expectParseError(t, "var \\u0076\\u0061\\u0072", "<stdin>: error: Expected identifier but found \"\\\\u0076\\\\u0061\\\\u0072\"\n")
@@ -1516,6 +1530,8 @@ func TestSuperCall(t *testing.T) {
 		"class A extends B {\n  constructor() {\n    super();\n    __publicField(this, \"x\", 1);\n  }\n}\n")
 	expectPrintedMangleTarget(t, 2015, "class A extends B { x = 1; constructor() { super(); c() } }",
 		"class A extends B {\n  constructor() {\n    super();\n    __publicField(this, \"x\", 1);\n    c();\n  }\n}\n")
+	expectPrintedMangleTarget(t, 2015, "class A extends B { x = 1; constructor() { c(); super() } }",
+		"class A extends B {\n  constructor() {\n    c();\n    super();\n    __publicField(this, \"x\", 1);\n  }\n}\n")
 	expectPrintedMangleTarget(t, 2015, "class A extends B { x = 1; constructor() { super(); if (c) throw c } }",
 		"class A extends B {\n  constructor() {\n    super();\n    __publicField(this, \"x\", 1);\n    if (c)\n      throw c;\n  }\n}\n")
 	expectPrintedMangleTarget(t, 2015, "class A extends B { x = 1; constructor() { super(); switch (c) { case 0: throw c } } }",
@@ -1655,6 +1671,22 @@ func TestClassFields(t *testing.T) {
 	expectParseError(t, "class Foo { static 'prototype' = 1 }", "<stdin>: error: Invalid field name \"prototype\"\n")
 	expectPrinted(t, "class Foo { static ['prototype'] }", "class Foo {\n  static [\"prototype\"];\n}\n")
 	expectPrinted(t, "class Foo { static ['prototype'] = 1 }", "class Foo {\n  static [\"prototype\"] = 1;\n}\n")
+}
+
+func TestClassStaticBlocks(t *testing.T) {
+	expectPrinted(t, "class Foo { static {} }", "class Foo {\n  static {\n  }\n}\n")
+	expectPrinted(t, "class Foo { static {} x = 1 }", "class Foo {\n  static {\n  }\n  x = 1;\n}\n")
+	expectPrinted(t, "class Foo { static { this.foo() } }", "class Foo {\n  static {\n    this.foo();\n  }\n}\n")
+
+	expectParseError(t, "class Foo { static { yield } }",
+		"<stdin>: error: \"yield\" is a reserved word and cannot be used in strict mode\n"+
+			"<stdin>: note: All code inside a class is implicitly in strict mode\n")
+	expectParseError(t, "class Foo { static { await } }", "<stdin>: error: The keyword \"await\" cannot be used here\n")
+	expectParseError(t, "class Foo { static { return } }", "<stdin>: error: A return statement cannot be used inside a class static block\n")
+	expectParseError(t, "class Foo { static { break } }", "<stdin>: error: Cannot use \"break\" here\n")
+	expectParseError(t, "class Foo { static { continue } }", "<stdin>: error: Cannot use \"continue\" here\n")
+	expectParseError(t, "x: { class Foo { static { break x } } }", "<stdin>: error: There is no containing label named \"x\"\n")
+	expectParseError(t, "x: { class Foo { static { continue x } } }", "<stdin>: error: There is no containing label named \"x\"\n")
 }
 
 func TestGenerator(t *testing.T) {
@@ -1886,6 +1918,9 @@ func TestLabels(t *testing.T) {
 
 	expectPrinted(t, "x: y: z: 1", "x:\n  y:\n    z:\n      1;\n")
 	expectPrinted(t, "x: 1; y: 2; x: 3", "x:\n  1;\ny:\n  2;\nx:\n  3;\n")
+	expectPrinted(t, "x: (() => { x: 1; })()", "x:\n  (() => {\n    x:\n      1;\n  })();\n")
+	expectPrinted(t, "x: ({ f() { x: 1; } }).f()", "x:\n  ({ f() {\n    x:\n      1;\n  } }).f();\n")
+	expectPrinted(t, "x: (function() { x: 1; })()", "x:\n  (function() {\n    x:\n      1;\n  })();\n")
 	expectParseError(t, "x: y: x: 1", "<stdin>: error: Duplicate label \"x\"\n<stdin>: note: The original label \"x\" is here\n")
 }
 
@@ -2066,6 +2101,7 @@ func TestTemplate(t *testing.T) {
 	expectParseError(t, "`\\unicode`", "<stdin>: error: Syntax error \"n\"\n")
 	expectParseError(t, "`\\unicode${x}`", "<stdin>: error: Syntax error \"n\"\n")
 	expectParseError(t, "`${x}\\unicode`", "<stdin>: error: Syntax error \"n\"\n")
+	expectParseError(t, "`\\u{10FFFFF}`", "<stdin>: error: Unicode escape sequence is out of range\n")
 
 	expectPrinted(t, "tag`\\7`", "tag`\\7`;\n")
 	expectPrinted(t, "tag`\\8`", "tag`\\8`;\n")
@@ -2077,6 +2113,7 @@ func TestTemplate(t *testing.T) {
 	expectPrinted(t, "tag`\\unicode`", "tag`\\unicode`;\n")
 	expectPrinted(t, "tag`\\unicode${x}`", "tag`\\unicode${x}`;\n")
 	expectPrinted(t, "tag`${x}\\unicode`", "tag`${x}\\unicode`;\n")
+	expectPrinted(t, "tag`\\u{10FFFFF}`", "tag`\\u{10FFFFF}`;\n")
 
 	expectPrinted(t, "tag``", "tag``;\n")
 	expectPrinted(t, "(a?.b)``", "(a?.b)``;\n")
@@ -3546,6 +3583,7 @@ func TestMangleEqualsUndefined(t *testing.T) {
 func TestMangleUnusedFunctionExpressionNames(t *testing.T) {
 	expectPrintedMangle(t, "x = function y() {}", "x = function() {\n};\n")
 	expectPrintedMangle(t, "x = function y() { return y }", "x = function y() {\n  return y;\n};\n")
+	expectPrintedMangle(t, "x = function y() { return eval('y') }", "x = function y() {\n  return eval(\"y\");\n};\n")
 	expectPrintedMangle(t, "x = function y() { if (0) return y }", "x = function() {\n};\n")
 }
 
@@ -4353,6 +4391,7 @@ func TestPrivateIdentifiers(t *testing.T) {
 	expectPrinted(t, "class Foo { #foo }", "class Foo {\n  #foo;\n}\n")
 	expectPrinted(t, "class Foo { #foo = 1 }", "class Foo {\n  #foo = 1;\n}\n")
 	expectPrinted(t, "class Foo { #foo = #foo in this }", "class Foo {\n  #foo = #foo in this;\n}\n")
+	expectPrinted(t, "class Foo { #foo = #foo in (#bar in this); #bar }", "class Foo {\n  #foo = #foo in (#bar in this);\n  #bar;\n}\n")
 	expectPrinted(t, "class Foo { #foo() {} }", "class Foo {\n  #foo() {\n  }\n}\n")
 	expectPrinted(t, "class Foo { get #foo() {} }", "class Foo {\n  get #foo() {\n  }\n}\n")
 	expectPrinted(t, "class Foo { set #foo(x) {} }", "class Foo {\n  set #foo(x) {\n  }\n}\n")
@@ -4361,6 +4400,7 @@ func TestPrivateIdentifiers(t *testing.T) {
 	expectPrinted(t, "class Foo { static #foo() {} }", "class Foo {\n  static #foo() {\n  }\n}\n")
 	expectPrinted(t, "class Foo { static get #foo() {} }", "class Foo {\n  static get #foo() {\n  }\n}\n")
 	expectPrinted(t, "class Foo { static set #foo(x) {} }", "class Foo {\n  static set #foo(x) {\n  }\n}\n")
+	expectParseError(t, "class Foo { #foo = #foo in #bar in this; #bar }", "<stdin>: error: Unexpected \"#bar\"\n")
 
 	// The name "#constructor" is forbidden
 	expectParseError(t, "class Foo { #constructor }", "<stdin>: error: Invalid field name \"#constructor\"\n")
@@ -4783,4 +4823,19 @@ func TestASCIIOnly(t *testing.T) {
 	expectPrintedASCII(t, "export var 𐀀", "export var \\u{10000};\n")
 	expectPrintedTargetASCII(t, 5, "export var π", "export var \\u03C0;\n")
 	expectParseErrorTargetASCII(t, 5, "export var 𐀀", es5)
+}
+
+func TestMangleCatch(t *testing.T) {
+	expectPrintedMangle(t, "try { throw 0 } catch (e) { console.log(0) }", "try {\n  throw 0;\n} catch {\n  console.log(0);\n}\n")
+	expectPrintedMangle(t, "try { throw 0 } catch (e) { console.log(0, e) }", "try {\n  throw 0;\n} catch (e) {\n  console.log(0, e);\n}\n")
+	expectPrintedMangle(t, "try { throw 0 } catch (e) { 0 && console.log(0, e) }", "try {\n  throw 0;\n} catch {\n}\n")
+	expectPrintedMangle(t, "try { thrower() } catch ([a]) { console.log(0) }", "try {\n  thrower();\n} catch ([a]) {\n  console.log(0);\n}\n")
+	expectPrintedMangle(t, "try { thrower() } catch ({ a }) { console.log(0) }", "try {\n  thrower();\n} catch ({ a }) {\n  console.log(0);\n}\n")
+	expectPrintedMangleTarget(t, 2018, "try { throw 0 } catch (e) { console.log(0) }", "try {\n  throw 0;\n} catch (e) {\n  console.log(0);\n}\n")
+
+	expectPrintedMangle(t, "try { throw 1 } catch (x) { y(x); var x = 2; y(x) }", "try {\n  throw 1;\n} catch (x) {\n  y(x);\n  var x = 2;\n  y(x);\n}\n")
+	expectPrintedMangle(t, "try { throw 1 } catch (x) { var x = 2; y(x) }", "try {\n  throw 1;\n} catch (x) {\n  var x = 2;\n  y(x);\n}\n")
+	expectPrintedMangle(t, "try { throw 1 } catch (x) { var x = 2 }", "try {\n  throw 1;\n} catch (x) {\n  var x = 2;\n}\n")
+	expectPrintedMangle(t, "try { throw 1 } catch (x) { eval('x') }", "try {\n  throw 1;\n} catch (x) {\n  eval(\"x\");\n}\n")
+	expectPrintedMangle(t, "if (y) try { throw 1 } catch (x) {} else eval('x')", "if (y)\n  try {\n    throw 1;\n  } catch {\n  }\nelse\n  eval(\"x\");\n")
 }

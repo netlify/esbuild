@@ -2351,6 +2351,23 @@ func TestAutoExternal(t *testing.T) {
 	})
 }
 
+func TestAutoExternalNode(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				// These URLs should be external automatically
+				import fs from "node:fs/promises";
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+			Platform:     config.PlatformNode,
+		},
+	})
+}
+
 func TestExternalWithWildcard(t *testing.T) {
 	default_suite.expectBundled(t, bundled{
 		files: map[string]string{
@@ -2980,11 +2997,20 @@ func TestLegalCommentsNone(t *testing.T) {
 			"/a.js": `console.log('in a') //! Copyright notice 1`,
 			"/b.js": `console.log('in b') //! Copyright notice 1`,
 			"/c.js": `console.log('in c') //! Copyright notice 2`,
+
+			"/entry.css": `
+				@import "./a.css";
+				@import "./b.css";
+				@import "./c.css";
+			`,
+			"/a.css": `a { zoom: 2 } /*! Copyright notice 1 */`,
+			"/b.css": `b { zoom: 2 } /*! Copyright notice 1 */`,
+			"/c.css": `c { zoom: 2 } /*! Copyright notice 2 */`,
 		},
-		entryPaths: []string{"/entry.js"},
+		entryPaths: []string{"/entry.js", "/entry.css"},
 		options: config.Options{
 			Mode:          config.ModeBundle,
-			AbsOutputFile: "/out.js",
+			AbsOutputDir:  "/out",
 			LegalComments: config.LegalCommentsNone,
 		},
 	})
@@ -3001,12 +3027,51 @@ func TestLegalCommentsInline(t *testing.T) {
 			"/a.js": `console.log('in a') //! Copyright notice 1`,
 			"/b.js": `console.log('in b') //! Copyright notice 1`,
 			"/c.js": `console.log('in c') //! Copyright notice 2`,
+
+			"/entry.css": `
+				@import "./a.css";
+				@import "./b.css";
+				@import "./c.css";
+			`,
+			"/a.css": `a { zoom: 2 } /*! Copyright notice 1 */`,
+			"/b.css": `b { zoom: 2 } /*! Copyright notice 1 */`,
+			"/c.css": `c { zoom: 2 } /*! Copyright notice 2 */`,
 		},
-		entryPaths: []string{"/entry.js"},
+		entryPaths: []string{"/entry.js", "/entry.css"},
 		options: config.Options{
 			Mode:          config.ModeBundle,
-			AbsOutputFile: "/out.js",
+			AbsOutputDir:  "/out",
 			LegalComments: config.LegalCommentsInline,
+		},
+	})
+}
+
+func TestLegalCommentsEndOfFile(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				import './a'
+				import './b'
+				import './c'
+			`,
+			"/a.js": `console.log('in a') //! Copyright notice 1`,
+			"/b.js": `console.log('in b') //! Copyright notice 1`,
+			"/c.js": `console.log('in c') //! Copyright notice 2`,
+
+			"/entry.css": `
+				@import "./a.css";
+				@import "./b.css";
+				@import "./c.css";
+			`,
+			"/a.css": `a { zoom: 2 } /*! Copyright notice 1 */`,
+			"/b.css": `b { zoom: 2 } /*! Copyright notice 1 */`,
+			"/c.css": `c { zoom: 2 } /*! Copyright notice 2 */`,
+		},
+		entryPaths: []string{"/entry.js", "/entry.css"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputDir:  "/out",
+			LegalComments: config.LegalCommentsEndOfFile,
 		},
 	})
 }
@@ -3022,11 +3087,20 @@ func TestLegalCommentsLinked(t *testing.T) {
 			"/a.js": `console.log('in a') //! Copyright notice 1`,
 			"/b.js": `console.log('in b') //! Copyright notice 1`,
 			"/c.js": `console.log('in c') //! Copyright notice 2`,
+
+			"/entry.css": `
+				@import "./a.css";
+				@import "./b.css";
+				@import "./c.css";
+			`,
+			"/a.css": `a { zoom: 2 } /*! Copyright notice 1 */`,
+			"/b.css": `b { zoom: 2 } /*! Copyright notice 1 */`,
+			"/c.css": `c { zoom: 2 } /*! Copyright notice 2 */`,
 		},
-		entryPaths: []string{"/entry.js"},
+		entryPaths: []string{"/entry.js", "/entry.css"},
 		options: config.Options{
 			Mode:          config.ModeBundle,
-			AbsOutputFile: "/out.js",
+			AbsOutputDir:  "/out",
 			LegalComments: config.LegalCommentsLinkedWithComment,
 		},
 	})
@@ -3043,11 +3117,111 @@ func TestLegalCommentsExternal(t *testing.T) {
 			"/a.js": `console.log('in a') //! Copyright notice 1`,
 			"/b.js": `console.log('in b') //! Copyright notice 1`,
 			"/c.js": `console.log('in c') //! Copyright notice 2`,
+
+			"/entry.css": `
+				@import "./a.css";
+				@import "./b.css";
+				@import "./c.css";
+			`,
+			"/a.css": `a { zoom: 2 } /*! Copyright notice 1 */`,
+			"/b.css": `b { zoom: 2 } /*! Copyright notice 1 */`,
+			"/c.css": `c { zoom: 2 } /*! Copyright notice 2 */`,
 		},
-		entryPaths: []string{"/entry.js"},
+		entryPaths: []string{"/entry.js", "/entry.css"},
 		options: config.Options{
 			Mode:          config.ModeBundle,
-			AbsOutputFile: "/out.js",
+			AbsOutputDir:  "/out",
+			LegalComments: config.LegalCommentsExternalWithoutComment,
+		},
+	})
+}
+
+func TestLegalCommentsModifyIndent(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				export default () => {
+					/**
+					 * @preserve
+					 */
+				}
+			`,
+			"/entry.css": `
+				@media (x: y) {
+					/**
+					 * @preserve
+					 */
+					z { zoom: 2 }
+				}
+			`,
+		},
+		entryPaths: []string{"/entry.js", "/entry.css"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputDir:  "/out",
+			LegalComments: config.LegalCommentsInline,
+		},
+	})
+}
+
+func TestLegalCommentsAvoidSlashTagInline(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				//! <script>foo</script>
+				export let x
+			`,
+			"/entry.css": `
+				/*! <style>foo</style> */
+				x { y: z }
+			`,
+		},
+		entryPaths: []string{"/entry.js", "/entry.css"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputDir:  "/out",
+			LegalComments: config.LegalCommentsInline,
+		},
+	})
+}
+
+func TestLegalCommentsAvoidSlashTagEndOfFile(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				//! <script>foo</script>
+				export let x
+			`,
+			"/entry.css": `
+				/*! <style>foo</style> */
+				x { y: z }
+			`,
+		},
+		entryPaths: []string{"/entry.js", "/entry.css"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputDir:  "/out",
+			LegalComments: config.LegalCommentsEndOfFile,
+		},
+	})
+}
+
+func TestLegalCommentsAvoidSlashTagExternal(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				//! <script>foo</script>
+				export let x
+			`,
+			"/entry.css": `
+				/*! <style>foo</style> */
+				x { y: z }
+			`,
+		},
+		entryPaths: []string{"/entry.js", "/entry.css"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputDir:  "/out",
 			LegalComments: config.LegalCommentsExternalWithoutComment,
 		},
 	})
@@ -3769,6 +3943,7 @@ func TestInjectNoBundle(t *testing.T) {
 		entryPaths: []string{"/entry.js"},
 		options: config.Options{
 			Mode:          config.ModePassThrough,
+			TreeShaking:   true,
 			AbsOutputFile: "/out.js",
 			Defines:       &defines,
 			InjectAbsPaths: []string{
@@ -3992,6 +4167,72 @@ func TestDefineImportMeta(t *testing.T) {
 					// This should not be substituted
 					import.meta.bar,
 				)
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
+			Defines:       &defines,
+		},
+	})
+}
+
+func TestDefineThis(t *testing.T) {
+	defines := config.ProcessDefines(map[string]config.DefineData{
+		"this": {
+			DefineFunc: func(args config.DefineArgs) js_ast.E {
+				return &js_ast.ENumber{Value: 1}
+			},
+		},
+		"this.foo": {
+			DefineFunc: func(args config.DefineArgs) js_ast.E {
+				return &js_ast.ENumber{Value: 2}
+			},
+		},
+		"this.foo.bar": {
+			DefineFunc: func(args config.DefineArgs) js_ast.E {
+				return &js_ast.ENumber{Value: 3}
+			},
+		},
+	})
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				ok(
+					// These should be fully substituted
+					this,
+					this.foo,
+					this.foo.bar,
+
+					// Should just substitute "this.foo"
+					this.foo.baz,
+
+					// This should not be substituted
+					this.bar,
+				);
+
+				// This code should be the same as above
+				(() => {
+					ok(
+						this,
+						this.foo,
+						this.foo.bar,
+						this.foo.baz,
+						this.bar,
+					);
+				})();
+
+				// Nothing should be substituted in this code
+				(function() {
+					doNotSubstitute(
+						this,
+						this.foo,
+						this.foo.bar,
+						this.foo.baz,
+						this.bar,
+					);
+				})();
 			`,
 		},
 		entryPaths: []string{"/entry.js"},
@@ -4591,6 +4832,114 @@ func TestRequireShimSubstitution(t *testing.T) {
 				},
 			},
 			UnsupportedJSFeatures: compat.DynamicImport,
+		},
+	})
+}
+
+// This guards against a bad interaction between the strict mode nested function
+// declarations, name keeping, and initialized variable inlining. See this issue
+// for full context: https://github.com/evanw/esbuild/issues/1552.
+func TestStrictModeNestedFnDeclKeepNamesVariableInliningIssue1552(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				export function outer() {
+					{
+						function inner() {
+							return Math.random();
+						}
+						const x = inner();
+						console.log(x);
+					}
+				}
+				outer();
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:         config.ModePassThrough,
+			AbsOutputDir: "/out",
+			KeepNames:    true,
+			MangleSyntax: true,
+		},
+	})
+}
+
+func TestBuiltInNodeModulePrecedence(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				console.log([
+					// These are node core modules
+					require('fs'),
+					require('fs/promises'),
+					require('node:foo'),
+
+					// These are not node core modules
+					require('fs/abc'),
+					require('fs/'),
+				])
+			`,
+			"/node_modules/fs/abc.js": `
+				console.log('include this')
+			`,
+			"/node_modules/fs/index.js": `
+				console.log('include this too')
+			`,
+			"/node_modules/fs/promises.js": `
+				throw 'DO NOT INCLUDE THIS'
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			Platform:     config.PlatformNode,
+			OutputFormat: config.FormatCommonJS,
+			AbsOutputDir: "/out",
+		},
+	})
+}
+
+func TestEntryNamesNoSlashAfterDir(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/src/app1/main.ts": `console.log(1)`,
+			"/src/app2/main.ts": `console.log(2)`,
+			"/src/app3/main.ts": `console.log(3)`,
+		},
+		entryPathsAdvanced: []EntryPoint{
+			{InputPath: "/src/app1/main.ts"},
+			{InputPath: "/src/app2/main.ts"},
+			{InputPath: "/src/app3/main.ts", OutputPath: "customPath"},
+		},
+		options: config.Options{
+			Mode: config.ModePassThrough,
+			EntryPathTemplate: []config.PathTemplate{
+				// "[dir]-[name]"
+				{Data: "./", Placeholder: config.DirPlaceholder},
+				{Data: "-", Placeholder: config.NamePlaceholder},
+			},
+			AbsOutputDir: "/out",
+		},
+	})
+}
+
+func TestEntryNamesNonPortableCharacter(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry1-*.ts": `console.log(1)`,
+			"/entry2-*.ts": `console.log(2)`,
+		},
+		entryPathsAdvanced: []EntryPoint{
+			// The "*" should turn into "_" for cross-platform Windows portability
+			{InputPath: "/entry1-*.ts"},
+
+			// The "*" should be preserved since the user _really_ wants it
+			{InputPath: "/entry2-*.ts", OutputPath: "entry2-*"},
+		},
+		options: config.Options{
+			Mode:         config.ModePassThrough,
+			AbsOutputDir: "/out",
 		},
 	})
 }

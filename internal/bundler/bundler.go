@@ -5,12 +5,15 @@ import (
 	"encoding/base32"
 	"encoding/base64"
 	"fmt"
+	"math/rand"
 	"net/http"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -29,6 +32,7 @@ import (
 	"github.com/evanw/esbuild/internal/logger"
 	"github.com/evanw/esbuild/internal/resolver"
 	"github.com/evanw/esbuild/internal/runtime"
+	"github.com/evanw/esbuild/internal/sourcemap"
 	"github.com/evanw/esbuild/internal/xxhash"
 )
 
@@ -49,7 +53,7 @@ type dataForSourceMap struct {
 	// This data is for the printer. It maps from byte offsets in the file (which
 	// are stored at every AST node) to UTF-16 column offsets (required by source
 	// maps).
-	lineOffsetTables []js_printer.LineOffsetTable
+	lineOffsetTables []sourcemap.LineOffsetTable
 
 	// This contains the quoted contents of the original source file. It's what
 	// needs to be embedded in the "sourcesContent" array in the final source
@@ -62,6 +66,12 @@ type Bundle struct {
 	res         resolver.Resolver
 	files       []scannerFile
 	entryPoints []graph.EntryPoint
+
+	// The unique key prefix is a random string that is unique to every bundling
+	// operation. It is used as a prefix for the unique keys assigned to every
+	// chunk during linking. These unique keys are used to identify each chunk
+	// before the final output paths have been computed.
+	uniqueKeyPrefix string
 }
 
 type parseArgs struct {
@@ -80,6 +90,7 @@ type parseArgs struct {
 	results         chan parseResult
 	inject          chan config.InjectedFile
 	skipResolve     bool
+	uniqueKeyPrefix string
 }
 
 type parseResult struct {
@@ -162,6 +173,21 @@ func parseFile(args parseArgs) {
 		},
 	}
 
+	defer func() {
+		r := recover()
+		if r != nil {
+			stack := strings.TrimSpace(string(debug.Stack()))
+			tracker := logger.MakeLineColumnTracker(&source)
+			data := logger.RangeData(&tracker, logger.Range{}, fmt.Sprintf("panic: %v", r))
+			data.Location.LineText = fmt.Sprintf("%s\n%s", data.Location.LineText, stack)
+			args.log.AddMsg(logger.Msg{
+				Kind: logger.Error,
+				Data: data,
+			})
+			args.results <- result
+		}
+	}()
+
 	switch loader {
 	case config.LoaderJS:
 		ast, ok := args.caches.JSCache.Parse(args.log, source, js_parser.OptionsFromConfig(&args.options))
@@ -174,8 +200,9 @@ func parseFile(args parseArgs) {
 		result.file.inputFile.Repr = &graph.JSRepr{AST: ast}
 		result.ok = ok
 
-	case config.LoaderTS:
+	case config.LoaderTS, config.LoaderTSNoAmbiguousLessThan:
 		args.options.TS.Parse = true
+		args.options.TS.NoAmbiguousLessThan = loader == config.LoaderTSNoAmbiguousLessThan
 		ast, ok := args.caches.JSCache.Parse(args.log, source, js_parser.OptionsFromConfig(&args.options))
 		result.file.inputFile.Repr = &graph.JSRepr{AST: ast}
 		result.ok = ok
@@ -267,28 +294,11 @@ func parseFile(args parseArgs) {
 		result.ok = true
 
 	case config.LoaderFile:
-		// Add a hash to the file name to prevent multiple files with the same name
-		// but different contents from colliding
-		var hash string
-		if config.HasPlaceholder(args.options.AssetPathTemplate, config.HashPlaceholder) {
-			h := xxhash.New()
-			h.Write([]byte(source.Contents))
-			hash = hashForFileName(h.Sum(nil))
-		}
-		dir := "/"
-		relPath := config.TemplateToString(config.SubstituteTemplate(args.options.AssetPathTemplate, config.PathPlaceholders{
-			Dir:  &dir,
-			Name: &base,
-			Hash: &hash,
-		})) + ext
-
-		// Determine the final path that this asset will have in the output directory
-		publicPath := joinWithPublicPath(args.options.PublicPath, relPath+source.KeyPath.IgnoredSuffix)
-
-		// Export the resulting relative path as a string
-		expr := js_ast.Expr{Data: &js_ast.EString{Value: js_lexer.StringToUTF16(publicPath)}}
+		uniqueKey := fmt.Sprintf("%sA%08d", args.uniqueKeyPrefix, args.sourceIndex)
+		uniqueKeyPath := uniqueKey + source.KeyPath.IgnoredSuffix
+		expr := js_ast.Expr{Data: &js_ast.EString{Value: js_lexer.StringToUTF16(uniqueKeyPath)}}
 		ast := js_parser.LazyExportAST(args.log, source, js_parser.OptionsFromConfig(&args.options), expr, "")
-		ast.URLForCSS = publicPath
+		ast.URLForCSS = uniqueKeyPath
 		if pluginName != "" {
 			result.file.inputFile.SideEffects.Kind = graph.NoSideEffects_PureData_FromPlugin
 		} else {
@@ -297,27 +307,8 @@ func parseFile(args parseArgs) {
 		result.file.inputFile.Repr = &graph.JSRepr{AST: ast}
 		result.ok = true
 
-		// Optionally add metadata about the file
-		var jsonMetadataChunk string
-		if args.options.NeedsMetafile {
-			inputs := fmt.Sprintf("{\n        %s: {\n          \"bytesInOutput\": %d\n        }\n      }",
-				js_printer.QuoteForJSON(source.PrettyPath, args.options.ASCIIOnly),
-				len(source.Contents),
-			)
-			jsonMetadataChunk = fmt.Sprintf(
-				"{\n      \"imports\": [],\n      \"exports\": [],\n      \"inputs\": %s,\n      \"bytes\": %d\n    }",
-				inputs,
-				len(source.Contents),
-			)
-		}
-
-		// Copy the file using an additional file payload to make sure we only copy
-		// the file if the module isn't removed due to tree shaking.
-		result.file.inputFile.AdditionalFiles = []graph.OutputFile{{
-			AbsPath:           args.fs.Join(args.options.AbsOutputDir, relPath),
-			Contents:          []byte(source.Contents),
-			JSONMetadataChunk: jsonMetadataChunk,
-		}}
+		// Mark that this file is from the "file" loader
+		result.file.inputFile.UniqueKeyForFileLoader = uniqueKey
 
 	default:
 		var message string
@@ -538,9 +529,16 @@ func parseFile(args parseArgs) {
 
 	// Attempt to parse the source map if present
 	if loader.CanHaveSourceMap() && args.options.SourceMap != config.SourceMapNone {
-		if repr, ok := result.file.inputFile.Repr.(*graph.JSRepr); ok && repr.AST.SourceMapComment.Text != "" {
+		var sourceMapComment logger.Span
+		switch repr := result.file.inputFile.Repr.(type) {
+		case *graph.JSRepr:
+			sourceMapComment = repr.AST.SourceMapComment
+		case *graph.CSSRepr:
+			sourceMapComment = repr.AST.SourceMapComment
+		}
+		if sourceMapComment.Text != "" {
 			if path, contents := extractSourceMapFromComment(args.log, args.fs, &args.caches.FSCache,
-				args.res, &source, repr.AST.SourceMapComment, absResolveDir); contents != nil {
+				args.res, &source, sourceMapComment, absResolveDir); contents != nil {
 				result.file.inputFile.InputSourceMap = js_parser.ParseSourceMap(args.log, logger.Source{
 					KeyPath:    path,
 					PrettyPath: args.res.PrettyPath(path),
@@ -624,7 +622,7 @@ func extractSourceMapFromComment(
 	fsCache *cache.FSCache,
 	res resolver.Resolver,
 	source *logger.Source,
-	comment js_ast.Span,
+	comment logger.Span,
 	absResolveDir string,
 ) (logger.Path, *string) {
 	tracker := logger.MakeLineColumnTracker(source)
@@ -782,7 +780,9 @@ func runOnResolvePlugins(
 				fsCache.ReadFile(fs, file)
 			}
 			for _, dir := range result.AbsWatchDirs {
-				fs.ReadDirectory(dir)
+				if entries, err, _ := fs.ReadDirectory(dir); err == nil {
+					entries.SortedKeys()
+				}
 			}
 
 			// Stop now if there was an error
@@ -897,7 +897,9 @@ func runOnLoadPlugins(
 				fsCache.ReadFile(fs, file)
 			}
 			for _, dir := range result.AbsWatchDirs {
-				fs.ReadDirectory(dir)
+				if entries, err, _ := fs.ReadDirectory(dir); err == nil {
+					entries.SortedKeys()
+				}
 			}
 
 			// Stop now if there was an error
@@ -1064,11 +1066,12 @@ func loaderFromFileExtension(extensionToLoader map[string]config.Loader, base st
 	return config.LoaderNone
 }
 
-// Identify the path by its lowercase absolute path name. This should
-// hopefully avoid path case issues on Windows, which has case-insensitive
-// file system paths.
-func lowerCaseAbsPathForWindows(absPath string) string {
-	return strings.ToLower(absPath)
+// Identify the path by its lowercase absolute path name with Windows-specific
+// slashes substituted for standard slashes. This should hopefully avoid path
+// issues on Windows where multiple different paths can refer to the same
+// underlying file.
+func canonicalFileSystemPathForWindows(absPath string) string {
+	return strings.ReplaceAll(strings.ToLower(absPath), "\\", "/")
 }
 
 func hashForFileName(hashBytes []byte) string {
@@ -1076,12 +1079,13 @@ func hashForFileName(hashBytes []byte) string {
 }
 
 type scanner struct {
-	log     logger.Log
-	fs      fs.FS
-	res     resolver.Resolver
-	caches  *cache.CacheSet
-	options config.Options
-	timer   *helpers.Timer
+	log             logger.Log
+	fs              fs.FS
+	res             resolver.Resolver
+	caches          *cache.CacheSet
+	options         config.Options
+	timer           *helpers.Timer
+	uniqueKeyPrefix string
 
 	// This is not guarded by a mutex because it's only ever modified by a single
 	// thread. Note that not all results in the "results" array are necessarily
@@ -1096,6 +1100,17 @@ type EntryPoint struct {
 	InputPath  string
 	OutputPath string
 	IsFile     bool
+}
+
+func generateUniqueKeyPrefix() (string, error) {
+	var data [12]byte
+	rand.Seed(time.Now().UnixNano())
+	if _, err := rand.Read(data[:]); err != nil {
+		return "", err
+	}
+
+	// This is 16 bytes and shouldn't generate escape characters when put into strings
+	return base64.URLEncoding.EncodeToString(data[:]), nil
 }
 
 func ScanBundle(
@@ -1125,16 +1140,23 @@ func ScanBundle(
 		}
 	}
 
+	// Each bundling operation gets a separate unique key
+	uniqueKeyPrefix, err := generateUniqueKeyPrefix()
+	if err != nil {
+		log.AddError(nil, logger.Loc{}, fmt.Sprintf("Failed to read from randomness source: %s", err.Error()))
+	}
+
 	s := scanner{
-		log:           log,
-		fs:            fs,
-		res:           res,
-		caches:        caches,
-		options:       options,
-		timer:         timer,
-		results:       make([]parseResult, 0, caches.SourceIndexCache.LenHint()),
-		visited:       make(map[logger.Path]uint32),
-		resultChannel: make(chan parseResult),
+		log:             log,
+		fs:              fs,
+		res:             res,
+		caches:          caches,
+		options:         options,
+		timer:           timer,
+		results:         make([]parseResult, 0, caches.SourceIndexCache.LenHint()),
+		visited:         make(map[logger.Path]uint32),
+		resultChannel:   make(chan parseResult),
+		uniqueKeyPrefix: uniqueKeyPrefix,
 	}
 
 	// Always start by parsing the runtime file
@@ -1160,10 +1182,11 @@ func ScanBundle(
 
 	onStartWaitGroup.Wait()
 	return Bundle{
-		fs:          fs,
-		res:         res,
-		files:       files,
-		entryPoints: entryPointMeta,
+		fs:              fs,
+		res:             res,
+		files:           files,
+		entryPoints:     entryPointMeta,
+		uniqueKeyPrefix: uniqueKeyPrefix,
 	}
 }
 
@@ -1188,7 +1211,7 @@ func (s *scanner) maybeParseFile(
 	path := resolveResult.PathPair.Primary
 	visitedKey := path
 	if visitedKey.Namespace == "file" {
-		visitedKey.Text = lowerCaseAbsPathForWindows(visitedKey.Text)
+		visitedKey.Text = canonicalFileSystemPathForWindows(visitedKey.Text)
 	}
 
 	// Only parse a given file path once
@@ -1221,9 +1244,9 @@ func (s *scanner) maybeParseFile(
 	optionsClone.TSTarget = resolveResult.TSTarget
 
 	// Set the module type preference using node's module type rules
-	if strings.HasSuffix(path.Text, ".mjs") {
+	if strings.HasSuffix(path.Text, ".mjs") || strings.HasSuffix(path.Text, ".mts") {
 		optionsClone.ModuleType = config.ModuleESM
-	} else if strings.HasSuffix(path.Text, ".cjs") {
+	} else if strings.HasSuffix(path.Text, ".cjs") || strings.HasSuffix(path.Text, ".cts") {
 		optionsClone.ModuleType = config.ModuleCommonJS
 	} else {
 		optionsClone.ModuleType = resolveResult.ModuleType
@@ -1273,6 +1296,7 @@ func (s *scanner) maybeParseFile(
 		results:         s.resultChannel,
 		inject:          inject,
 		skipResolve:     skipResolve,
+		uniqueKeyPrefix: s.uniqueKeyPrefix,
 	})
 
 	return sourceIndex
@@ -1354,14 +1378,14 @@ func (s *scanner) preprocessInjectedFiles() {
 	j := 0
 	for _, absPath := range s.options.InjectAbsPaths {
 		prettyPath := s.res.PrettyPath(logger.Path{Text: absPath, Namespace: "file"})
-		lowerAbsPath := lowerCaseAbsPathForWindows(absPath)
+		absPathKey := canonicalFileSystemPathForWindows(absPath)
 
-		if duplicateInjectedFiles[lowerAbsPath] {
+		if duplicateInjectedFiles[absPathKey] {
 			s.log.AddError(nil, logger.Loc{}, fmt.Sprintf("Duplicate injected file %q", prettyPath))
 			continue
 		}
 
-		duplicateInjectedFiles[lowerAbsPath] = true
+		duplicateInjectedFiles[absPathKey] = true
 		resolveResult := s.res.ResolveAbs(absPath)
 
 		if resolveResult == nil {
@@ -1741,7 +1765,7 @@ func (s *scanner) processScannedFiles() []scannerFile {
 				if resolveResult.PathPair.HasSecondary() {
 					secondaryKey := resolveResult.PathPair.Secondary
 					if secondaryKey.Namespace == "file" {
-						secondaryKey.Text = lowerCaseAbsPathForWindows(secondaryKey.Text)
+						secondaryKey.Text = canonicalFileSystemPathForWindows(secondaryKey.Text)
 					}
 					if secondarySourceIndex, ok := s.visited[secondaryKey]; ok {
 						record.SourceIndex = ast.MakeIndex32(secondarySourceIndex)
@@ -1801,7 +1825,7 @@ func (s *scanner) processScannedFiles() []scannerFile {
 						} else if !css.JSSourceIndex.IsValid() {
 							stubKey := otherFile.inputFile.Source.KeyPath
 							if stubKey.Namespace == "file" {
-								stubKey.Text = lowerCaseAbsPathForWindows(stubKey.Text)
+								stubKey.Text = canonicalFileSystemPathForWindows(stubKey.Text)
 							}
 							sourceIndex := s.allocateSourceIndex(stubKey, cache.SourceIndexJSStubForCSS)
 							source := logger.Source{
@@ -1878,7 +1902,62 @@ func (s *scanner) processScannedFiles() []scannerFile {
 			sb.WriteString("]\n    }")
 		}
 
-		s.results[i].file.jsonMetadataChunk = sb.String()
+		result.file.jsonMetadataChunk = sb.String()
+
+		// If this file is from the "file" loader, generate an additional file
+		if result.file.inputFile.UniqueKeyForFileLoader != "" {
+			bytes := []byte(result.file.inputFile.Source.Contents)
+
+			// Add a hash to the file name to prevent multiple files with the same name
+			// but different contents from colliding
+			var hash string
+			if config.HasPlaceholder(s.options.AssetPathTemplate, config.HashPlaceholder) {
+				h := xxhash.New()
+				h.Write(bytes)
+				hash = hashForFileName(h.Sum(nil))
+			}
+
+			// Generate the input for the template
+			_, _, originalExt := logger.PlatformIndependentPathDirBaseExt(result.file.inputFile.Source.KeyPath.Text)
+			dir, base, ext := pathRelativeToOutbase(
+				&result.file.inputFile,
+				&s.options,
+				s.fs,
+				originalExt,
+				/* avoidIndex */ false,
+				/* customFilePath */ "",
+			)
+
+			// Apply the asset path template
+			relPath := config.TemplateToString(config.SubstituteTemplate(s.options.AssetPathTemplate, config.PathPlaceholders{
+				Dir:  &dir,
+				Name: &base,
+				Hash: &hash,
+			})) + ext
+
+			// Optionally add metadata about the file
+			var jsonMetadataChunk string
+			if s.options.NeedsMetafile {
+				inputs := fmt.Sprintf("{\n        %s: {\n          \"bytesInOutput\": %d\n        }\n      }",
+					js_printer.QuoteForJSON(result.file.inputFile.Source.PrettyPath, s.options.ASCIIOnly),
+					len(bytes),
+				)
+				jsonMetadataChunk = fmt.Sprintf(
+					"{\n      \"imports\": [],\n      \"exports\": [],\n      \"inputs\": %s,\n      \"bytes\": %d\n    }",
+					inputs,
+					len(bytes),
+				)
+			}
+
+			// Generate the additional file to copy into the output directory
+			result.file.inputFile.AdditionalFiles = []graph.OutputFile{{
+				AbsPath:           s.fs.Join(s.options.AbsOutputDir, relPath),
+				Contents:          bytes,
+				JSONMetadataChunk: jsonMetadataChunk,
+			}}
+		}
+
+		s.results[i] = result
 	}
 
 	// The linker operates on an array of files, so construct that now. This
@@ -1988,6 +2067,8 @@ func DefaultExtensionToLoaderMap() map[string]config.Loader {
 		".cjs":  config.LoaderJS,
 		".jsx":  config.LoaderJSX,
 		".ts":   config.LoaderTS,
+		".cts":  config.LoaderTSNoAmbiguousLessThan,
+		".mts":  config.LoaderTSNoAmbiguousLessThan,
 		".tsx":  config.LoaderTSX,
 		".css":  config.LoaderCSS,
 		".json": config.LoaderJSON,
@@ -2062,7 +2143,8 @@ func (b *Bundle) Compile(log logger.Log, options config.Options, timer *helpers.
 	var resultGroups [][]graph.OutputFile
 	if options.CodeSplitting || len(b.entryPoints) == 1 {
 		// If code splitting is enabled or if there's only one entry point, link all entry points together
-		resultGroups = [][]graph.OutputFile{link(&options, timer, log, b.fs, b.res, files, b.entryPoints, allReachableFiles, dataForSourceMaps)}
+		resultGroups = [][]graph.OutputFile{link(
+			&options, timer, log, b.fs, b.res, files, b.entryPoints, b.uniqueKeyPrefix, allReachableFiles, dataForSourceMaps)}
 	} else {
 		// Otherwise, link each entry point with the runtime file separately
 		waitGroup := sync.WaitGroup{}
@@ -2073,7 +2155,8 @@ func (b *Bundle) Compile(log logger.Log, options config.Options, timer *helpers.
 				entryPoints := []graph.EntryPoint{entryPoint}
 				forked := timer.Fork()
 				reachableFiles := findReachableFiles(files, entryPoints)
-				resultGroups[i] = link(&options, forked, log, b.fs, b.res, files, entryPoints, reachableFiles, dataForSourceMaps)
+				resultGroups[i] = link(
+					&options, forked, log, b.fs, b.res, files, entryPoints, b.uniqueKeyPrefix, reachableFiles, dataForSourceMaps)
 				timer.Join(forked)
 				waitGroup.Done()
 			}(i, entryPoint)
@@ -2102,13 +2185,13 @@ func (b *Bundle) Compile(log logger.Log, options config.Options, timer *helpers.
 			for _, sourceIndex := range allReachableFiles {
 				keyPath := b.files[sourceIndex].inputFile.Source.KeyPath
 				if keyPath.Namespace == "file" {
-					lowerAbsPath := lowerCaseAbsPathForWindows(keyPath.Text)
-					sourceAbsPaths[lowerAbsPath] = sourceIndex
+					absPathKey := canonicalFileSystemPathForWindows(keyPath.Text)
+					sourceAbsPaths[absPathKey] = sourceIndex
 				}
 			}
 			for _, outputFile := range outputFiles {
-				lowerAbsPath := lowerCaseAbsPathForWindows(outputFile.AbsPath)
-				if sourceIndex, ok := sourceAbsPaths[lowerAbsPath]; ok {
+				absPathKey := canonicalFileSystemPathForWindows(outputFile.AbsPath)
+				if sourceIndex, ok := sourceAbsPaths[absPathKey]; ok {
 					hint := ""
 					switch logger.API {
 					case logger.CLIAPI:
@@ -2134,12 +2217,12 @@ func (b *Bundle) Compile(log logger.Log, options config.Options, timer *helpers.
 		outputFileMap := make(map[string][]byte)
 		end := 0
 		for _, outputFile := range outputFiles {
-			lowerAbsPath := lowerCaseAbsPathForWindows(outputFile.AbsPath)
-			contents, ok := outputFileMap[lowerAbsPath]
+			absPathKey := canonicalFileSystemPathForWindows(outputFile.AbsPath)
+			contents, ok := outputFileMap[absPathKey]
 
 			// If this isn't a duplicate, keep the output file
 			if !ok {
-				outputFileMap[lowerAbsPath] = outputFile.Contents
+				outputFileMap[absPathKey] = outputFile.Contents
 				outputFiles[end] = outputFile
 				end++
 				continue
@@ -2224,41 +2307,46 @@ func (b *Bundle) computeDataForSourceMapsInParallel(options *config.Options, rea
 
 	for _, sourceIndex := range reachableFiles {
 		if f := &b.files[sourceIndex]; f.inputFile.Loader.CanHaveSourceMap() {
-			if repr, ok := f.inputFile.Repr.(*graph.JSRepr); ok {
-				waitGroup.Add(1)
-				go func(sourceIndex uint32, f *scannerFile, repr *graph.JSRepr) {
-					result := &results[sourceIndex]
-					result.lineOffsetTables = js_printer.GenerateLineOffsetTables(f.inputFile.Source.Contents, repr.AST.ApproximateLineCount)
-					sm := f.inputFile.InputSourceMap
-					if !options.ExcludeSourcesContent {
-						if sm == nil {
-							// Simple case: no nested source map
-							result.quotedContents = [][]byte{js_printer.QuoteForJSON(f.inputFile.Source.Contents, options.ASCIIOnly)}
-						} else {
-							// Complex case: nested source map
-							result.quotedContents = make([][]byte, len(sm.Sources))
-							nullContents := []byte("null")
-							for i := range sm.Sources {
-								// Missing contents become a "null" literal
-								quotedContents := nullContents
-								if i < len(sm.SourcesContent) {
-									if value := sm.SourcesContent[i]; value.Quoted != "" {
-										if options.ASCIIOnly && !isASCIIOnly(value.Quoted) {
-											// Re-quote non-ASCII values if output is ASCII-only
-											quotedContents = js_printer.QuoteForJSON(js_lexer.UTF16ToString(value.Value), options.ASCIIOnly)
-										} else {
-											// Otherwise just use the value directly from the input file
-											quotedContents = []byte(value.Quoted)
-										}
+			var approximateLineCount int32
+			switch repr := f.inputFile.Repr.(type) {
+			case *graph.JSRepr:
+				approximateLineCount = repr.AST.ApproximateLineCount
+			case *graph.CSSRepr:
+				approximateLineCount = repr.AST.ApproximateLineCount
+			}
+			waitGroup.Add(1)
+			go func(sourceIndex uint32, f *scannerFile, approximateLineCount int32) {
+				result := &results[sourceIndex]
+				result.lineOffsetTables = sourcemap.GenerateLineOffsetTables(f.inputFile.Source.Contents, approximateLineCount)
+				sm := f.inputFile.InputSourceMap
+				if !options.ExcludeSourcesContent {
+					if sm == nil {
+						// Simple case: no nested source map
+						result.quotedContents = [][]byte{js_printer.QuoteForJSON(f.inputFile.Source.Contents, options.ASCIIOnly)}
+					} else {
+						// Complex case: nested source map
+						result.quotedContents = make([][]byte, len(sm.Sources))
+						nullContents := []byte("null")
+						for i := range sm.Sources {
+							// Missing contents become a "null" literal
+							quotedContents := nullContents
+							if i < len(sm.SourcesContent) {
+								if value := sm.SourcesContent[i]; value.Quoted != "" {
+									if options.ASCIIOnly && !isASCIIOnly(value.Quoted) {
+										// Re-quote non-ASCII values if output is ASCII-only
+										quotedContents = js_printer.QuoteForJSON(js_lexer.UTF16ToString(value.Value), options.ASCIIOnly)
+									} else {
+										// Otherwise just use the value directly from the input file
+										quotedContents = []byte(value.Quoted)
 									}
 								}
-								result.quotedContents[i] = quotedContents
 							}
+							result.quotedContents[i] = quotedContents
 						}
 					}
-					waitGroup.Done()
-				}(sourceIndex, f, repr)
-			}
+				}
+				waitGroup.Done()
+			}(sourceIndex, f, approximateLineCount)
 		}
 	}
 
@@ -2374,7 +2462,7 @@ func (cache *runtimeCache) parseRuntime(options *config.Options) (source logger.
 
 		// Always do tree shaking for the runtime because we never want to
 		// include unnecessary runtime code
-		Mode: config.ModeBundle,
+		TreeShaking: true,
 	}))
 	if log.HasErrors() {
 		msgs := "Internal error: failed to parse runtime:\n"

@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"io/ioutil"
+	"math"
 	"math/rand"
 	"os"
 	"regexp"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/evanw/esbuild/internal/api_helpers"
 	"github.com/evanw/esbuild/internal/ast"
@@ -202,11 +204,19 @@ func validateASCIIOnly(value Charset) bool {
 	}
 }
 
-func validateIgnoreDCEAnnotations(value TreeShaking) bool {
+func validateTreeShaking(value TreeShaking, bundle bool, format Format) bool {
 	switch value {
 	case TreeShakingDefault:
+		// If we're in an IIFE then there's no way to concatenate additional code
+		// to the end of our output so we assume tree shaking is safe. And when
+		// bundling we assume that tree shaking is safe because if you want to add
+		// code to the bundle, you should be doing that by including it in the
+		// bundle instead of concatenating it afterward, so we also assume tree
+		// shaking is safe then. Otherwise we assume tree shaking is not safe.
+		return bundle || format == FormatIIFE
+	case TreeShakingFalse:
 		return false
-	case TreeShakingIgnoreAnnotations:
+	case TreeShakingTrue:
 		return true
 	default:
 		panic("Invalid tree shaking")
@@ -290,6 +300,8 @@ func validateFeatures(log logger.Log, target Target, engines []Engine) (bool, co
 		constraints[compat.ES] = []int{2019}
 	case ES2020:
 		constraints[compat.ES] = []int{2020}
+	case ES2021:
+		constraints[compat.ES] = []int{2021}
 	case ESNext, DefaultTarget:
 	default:
 		panic("Invalid target")
@@ -727,6 +739,20 @@ func buildImpl(buildOpts BuildOptions) internalBuildResult {
 	return internalResult
 }
 
+func prettyPrintByteCount(n int) string {
+	var size string
+	if n < 1024 {
+		size = fmt.Sprintf("%db ", n)
+	} else if n < 1024*1024 {
+		size = fmt.Sprintf("%.1fkb", float64(n)/(1024))
+	} else if n < 1024*1024*1024 {
+		size = fmt.Sprintf("%.1fmb", float64(n)/(1024*1024))
+	} else {
+		size = fmt.Sprintf("%.1fgb", float64(n)/(1024*1024*1024))
+	}
+	return size
+}
+
 func printSummary(logOptions logger.OutputOptions, outputFiles []OutputFile, start time.Time) {
 	var table logger.SummaryTable = make([]logger.SummaryTableEntry, len(outputFiles))
 
@@ -740,20 +766,10 @@ func printSummary(logOptions logger.OutputOptions, outputFiles []OutputFile, sta
 					}
 					base := realFS.Base(path)
 					n := len(file.Contents)
-					var size string
-					if n < 1024 {
-						size = fmt.Sprintf("%db ", n)
-					} else if n < 1024*1024 {
-						size = fmt.Sprintf("%.1fkb", float64(n)/(1024))
-					} else if n < 1024*1024*1024 {
-						size = fmt.Sprintf("%.1fmb", float64(n)/(1024*1024))
-					} else {
-						size = fmt.Sprintf("%.1fgb", float64(n)/(1024*1024*1024))
-					}
 					table[i] = logger.SummaryTableEntry{
 						Dir:         path[:len(path)-len(base)],
 						Base:        base,
-						Size:        size,
+						Size:        prettyPrintByteCount(n),
 						Bytes:       n,
 						IsSourceMap: strings.HasSuffix(base, ".map"),
 					}
@@ -820,7 +836,8 @@ func rebuildImpl(
 		MinifyIdentifiers:     buildOpts.MinifyIdentifiers,
 		AllowOverwrite:        buildOpts.AllowOverwrite,
 		ASCIIOnly:             validateASCIIOnly(buildOpts.Charset),
-		IgnoreDCEAnnotations:  validateIgnoreDCEAnnotations(buildOpts.TreeShaking),
+		IgnoreDCEAnnotations:  buildOpts.IgnoreAnnotations,
+		TreeShaking:           validateTreeShaking(buildOpts.TreeShaking, buildOpts.Bundle, buildOpts.Format),
 		GlobalName:            validateGlobalName(log, buildOpts.GlobalName),
 		CodeSplitting:         buildOpts.Splitting,
 		OutputFormat:          validateFormat(buildOpts.Format),
@@ -987,7 +1004,7 @@ func rebuildImpl(
 							go func(result graph.OutputFile) {
 								fs.BeforeFileOpen()
 								defer fs.AfterFileClose()
-								if err := os.MkdirAll(realFS.Dir(result.AbsPath), 0755); err != nil {
+								if err := fs.MkdirAll(realFS, realFS.Dir(result.AbsPath), 0755); err != nil {
 									log.AddError(nil, logger.Loc{}, fmt.Sprintf(
 										"Failed to create output directory: %s", err.Error()))
 								} else {
@@ -1195,11 +1212,11 @@ func (w *watcher) tryToFindDirtyPath() string {
 
 	// Always check all recent items every iteration
 	for i, path := range w.recentItems {
-		if w.data.Paths[path]() {
+		if dirtyPath := w.data.Paths[path](); dirtyPath != "" {
 			// Move this path to the back of the list (i.e. the "most recent" position)
 			copy(w.recentItems[i:], w.recentItems[i+1:])
 			w.recentItems[len(w.recentItems)-1] = path
-			return path
+			return dirtyPath
 		}
 	}
 
@@ -1213,7 +1230,7 @@ func (w *watcher) tryToFindDirtyPath() string {
 
 	// Check if any of the entries in this iteration have been modified
 	for _, path := range toCheck {
-		if w.data.Paths[path]() {
+		if dirtyPath := w.data.Paths[path](); dirtyPath != "" {
 			// Mark this item as recent by adding it to the back of the list
 			w.recentItems = append(w.recentItems, path)
 			if len(w.recentItems) > maxRecentItemCount {
@@ -1221,7 +1238,7 @@ func (w *watcher) tryToFindDirtyPath() string {
 				copy(w.recentItems, w.recentItems[1:])
 				w.recentItems = w.recentItems[:maxRecentItemCount]
 			}
-			return path
+			return dirtyPath
 		}
 	}
 	return ""
@@ -1303,7 +1320,8 @@ func transformImpl(input string, transformOpts TransformOptions) TransformResult
 		RemoveWhitespace:        transformOpts.MinifyWhitespace,
 		MinifyIdentifiers:       transformOpts.MinifyIdentifiers,
 		ASCIIOnly:               validateASCIIOnly(transformOpts.Charset),
-		IgnoreDCEAnnotations:    validateIgnoreDCEAnnotations(transformOpts.TreeShaking),
+		IgnoreDCEAnnotations:    transformOpts.IgnoreAnnotations,
+		TreeShaking:             validateTreeShaking(transformOpts.TreeShaking, false /* bundle */, transformOpts.Format),
 		AbsOutputFile:           transformOpts.Sourcefile + "-out",
 		KeepNames:               transformOpts.KeepNames,
 		UseDefineForClassFields: useDefineForClassFieldsTS,
@@ -1643,4 +1661,315 @@ func formatMsgsImpl(msgs []Message, opts FormatMessagesOptions) []string {
 		)
 	}
 	return strings
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// AnalyzeMetafile API
+
+type metafileEntry struct {
+	name       string
+	entryPoint string
+	entries    []metafileEntry
+	size       int
+}
+
+type metafileArray []metafileEntry
+
+func (a metafileArray) Len() int          { return len(a) }
+func (a metafileArray) Swap(i int, j int) { a[i], a[j] = a[j], a[i] }
+
+func (a metafileArray) Less(i int, j int) bool {
+	ai := a[i]
+	aj := a[j]
+	return ai.size > aj.size || (ai.size == aj.size && ai.name < aj.name)
+}
+
+func getObjectProperty(expr js_ast.Expr, key string) js_ast.Expr {
+	if obj, ok := expr.Data.(*js_ast.EObject); ok {
+		for _, prop := range obj.Properties {
+			if js_lexer.UTF16EqualsString(prop.Key.Data.(*js_ast.EString).Value, key) {
+				return prop.ValueOrNil
+			}
+		}
+	}
+	return js_ast.Expr{}
+}
+
+func getObjectPropertyNumber(expr js_ast.Expr, key string) *js_ast.ENumber {
+	value, _ := getObjectProperty(expr, key).Data.(*js_ast.ENumber)
+	return value
+}
+
+func getObjectPropertyString(expr js_ast.Expr, key string) *js_ast.EString {
+	value, _ := getObjectProperty(expr, key).Data.(*js_ast.EString)
+	return value
+}
+
+func getObjectPropertyObject(expr js_ast.Expr, key string) *js_ast.EObject {
+	value, _ := getObjectProperty(expr, key).Data.(*js_ast.EObject)
+	return value
+}
+
+func getObjectPropertyArray(expr js_ast.Expr, key string) *js_ast.EArray {
+	value, _ := getObjectProperty(expr, key).Data.(*js_ast.EArray)
+	return value
+}
+
+func analyzeMetafileImpl(metafile string, opts AnalyzeMetafileOptions) string {
+	log := logger.NewDeferLog(logger.DeferLogNoVerboseOrDebug)
+	source := logger.Source{Contents: metafile}
+
+	if result, ok := js_parser.ParseJSON(log, source, js_parser.JSONOptions{}); ok {
+		if outputs := getObjectPropertyObject(result, "outputs"); outputs != nil {
+			var entries metafileArray
+			var entryPoints []string
+
+			// Scan over the "outputs" object
+			for _, output := range outputs.Properties {
+				if key := js_lexer.UTF16ToString(output.Key.Data.(*js_ast.EString).Value); !strings.HasSuffix(key, ".map") {
+					entryPointPath := ""
+					if entryPoint := getObjectPropertyString(output.ValueOrNil, "entryPoint"); entryPoint != nil {
+						entryPointPath = js_lexer.UTF16ToString(entryPoint.Value)
+						entryPoints = append(entryPoints, entryPointPath)
+					}
+
+					if bytes := getObjectPropertyNumber(output.ValueOrNil, "bytes"); bytes != nil {
+						if inputs := getObjectPropertyObject(output.ValueOrNil, "inputs"); inputs != nil {
+							var children metafileArray
+
+							for _, input := range inputs.Properties {
+								if bytesInOutput := getObjectPropertyNumber(input.ValueOrNil, "bytesInOutput"); bytesInOutput != nil && bytesInOutput.Value > 0 {
+									children = append(children, metafileEntry{
+										name: js_lexer.UTF16ToString(input.Key.Data.(*js_ast.EString).Value),
+										size: int(bytesInOutput.Value),
+									})
+								}
+							}
+
+							sort.Sort(children)
+
+							entries = append(entries, metafileEntry{
+								name:       key,
+								size:       int(bytes.Value),
+								entries:    children,
+								entryPoint: entryPointPath,
+							})
+						}
+					}
+				}
+			}
+
+			sort.Sort(entries)
+
+			type importData struct {
+				imports []string
+			}
+
+			type graphData struct {
+				parent string
+				depth  uint32
+			}
+
+			importsForPath := make(map[string]importData)
+
+			// Scan over the "inputs" object
+			if inputs := getObjectPropertyObject(result, "inputs"); inputs != nil {
+				for _, prop := range inputs.Properties {
+					if imports := getObjectPropertyArray(prop.ValueOrNil, "imports"); imports != nil {
+						var data importData
+
+						for _, item := range imports.Items {
+							if path := getObjectPropertyString(item, "path"); path != nil {
+								data.imports = append(data.imports, js_lexer.UTF16ToString(path.Value))
+							}
+						}
+
+						importsForPath[js_lexer.UTF16ToString(prop.Key.Data.(*js_ast.EString).Value)] = data
+					}
+				}
+			}
+
+			// Returns a graph with links pointing from imports to importers
+			graphForEntryPoints := func(worklist []string) map[string]graphData {
+				if !opts.Verbose {
+					return nil
+				}
+
+				graph := make(map[string]graphData)
+
+				for _, entryPoint := range worklist {
+					graph[entryPoint] = graphData{}
+				}
+
+				for len(worklist) > 0 {
+					top := worklist[len(worklist)-1]
+					worklist = worklist[:len(worklist)-1]
+					childDepth := graph[top].depth + 1
+
+					for _, importPath := range importsForPath[top].imports {
+						imported, ok := graph[importPath]
+						if !ok {
+							imported.depth = math.MaxUint32
+						}
+
+						if imported.depth > childDepth {
+							imported.depth = childDepth
+							imported.parent = top
+							graph[importPath] = imported
+							worklist = append(worklist, importPath)
+						}
+					}
+				}
+
+				return graph
+			}
+
+			graphForAllEntryPoints := graphForEntryPoints(entryPoints)
+
+			type tableEntry struct {
+				first      string
+				second     string
+				third      string
+				firstLen   int
+				secondLen  int
+				thirdLen   int
+				isTopLevel bool
+			}
+
+			var table []tableEntry
+			var colors logger.Colors
+
+			if opts.Color {
+				colors = logger.TerminalColors
+			}
+
+			// Build up the table with an entry for each output file (other than ".map" files)
+			for _, entry := range entries {
+				second := prettyPrintByteCount(entry.size)
+				third := "100.0%"
+
+				table = append(table, tableEntry{
+					first:      fmt.Sprintf("%s%s%s", colors.Bold, entry.name, colors.Reset),
+					firstLen:   utf8.RuneCountInString(entry.name),
+					second:     fmt.Sprintf("%s%s%s", colors.Bold, second, colors.Reset),
+					secondLen:  len(second),
+					third:      fmt.Sprintf("%s%s%s", colors.Bold, third, colors.Reset),
+					thirdLen:   len(third),
+					isTopLevel: true,
+				})
+
+				graph := graphForAllEntryPoints
+				if entry.entryPoint != "" {
+					// If there are multiple entry points and this output file is from an
+					// entry point, prefer import paths for this entry point. This is less
+					// confusing than showing import paths for another entry point.
+					graph = graphForEntryPoints([]string{entry.entryPoint})
+				}
+
+				// Add a sub-entry for each input file in this output file
+				for j, child := range entry.entries {
+					indent := " ├ "
+					if j+1 == len(entry.entries) {
+						indent = " └ "
+					}
+					percent := 100.0 * float64(child.size) / float64(entry.size)
+
+					first := indent + child.name
+					second := prettyPrintByteCount(child.size)
+					third := fmt.Sprintf("%.1f%%", percent)
+
+					table = append(table, tableEntry{
+						first:     first,
+						firstLen:  utf8.RuneCountInString(first),
+						second:    second,
+						secondLen: len(second),
+						third:     third,
+						thirdLen:  len(third),
+					})
+
+					// If we're in verbose mode, also print the import chain from this file
+					// up toward an entry point to show why this file is in the bundle
+					if opts.Verbose {
+						indent = " │ "
+						if j+1 == len(entry.entries) {
+							indent = "   "
+						}
+						data := graph[child.name]
+						depth := 0
+
+						for data.depth != 0 {
+							table = append(table, tableEntry{
+								first: fmt.Sprintf("%s%s%s └ %s%s", indent, colors.Dim, strings.Repeat(" ", depth), data.parent, colors.Reset),
+							})
+							data = graph[data.parent]
+							depth += 3
+						}
+					}
+				}
+			}
+
+			maxFirstLen := 0
+			maxSecondLen := 0
+			maxThirdLen := 0
+
+			// Calculate column widths
+			for _, entry := range table {
+				if maxFirstLen < entry.firstLen {
+					maxFirstLen = entry.firstLen
+				}
+				if maxSecondLen < entry.secondLen {
+					maxSecondLen = entry.secondLen
+				}
+				if maxThirdLen < entry.thirdLen {
+					maxThirdLen = entry.thirdLen
+				}
+			}
+
+			sb := strings.Builder{}
+
+			// Render the columns now that we know the widths
+			for _, entry := range table {
+				prefix := "\n"
+				if !entry.isTopLevel {
+					prefix = ""
+				}
+
+				// Import paths don't have second and third columns
+				if entry.second == "" && entry.third == "" {
+					sb.WriteString(fmt.Sprintf("%s  %s\n",
+						prefix,
+						entry.first,
+					))
+					continue
+				}
+
+				second := entry.second
+				secondTrimmed := strings.TrimRight(second, " ")
+				lineChar := " "
+				extraSpace := 0
+
+				if opts.Verbose {
+					lineChar = "─"
+					extraSpace = 1
+				}
+
+				sb.WriteString(fmt.Sprintf("%s  %s %s%s%s %s %s%s%s %s\n",
+					prefix,
+					entry.first,
+					colors.Dim,
+					strings.Repeat(lineChar, extraSpace+maxFirstLen-entry.firstLen+maxSecondLen-entry.secondLen),
+					colors.Reset,
+					secondTrimmed,
+					colors.Dim,
+					strings.Repeat(lineChar, extraSpace+maxThirdLen-entry.thirdLen+len(second)-len(secondTrimmed)),
+					colors.Reset,
+					entry.third,
+				))
+			}
+
+			return sb.String()
+		}
+	}
+
+	return ""
 }

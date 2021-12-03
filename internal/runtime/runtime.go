@@ -76,6 +76,8 @@ func code(isES6 bool) string {
 		var __getProtoOf = Object.getPrototypeOf
 		var __hasOwnProp = Object.prototype.hasOwnProperty
 		var __propIsEnum = Object.prototype.propertyIsEnumerable
+		var __reflectGet = Reflect.get
+		var __reflectSet = Reflect.set
 
 		export var __pow = Math.pow
 
@@ -116,11 +118,22 @@ func code(isES6 bool) string {
 		// Tells importing modules that this can be considered an ES6 module
 		export var __name = (target, value) => __defProp(target, 'name', { value, configurable: true })
 
-		// This fallback "require" function exists so that "typeof require" can naturally be "function"
-		export var __require = x => {
-			if (typeof require !== 'undefined') return require(x)
-			throw new Error('Dynamic require of "' + x + '" is not supported')
-		}
+		// This fallback "require" function exists so that "typeof require" can
+		// naturally be "function" even in non-CommonJS environments since esbuild
+		// emulates a CommonJS environment (issue #1202). However, people want this
+		// shim to fall back to "globalThis.require" even if it's defined later
+		// (including property accesses such as "require.resolve") so we need to
+		// use a proxy (issue #1614).
+		export var __require =
+			/* @__PURE__ */ (x =>
+				typeof require !== 'undefined' ? require :
+				typeof Proxy !== 'undefined' ? new Proxy(x, {
+					get: (a, b) => (typeof require !== 'undefined' ? require : a)[b]
+				}) : x
+			)(function(x) {
+				if (typeof require !== 'undefined') return require.apply(this, arguments)
+				throw new Error('Dynamic require of "' + x + '" is not supported')
+			})
 
 		// For object rest patterns
 		export var __restKey = key => typeof key === 'symbol' ? key : key + ''
@@ -256,12 +269,31 @@ func code(isES6 bool) string {
 			setter ? setter.call(obj, value) : member.set(obj, value)
 			return value
 		}
-		export var __privateAssign = (obj, member, setter) => {
-			return { set _(value) { __privateSet(obj, member, value, setter) } }
+		export var __privateWrapper = (obj, member, setter, getter) => {
+			return {
+				set _(value) { __privateSet(obj, member, value, setter) },
+				get _() { return __privateGet(obj, member, getter) },
+			}
 		}
 		export var __privateMethod = (obj, member, method) => {
 			__accessCheck(obj, member, 'access private method')
 			return method
+		}
+
+		// For "super" property accesses
+		export var __superStaticGet = (obj, member) => __reflectGet(__getProtoOf(obj), member, obj)
+		export var __superStaticSet = (obj, member, value) => (__reflectSet(__getProtoOf(obj), member, value, obj), value)
+		export var __superWrapper = (getter, setter, member) => {
+			return {
+				set _(value) { setter(member, value) },
+				get _() { return getter(member) },
+			}
+		}
+		export var __superStaticWrapper = (obj, member) => {
+			return {
+				set _(value) { __superStaticSet(obj, member, value) },
+				get _() { return __superStaticGet(obj, member) },
+			}
 		}
 
 		// For lowering tagged template literals

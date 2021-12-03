@@ -1,15 +1,16 @@
 {
 	"name": "@netlify/esbuild-linux-arm",
-	"version": "0.13.6",
-	"description": "The Linux ARM binary for esbuild, a JavaScript bundler.",
-	"repository": "https://github.com/netlify/esbuild",
-	"license": "MIT",
-	"os": [
-		"linux"
-	],
-	"cpu": [
-		"arm"
-	],
+  "version": "0.13.13",
+  "description": "The Linux ARM binary for esbuild, a JavaScript bundler.",
+  "repository": "https://github.com/netlify/esbuild",
+  "license": "MIT",
+  "preferUnplugged": false,
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm"
+  ],
 	"directories": {
 		"bin": "bin"
 	}

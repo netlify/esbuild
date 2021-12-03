@@ -113,6 +113,11 @@ func (r Range) End() int32 {
 	return r.Loc.Start + r.Len
 }
 
+type Span struct {
+	Text  string
+	Range Range
+}
+
 // This type is just so we can use Go's native sort function
 type SortableMsgs []Msg
 
@@ -175,6 +180,22 @@ func (a Path) ComesBeforeInSortedOrder(b Path) bool {
 		(a.Namespace == b.Namespace && (a.Text < b.Text ||
 			(a.Text == b.Text && (a.Flags < b.Flags ||
 				(a.Flags == b.Flags && a.IgnoredSuffix < b.IgnoredSuffix)))))
+}
+
+var noColorResult bool
+var noColorOnce sync.Once
+
+func hasNoColorEnvironmentVariable() bool {
+	noColorOnce.Do(func() {
+		for _, key := range os.Environ() {
+			// Read "NO_COLOR" from the environment. This is a convention that some
+			// software follows. See https://no-color.org/ for more information.
+			if strings.HasPrefix(key, "NO_COLOR=") {
+				noColorResult = true
+			}
+		}
+	})
+	return noColorResult
 }
 
 // This has a custom implementation instead of using "filepath.Dir/Base/Ext"

@@ -41,6 +41,17 @@ func (p *parser) skipTypeScriptBinding() {
 			foundIdentifier := false
 
 			switch p.lexer.Token {
+			case js_lexer.TDotDotDot:
+				p.lexer.Next()
+
+				if p.lexer.Token != js_lexer.TIdentifier {
+					p.lexer.Unexpected()
+				}
+
+				// "{...x}"
+				foundIdentifier = true
+				p.lexer.Next()
+
 			case js_lexer.TIdentifier:
 				// "{x}"
 				// "{x: y}"
@@ -388,7 +399,11 @@ func (p *parser) skipTypeScriptTypeWithOpts(level js_ast.L, opts skipTypeOpts) {
 				p.lexer.Expect(js_lexer.TIdentifier)
 			}
 			p.lexer.Next()
-			p.skipTypeScriptTypeArguments(false /* isInsideJSXElement */)
+
+			// "{ <A extends B>(): c.d \n <E extends F>(): g.h }" must not become a single type
+			if !p.lexer.HasNewlineBefore {
+				p.skipTypeScriptTypeArguments(false /* isInsideJSXElement */)
+			}
 
 		case js_lexer.TOpenBracket:
 			// "{ ['x']: string \n ['y']: string }" must not become a single type
@@ -677,6 +692,28 @@ func (p *parser) trySkipTypeScriptArrowArgsWithBacktracking() bool {
 	// because it may have been true to start with.
 	p.lexer.IsLogDisabled = oldLexer.IsLogDisabled
 	return true
+}
+
+// Returns true if the current less-than token is considered to be an arrow
+// function under TypeScript's rules for files containing JSX syntax
+func (p *parser) isTSArrowFnJSX() (isTSArrowFn bool) {
+	oldLexer := p.lexer
+	p.lexer.Next()
+
+	// Look ahead to see if this should be an arrow function instead
+	if p.lexer.Token == js_lexer.TIdentifier {
+		p.lexer.Next()
+		if p.lexer.Token == js_lexer.TComma {
+			isTSArrowFn = true
+		} else if p.lexer.Token == js_lexer.TExtends {
+			p.lexer.Next()
+			isTSArrowFn = p.lexer.Token != js_lexer.TEquals && p.lexer.Token != js_lexer.TGreaterThan
+		}
+	}
+
+	// Restore the lexer
+	p.lexer = oldLexer
+	return
 }
 
 // This function is taken from the official TypeScript compiler source code:

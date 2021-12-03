@@ -25,7 +25,8 @@ type JSXExpr struct {
 }
 
 type TSOptions struct {
-	Parse bool
+	Parse               bool
+	NoAmbiguousLessThan bool
 }
 
 type Platform uint8
@@ -78,6 +79,7 @@ const (
 	LoaderJS
 	LoaderJSX
 	LoaderTS
+	LoaderTSNoAmbiguousLessThan // Used with ".mts" and ".cts"
 	LoaderTSX
 	LoaderJSON
 	LoaderText
@@ -90,11 +92,21 @@ const (
 )
 
 func (loader Loader) IsTypeScript() bool {
-	return loader == LoaderTS || loader == LoaderTSX
+	switch loader {
+	case LoaderTS, LoaderTSNoAmbiguousLessThan, LoaderTSX:
+		return true
+	default:
+		return false
+	}
 }
 
 func (loader Loader) CanHaveSourceMap() bool {
-	return loader == LoaderJS || loader == LoaderJSX || loader == LoaderTS || loader == LoaderTSX
+	switch loader {
+	case LoaderJS, LoaderJSX, LoaderTS, LoaderTSNoAmbiguousLessThan, LoaderTSX, LoaderCSS:
+		return true
+	default:
+		return false
+	}
 }
 
 type Format uint8
@@ -216,6 +228,7 @@ type Options struct {
 	ASCIIOnly               bool
 	KeepNames               bool
 	IgnoreDCEAnnotations    bool
+	TreeShaking             bool
 
 	Defines  *ProcessedDefines
 	TS       TSOptions
@@ -378,10 +391,6 @@ func SubstituteTemplate(template []PathTemplate, placeholders PathPlaceholders) 
 		}
 	}
 	return result
-}
-
-func IsTreeShakingEnabled(mode Mode, outputFormat Format) bool {
-	return mode == ModeBundle || (mode == ModeConvertFormat && outputFormat == FormatIIFE)
 }
 
 func ShouldCallRuntimeRequire(mode Mode, outputFormat Format) bool {

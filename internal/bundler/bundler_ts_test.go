@@ -104,8 +104,13 @@ func TestTSDeclareClassFields(t *testing.T) {
 				class Foo {
 					a
 					declare b
-					c = () => this
-					declare d = () => this
+					[(() => null, c)]
+					declare [(() => null, d)]
+
+					static A
+					static declare B
+					static [(() => null, C)]
+					static declare [(() => null, D)]
 				}
 				(() => new Foo())()
 			`,
@@ -113,8 +118,13 @@ func TestTSDeclareClassFields(t *testing.T) {
 				class Bar {
 					a
 					declare b
-					c = () => this
-					declare d = () => this
+					[(() => null, c)]
+					declare [(() => null, d)]
+
+					static A
+					static declare B
+					static [(() => null, C)]
+					static declare [(() => null, D)]
 				}
 				(() => new Bar())()
 			`,
@@ -596,11 +606,14 @@ func TestTypeScriptDecorators(t *testing.T) {
 				export default class Foo {
 					@x @y mUndef
 					@x @y mDef = 1
-					constructor(@x0 @y0 arg0, @x1 @y1 arg1) {}
 					@x @y method(@x0 @y0 arg0, @x1 @y1 arg1) { return new Foo }
+					@x @y declare mDecl
+					constructor(@x0 @y0 arg0, @x1 @y1 arg1) {}
+
 					@x @y static sUndef
 					@x @y static sDef = new Foo
 					@x @y static sMethod(@x0 @y0 arg0, @x1 @y1 arg1) { return new Foo }
+					@x @y static declare mDecl
 				}
 			`,
 			"/all_computed.ts": `
@@ -610,6 +623,7 @@ func TestTypeScriptDecorators(t *testing.T) {
 					@x @y [mUndef()]
 					@x @y [mDef()] = 1
 					@x @y [method()](@x0 @y0 arg0, @x1 @y1 arg1) { return new Foo }
+					@x @y declare [mDecl()]
 
 					// Side effect order must be preserved even for fields without decorators
 					[xUndef()]
@@ -620,6 +634,7 @@ func TestTypeScriptDecorators(t *testing.T) {
 					@x @y static [sUndef()]
 					@x @y static [sDef()] = new Foo
 					@x @y static [sMethod()](@x0 @y0 arg0, @x1 @y1 arg1) { return new Foo }
+					@x @y static declare [mDecl()]
 				}
 			`,
 			"/a.ts": `
@@ -1118,6 +1133,167 @@ func TestThisInsideFunctionTSNoBundleUseDefineForClassFields(t *testing.T) {
 			Mode:                    config.ModePassThrough,
 			AbsOutputFile:           "/out.js",
 			UseDefineForClassFields: config.True,
+		},
+	})
+}
+
+func TestTSComputedClassFieldUseDefineFalse(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				class Foo {
+					[q];
+					[r] = s;
+					@dec
+					[x];
+					@dec
+					[y] = z;
+				}
+				new Foo()
+			`,
+		},
+		entryPaths: []string{"/entry.ts"},
+		options: config.Options{
+			Mode:                    config.ModePassThrough,
+			AbsOutputFile:           "/out.js",
+			UseDefineForClassFields: config.False,
+		},
+	})
+}
+
+func TestTSComputedClassFieldUseDefineTrue(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				class Foo {
+					[q];
+					[r] = s;
+					@dec
+					[x];
+					@dec
+					[y] = z;
+				}
+				new Foo()
+			`,
+		},
+		entryPaths: []string{"/entry.ts"},
+		options: config.Options{
+			Mode:                    config.ModePassThrough,
+			AbsOutputFile:           "/out.js",
+			UseDefineForClassFields: config.True,
+		},
+	})
+}
+
+func TestTSComputedClassFieldUseDefineTrueLower(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				class Foo {
+					[q];
+					[r] = s;
+					@dec
+					[x];
+					@dec
+					[y] = z;
+				}
+				new Foo()
+			`,
+		},
+		entryPaths: []string{"/entry.ts"},
+		options: config.Options{
+			Mode:                    config.ModePassThrough,
+			AbsOutputFile:           "/out.js",
+			UseDefineForClassFields: config.True,
+			UnsupportedJSFeatures:   compat.ClassField,
+		},
+	})
+}
+
+func TestTSAbstractClassFieldUseAssign(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				const keepThis = Symbol('keepThis')
+				declare const AND_REMOVE_THIS: unique symbol
+				abstract class Foo {
+					REMOVE_THIS: any
+					[keepThis]: any
+					abstract REMOVE_THIS_TOO: any
+					abstract [AND_REMOVE_THIS]: any
+					abstract [(x => y => x + y)('nested')('scopes')]: any
+				}
+				(() => new Foo())()
+			`,
+		},
+		entryPaths: []string{"/entry.ts"},
+		options: config.Options{
+			Mode:                    config.ModePassThrough,
+			AbsOutputFile:           "/out.js",
+			UseDefineForClassFields: config.False,
+		},
+	})
+}
+
+func TestTSAbstractClassFieldUseDefine(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				const keepThisToo = Symbol('keepThisToo')
+				declare const REMOVE_THIS_TOO: unique symbol
+				abstract class Foo {
+					keepThis: any
+					[keepThisToo]: any
+					abstract REMOVE_THIS: any
+					abstract [REMOVE_THIS_TOO]: any
+					abstract [(x => y => x + y)('nested')('scopes')]: any
+				}
+				(() => new Foo())()
+			`,
+		},
+		entryPaths: []string{"/entry.ts"},
+		options: config.Options{
+			Mode:                    config.ModePassThrough,
+			AbsOutputFile:           "/out.js",
+			UseDefineForClassFields: config.True,
+		},
+	})
+}
+
+func TestTSImportMTS(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				import './imported.mjs'
+			`,
+			"/imported.mts": `
+				console.log('works')
+			`,
+		},
+		entryPaths: []string{"/entry.ts"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
+			OutputFormat:  config.FormatESModule,
+		},
+	})
+}
+
+func TestTSImportCTS(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				require('./required.cjs')
+			`,
+			"/required.cjs": `
+				console.log('works')
+			`,
+		},
+		entryPaths: []string{"/entry.ts"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
+			OutputFormat:  config.FormatCommonJS,
 		},
 	})
 }

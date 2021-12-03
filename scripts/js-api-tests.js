@@ -60,6 +60,30 @@ let buildTests = {
     }
   },
 
+  async windowsBackslashPathTest({ esbuild, testDir }) {
+    let entry = path.join(testDir, 'entry.js');
+    let nested = path.join(testDir, 'nested.js');
+    let outfile = path.join(testDir, 'out.js');
+
+    // On Windows, backslash and forward slash should be treated the same
+    fs.writeFileSync(entry, `
+      import ${JSON.stringify(nested)}
+      import ${JSON.stringify(nested.split(path.sep).join('/'))}
+    `);
+    fs.writeFileSync(nested, `console.log('once')`);
+
+    const result = await esbuild.build({
+      entryPoints: [entry],
+      outfile,
+      bundle: true,
+      write: false,
+      minify: true,
+      format: 'esm',
+    })
+
+    assert.strictEqual(result.outputFiles[0].text, 'console.log("once");\n')
+  },
+
   async workingDirTest({ esbuild, testDir }) {
     let aDir = path.join(testDir, 'a');
     let bDir = path.join(testDir, 'b');
@@ -749,7 +773,7 @@ body {
 
     const json = result.metafile
     assert.strictEqual(Object.keys(json.inputs).length, 4)
-    assert.strictEqual(Object.keys(json.outputs).length, 4)
+    assert.strictEqual(Object.keys(json.outputs).length, 5)
     const cwd = process.cwd()
     const makePath = absPath => path.relative(cwd, absPath).split(path.sep).join('/')
 
@@ -769,12 +793,17 @@ body {
 
     // Check outputs
     assert.strictEqual(typeof json.outputs[makePath(outputJS)].bytes, 'number')
+    assert.strictEqual(typeof json.outputs[makePath(outputCSS)].bytes, 'number')
     assert.strictEqual(typeof json.outputs[makePath(outputJS) + '.map'].bytes, 'number')
+    assert.strictEqual(typeof json.outputs[makePath(outputCSS) + '.map'].bytes, 'number')
     assert.strictEqual(json.outputs[makePath(outputJS)].entryPoint, makePath(entry))
     assert.strictEqual(json.outputs[makePath(outputCSS)].entryPoint, undefined) // This is deliberately undefined
     assert.deepStrictEqual(json.outputs[makePath(outputJS) + '.map'].imports, [])
     assert.deepStrictEqual(json.outputs[makePath(outputJS) + '.map'].exports, [])
     assert.deepStrictEqual(json.outputs[makePath(outputJS) + '.map'].inputs, {})
+    assert.deepStrictEqual(json.outputs[makePath(outputCSS) + '.map'].imports, [])
+    assert.deepStrictEqual(json.outputs[makePath(outputCSS) + '.map'].exports, [])
+    assert.deepStrictEqual(json.outputs[makePath(outputCSS) + '.map'].inputs, {})
 
     // Check inputs for main output
     const outputInputs = json.outputs[makePath(outputJS)].inputs
@@ -1005,7 +1034,7 @@ body {
     assert.deepStrictEqual(json.outputs[outImport2].exports, [])
     assert.deepStrictEqual(json.outputs[outChunk].exports, [])
 
-    assert.deepStrictEqual(json.outputs[outEntry].inputs, { [inEntry]: { bytesInOutput: 72 } })
+    assert.deepStrictEqual(json.outputs[outEntry].inputs, { [inEntry]: { bytesInOutput: 74 } })
     assert.deepStrictEqual(json.outputs[outImport1].inputs, { [inImport1]: { bytesInOutput: 0 } })
     assert.deepStrictEqual(json.outputs[outImport2].inputs, { [inImport2]: { bytesInOutput: 0 } })
     assert.deepStrictEqual(json.outputs[outChunk].inputs, { [inShared]: { bytesInOutput: 28 } })
@@ -1191,7 +1220,7 @@ body {
 
     const json = result.metafile
     assert.strictEqual(Object.keys(json.inputs).length, 3)
-    assert.strictEqual(Object.keys(json.outputs).length, 1)
+    assert.strictEqual(Object.keys(json.outputs).length, 2)
     const cwd = process.cwd()
     const makePath = absPath => path.relative(cwd, absPath).split(path.sep).join('/')
 
@@ -1204,13 +1233,19 @@ body {
       },
       outputs: {
         [makePath(output)]: {
-          bytes: 227,
+          bytes: 263,
           entryPoint: makePath(entry),
           imports: [],
           inputs: {
             [makePath(entry)]: { bytesInOutput: 62 },
             [makePath(imported)]: { bytesInOutput: 61 },
           },
+        },
+        [makePath(output + '.map')]: {
+          bytes: 312,
+          exports: [],
+          imports: [],
+          inputs: {},
         },
       },
     })
@@ -1949,7 +1984,7 @@ console.log("success");
       },
       write: false,
       bundle: true,
-      treeShaking: 'ignore-annotations',
+      ignoreAnnotations: true,
     })
     assert.strictEqual(outputFiles[0].text, `(() => {
   // <stdin>
@@ -2351,8 +2386,8 @@ require("/assets/file.png");
       write: false,
     })
     assert.strictEqual(outputFiles.length, 2)
-    assert.strictEqual(outputFiles[0].path, path.join(testDir, 'entry', 'out', '4UQMP3ZH-1.cjs.js'))
-    assert.strictEqual(outputFiles[1].path, path.join(testDir, 'entry', 'out', 'ACBA75F5-2.mjs.js'))
+    assert.strictEqual(outputFiles[0].path, path.join(testDir, 'entry', 'out', 'CXHWNMAN-1.cjs.js'))
+    assert.strictEqual(outputFiles[1].path, path.join(testDir, 'entry', 'out', 'EYSNILNO-2.mjs.js'))
   },
 
   async customEntryPointOutputPathsAbs({ esbuild, testDir }) {
@@ -2372,22 +2407,24 @@ require("/assets/file.png");
       write: false,
     })
     assert.strictEqual(outputFiles.length, 2)
-    assert.strictEqual(outputFiles[0].path, path.join(testDir, 'entry', 'out', 'MYINLEYF-1.js'))
-    assert.strictEqual(outputFiles[1].path, path.join(testDir, 'entry', 'out', 'R2MEQS4G-2.js'))
+    assert.strictEqual(outputFiles[0].path, path.join(testDir, 'entry', 'out', 'TIORPBNU-1.js'))
+    assert.strictEqual(outputFiles[1].path, path.join(testDir, 'entry', 'out', '3KY7NOSR-2.js'))
   },
 }
 
-function fetch(host, port, path) {
+function fetch(host, port, path, headers) {
   return new Promise((resolve, reject) => {
-    http.get({ host, port, path }, res => {
+    http.get({ host, port, path, headers }, res => {
       const chunks = []
       res.on('data', chunk => chunks.push(chunk))
       res.on('end', () => {
         const content = Buffer.concat(chunks)
         if (res.statusCode < 200 || res.statusCode > 299)
           reject(new Error(`${res.statusCode} when fetching ${path}: ${content}`))
-        else
+        else {
+          content.headers = res.headers
           resolve(content)
+        }
       })
     }).on('error', reject)
   })
@@ -2625,6 +2662,13 @@ let serveTests = {
     const buffer = await fetch(result.host, result.port, '/out.js')
     assert.strictEqual(buffer.toString(), `console.log(123);\n`);
 
+    let singleRequest = await singleRequestPromise;
+    assert.strictEqual(singleRequest.method, 'GET');
+    assert.strictEqual(singleRequest.path, '/out.js');
+    assert.strictEqual(singleRequest.status, 200);
+    assert.strictEqual(typeof singleRequest.remoteAddress, 'string');
+    assert.strictEqual(typeof singleRequest.timeInMS, 'number');
+
     try {
       await fetch(result.host, result.port, '/in.js')
       throw new Error('Expected a 404 error for "/in.js"')
@@ -2632,13 +2676,6 @@ let serveTests = {
       if (err.message !== '404 when fetching /in.js: 404 - Not Found')
         throw err
     }
-
-    let singleRequest = await singleRequestPromise;
-    assert.strictEqual(singleRequest.method, 'GET');
-    assert.strictEqual(singleRequest.path, '/out.js');
-    assert.strictEqual(singleRequest.status, 200);
-    assert.strictEqual(typeof singleRequest.remoteAddress, 'string');
-    assert.strictEqual(typeof singleRequest.timeInMS, 'number');
 
     result.stop();
     await result.wait;
@@ -2840,6 +2877,44 @@ let serveTests = {
     assert.strictEqual(req.status, 200);
     assert.strictEqual(typeof req.remoteAddress, 'string');
     assert.strictEqual(typeof req.timeInMS, 'number');
+
+    result.stop();
+    await result.wait;
+  },
+
+  async serveRange({ esbuild, testDir }) {
+    const big = path.join(testDir, 'big.txt')
+    const byteCount = 16 * 1024 * 1024
+    const buffer = require('crypto').randomBytes(byteCount)
+    await writeFileAsync(big, buffer)
+
+    const result = await esbuild.serve({
+      host: '127.0.0.1',
+      servedir: testDir,
+    }, {})
+
+    // Test small to big ranges
+    const minLength = 1
+    const maxLength = buffer.length
+
+    for (let i = 0, n = 16; i < n; i++) {
+      const length = Math.round(minLength + (maxLength - minLength) * i / (n - 1))
+      const start = Math.floor(Math.random() * (buffer.length - length))
+      const fetched = await fetch(result.host, result.port, '/big.txt', {
+        // Subtract 1 because range headers are inclusive on both ends
+        Range: `bytes=${start}-${start + length - 1}`,
+      })
+      delete fetched.headers.date
+      const expected = buffer.slice(start, start + length)
+      expected.headers = {
+        'access-control-allow-origin': '*',
+        'content-length': `${length}`,
+        'content-range': `bytes ${start}-${start + length - 1}/${byteCount}`,
+        'content-type': 'application/octet-stream',
+        'connection': 'close',
+      }
+      assert.deepStrictEqual(fetched, expected)
+    }
 
     result.stop();
     await result.wait;
@@ -3130,28 +3205,96 @@ let transformTests = {
     assert.strictEqual(code2, `/* @__PURE__ */ factory(fragment, null, /* @__PURE__ */ factory("div", null));\n`)
   },
 
+  // Note: tree shaking is disabled when the output format isn't IIFE
   async treeShakingDefault({ esbuild }) {
-    const { code } = await esbuild.transform(`/* @__PURE__ */ fn(); <div/>`, {
+    const { code } = await esbuild.transform(`
+      var unused = 123
+      var used = 234
+      export { used }
+    `, {
       loader: 'jsx',
-      minifySyntax: true,
+      format: 'esm',
+      treeShaking: undefined,
     })
-    assert.strictEqual(code, ``)
+    assert.strictEqual(code, `var unused = 123;\nvar used = 234;\nexport {\n  used\n};\n`)
+  },
+
+  async treeShakingFalse({ esbuild }) {
+    const { code } = await esbuild.transform(`
+      var unused = 123
+      var used = 234
+      export { used }
+    `, {
+      loader: 'jsx',
+      format: 'esm',
+      treeShaking: false,
+    })
+    assert.strictEqual(code, `var unused = 123;\nvar used = 234;\nexport {\n  used\n};\n`)
   },
 
   async treeShakingTrue({ esbuild }) {
+    const { code } = await esbuild.transform(`
+      var unused = 123
+      var used = 234
+      export { used }
+    `, {
+      loader: 'jsx',
+      format: 'esm',
+      treeShaking: true,
+    })
+    assert.strictEqual(code, `var used = 234;\nexport {\n  used\n};\n`)
+  },
+
+  // Note: tree shaking is enabled when the output format is IIFE
+  async treeShakingDefaultIIFE({ esbuild }) {
+    const { code } = await esbuild.transform(`var unused = 123`, {
+      loader: 'jsx',
+      format: 'iife',
+      treeShaking: undefined,
+    })
+    assert.strictEqual(code, `(() => {\n})();\n`)
+  },
+
+  async treeShakingFalseIIFE({ esbuild }) {
+    const { code } = await esbuild.transform(`var unused = 123`, {
+      loader: 'jsx',
+      format: 'iife',
+      treeShaking: false,
+    })
+    assert.strictEqual(code, `(() => {\n  var unused = 123;\n})();\n`)
+  },
+
+  async treeShakingTrueIIFE({ esbuild }) {
+    const { code } = await esbuild.transform(`var unused = 123`, {
+      loader: 'jsx',
+      format: 'iife',
+      treeShaking: true,
+    })
+    assert.strictEqual(code, `(() => {\n})();\n`)
+  },
+
+  async ignoreAnnotationsDefault({ esbuild }) {
     const { code } = await esbuild.transform(`/* @__PURE__ */ fn(); <div/>`, {
       loader: 'jsx',
       minifySyntax: true,
-      treeShaking: true,
     })
     assert.strictEqual(code, ``)
   },
 
-  async treeShakingIgnoreAnnotations({ esbuild }) {
+  async ignoreAnnotationsFalse({ esbuild }) {
     const { code } = await esbuild.transform(`/* @__PURE__ */ fn(); <div/>`, {
       loader: 'jsx',
       minifySyntax: true,
-      treeShaking: 'ignore-annotations',
+      ignoreAnnotations: false,
+    })
+    assert.strictEqual(code, ``)
+  },
+
+  async ignoreAnnotationsTrue({ esbuild }) {
+    const { code } = await esbuild.transform(`/* @__PURE__ */ fn(); <div/>`, {
+      loader: 'jsx',
+      minifySyntax: true,
+      ignoreAnnotations: true,
     })
     assert.strictEqual(code, `fn(), React.createElement("div", null);\n`)
   },
@@ -3631,10 +3774,30 @@ let transformTests = {
     assert.strictEqual(json.sourcesContent[0], input)
   },
 
-  async transformLegalComments({ esbuild }) {
+  async transformLegalCommentsJS({ esbuild }) {
     assert.strictEqual((await esbuild.transform(`//!x\ny()`, { legalComments: 'none' })).code, `y();\n`)
     assert.strictEqual((await esbuild.transform(`//!x\ny()`, { legalComments: 'inline' })).code, `//!x\ny();\n`)
     assert.strictEqual((await esbuild.transform(`//!x\ny()`, { legalComments: 'eof' })).code, `y();\n//!x\n`)
+    try {
+      await esbuild.transform(``, { legalComments: 'linked' })
+      throw new Error('Expected a transform failure')
+    } catch (e) {
+      if (!e || !e.errors || !e.errors[0] || e.errors[0].text !== 'Cannot transform with linked or external legal comments')
+        throw e
+    }
+    try {
+      await esbuild.transform(``, { legalComments: 'external' })
+      throw new Error('Expected a transform failure')
+    } catch (e) {
+      if (!e || !e.errors || !e.errors[0] || e.errors[0].text !== 'Cannot transform with linked or external legal comments')
+        throw e
+    }
+  },
+
+  async transformLegalCommentsCSS({ esbuild }) {
+    assert.strictEqual((await esbuild.transform(`/*!x*/\ny{}`, { loader: 'css', legalComments: 'none' })).code, `y {\n}\n`)
+    assert.strictEqual((await esbuild.transform(`/*!x*/\ny{}`, { loader: 'css', legalComments: 'inline' })).code, `/*!x*/\ny {\n}\n`)
+    assert.strictEqual((await esbuild.transform(`/*!x*/\ny{}`, { loader: 'css', legalComments: 'eof' })).code, `y {\n}\n/*!x*/\n`)
     try {
       await esbuild.transform(``, { legalComments: 'linked' })
       throw new Error('Expected a transform failure')
@@ -3701,6 +3864,38 @@ let transformTests = {
     assert.strictEqual(code2, `foo;\n`)
   },
 
+  async nameCollisionEvalRename({ esbuild }) {
+    const { code } = await esbuild.transform(`
+      // "arg" must not be renamed to "arg2"
+      return function(arg2) {
+        function foo(arg) {
+          return arg + arg2;
+        }
+        // "eval" prevents "arg2" from being renamed
+        // "arg" below causes "arg" above to be renamed
+        return eval(foo(1)) + arg
+      }(2);
+    `)
+    const result = new Function('arg', code)(10)
+    assert.strictEqual(result, 13)
+  },
+
+  async nameCollisionEvalMinify({ esbuild }) {
+    const { code } = await esbuild.transform(`
+      // "arg" must not be renamed to "$"
+      return function($) {
+        function foo(arg) {
+          return arg + $;
+        }
+        // "eval" prevents "$" from being renamed
+        // Repeated "$" puts "$" at the top of the character frequency histogram
+        return eval(foo($$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$))
+      }(2);
+    `, { minifyIdentifiers: true })
+    const result = new Function('$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$', code)(1)
+    assert.strictEqual(result, 3)
+  },
+
   async dynamicImportString({ esbuild }) {
     const { code: code1 } = await esbuild.transform(`import('foo')`, { target: 'chrome63' })
     assert.strictEqual(code1, `import("foo");\n`)
@@ -3745,6 +3940,11 @@ let transformTests = {
     const fromPromiseResolve = text => text.slice(text.indexOf('Promise.resolve'))
     const { code: code4 } = await esbuild.transform(`import(foo)`, { target: 'chrome48', minifyWhitespace: true })
     assert.strictEqual(fromPromiseResolve(code4), `Promise.resolve().then(function(){return __toModule(require(foo))});\n`)
+  },
+
+  async caseInsensitiveTarget({ esbuild }) {
+    assert.strictEqual((await esbuild.transform(`a ||= b`, { target: 'eS5' })).code, `a || (a = b);\n`)
+    assert.strictEqual((await esbuild.transform(`a ||= b`, { target: 'eSnExT' })).code, `a ||= b;\n`)
   },
 
   async multipleEngineTargets({ esbuild }) {
@@ -3875,6 +4075,55 @@ let formatTests = {
     assert.strictEqual(messages.length, 2)
     assert.strictEqual(messages[0], ` > error: This is an error\n\n`)
     assert.strictEqual(messages[1], ` > file.js:0:0: error: Another error\n    0 │ \n      ╵ ^\n\n`)
+  },
+}
+
+let analyzeTests = {
+  async analyzeMetafile({ esbuild }) {
+    const metafile = {
+      "inputs": {
+        "entry.js": {
+          "bytes": 50,
+          "imports": [
+            {
+              "path": "lib.js",
+              "kind": "import-statement"
+            }
+          ]
+        },
+        "lib.js": {
+          "bytes": 200,
+          "imports": []
+        }
+      },
+      "outputs": {
+        "out.js": {
+          "imports": [],
+          "exports": [],
+          "entryPoint": "entry.js",
+          "inputs": {
+            "entry.js": {
+              "bytesInOutput": 25
+            },
+            "lib.js": {
+              "bytesInOutput": 50
+            }
+          },
+          "bytes": 100
+        }
+      }
+    }
+    assert.strictEqual(await esbuild.analyzeMetafile(metafile), `
+  out.js       100b   100.0%
+   ├ lib.js     50b    50.0%
+   └ entry.js   25b    25.0%
+`)
+    assert.strictEqual(await esbuild.analyzeMetafile(metafile, { verbose: true }), `
+  out.js ────── 100b ── 100.0%
+   ├ lib.js ──── 50b ─── 50.0%
+   │  └ entry.js
+   └ entry.js ── 25b ─── 25.0%
+`)
   },
 }
 
@@ -4046,6 +4295,24 @@ ${path.relative(process.cwd(), input).replace(/\\/g, '/')}:1:2: error: Unexpecte
     }
   },
 
+  async buildSyncWatchThrow({ esbuild, testDir }) {
+    try {
+      const input = path.join(testDir, 'in.js')
+      const output = path.join(testDir, 'out.js')
+      await writeFileAsync(input, '1+')
+      esbuild.buildSync({ entryPoints: [input], bundle: true, outfile: output, format: 'cjs', logLevel: 'silent', watch: true })
+      const result = require(output)
+      assert.strictEqual(result.default, 123)
+      assert.strictEqual(result.__esModule, true)
+      throw new Error('Expected an error to be thrown');
+    } catch (error) {
+      assert(error instanceof Error, 'Must be an Error object');
+      assert.strictEqual(error.message, `Build failed with 1 error:\nerror: Cannot use "watch" with a synchronous build`);
+      assert.strictEqual(error.errors.length, 1);
+      assert.strictEqual(error.warnings.length, 0);
+    }
+  },
+
   async transformThrow({ esbuild }) {
     try {
       await esbuild.transform(`1+`, {})
@@ -4068,6 +4335,53 @@ ${path.relative(process.cwd(), input).replace(/\\/g, '/')}:1:2: error: Unexpecte
     assert.strictEqual(messages.length, 2)
     assert.strictEqual(messages[0], ` > error: This is an error\n\n`)
     assert.strictEqual(messages[1], ` > file.js:0:0: error: Another error\n    0 │ \n      ╵ ^\n\n`)
+  },
+
+  async analyzeMetafileSync({ esbuild }) {
+    const metafile = {
+      "inputs": {
+        "entry.js": {
+          "bytes": 50,
+          "imports": [
+            {
+              "path": "lib.js",
+              "kind": "import-statement"
+            }
+          ]
+        },
+        "lib.js": {
+          "bytes": 200,
+          "imports": []
+        }
+      },
+      "outputs": {
+        "out.js": {
+          "imports": [],
+          "exports": [],
+          "entryPoint": "entry.js",
+          "inputs": {
+            "entry.js": {
+              "bytesInOutput": 25
+            },
+            "lib.js": {
+              "bytesInOutput": 50
+            }
+          },
+          "bytes": 100
+        }
+      }
+    }
+    assert.strictEqual(esbuild.analyzeMetafileSync(metafile), `
+  out.js       100b   100.0%
+   ├ lib.js     50b    50.0%
+   └ entry.js   25b    25.0%
+`)
+    assert.strictEqual(esbuild.analyzeMetafileSync(metafile, { verbose: true }), `
+  out.js ────── 100b ── 100.0%
+   ├ lib.js ──── 50b ─── 50.0%
+   │  └ entry.js
+   └ entry.js ── 25b ─── 25.0%
+`)
   },
 }
 
@@ -4112,6 +4426,7 @@ async function main() {
     ...Object.entries(serveTests),
     ...Object.entries(transformTests),
     ...Object.entries(formatTests),
+    ...Object.entries(analyzeTests),
     ...Object.entries(syncTests),
   ]
   let allTestsPassed = (await Promise.all(tests.map(runTest))).every(success => success)

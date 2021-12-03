@@ -1162,6 +1162,7 @@ func TestPackageJsonNeutralNoDefaultMainFields(t *testing.T) {
 			AbsOutputFile: "/Users/user/project/out.js",
 		},
 		expectedScanLog: `Users/user/project/src/entry.js: error: Could not resolve "demo-pkg" (mark it as external to exclude it from the bundle)
+Users/user/project/node_modules/demo-pkg/package.json: note: The "main" field was ignored (main fields must be configured manually when using the "neutral" platform)
 `,
 	})
 }
@@ -1926,6 +1927,235 @@ Users/user/project/src/entry.js: error: Could not resolve "pkg/path/to/other/fil
 Users/user/project/node_modules/pkg/package.json: note: The path "./path/to/other/file" is not exported by package "pkg"
 Users/user/project/node_modules/pkg/package.json: note: The file "./path/to/other/file.js" is exported at path "./extra/other/file.js"
 Users/user/project/src/entry.js: note: Import from "pkg/extra/other/file.js" to get the file "Users/user/project/node_modules/pkg/path/to/other/file.js"
+`,
+	})
+}
+
+func TestPackageJsonImports(t *testing.T) {
+	packagejson_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/Users/user/project/src/entry.js": `
+				import '#top-level'
+				import '#nested/path.js'
+				import '#star/c.js'
+				import '#slash/d.js'
+			`,
+			"/Users/user/project/src/package.json": `
+				{
+					"imports": {
+						"#top-level": "./a.js",
+						"#nested/path.js": "./b.js",
+						"#star/*": "./some-star/*",
+						"#slash/": "./some-slash/"
+					}
+				}
+			`,
+			"/Users/user/project/src/a.js":            `console.log('a.js')`,
+			"/Users/user/project/src/b.js":            `console.log('b.js')`,
+			"/Users/user/project/src/some-star/c.js":  `console.log('c.js')`,
+			"/Users/user/project/src/some-slash/d.js": `console.log('d.js')`,
+		},
+		entryPaths: []string{"/Users/user/project/src/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/Users/user/project/out.js",
+		},
+	})
+}
+
+func TestPackageJsonImportsRemapToOtherPackage(t *testing.T) {
+	packagejson_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/Users/user/project/src/entry.js": `
+				import '#top-level'
+				import '#nested/path.js'
+				import '#star/c.js'
+				import '#slash/d.js'
+			`,
+			"/Users/user/project/src/package.json": `
+				{
+					"imports": {
+						"#top-level": "pkg/a.js",
+						"#nested/path.js": "pkg/b.js",
+						"#star/*": "pkg/some-star/*",
+						"#slash/": "pkg/some-slash/"
+					}
+				}
+			`,
+			"/Users/user/project/src/node_modules/pkg/a.js":            `console.log('a.js')`,
+			"/Users/user/project/src/node_modules/pkg/b.js":            `console.log('b.js')`,
+			"/Users/user/project/src/node_modules/pkg/some-star/c.js":  `console.log('c.js')`,
+			"/Users/user/project/src/node_modules/pkg/some-slash/d.js": `console.log('d.js')`,
+		},
+		entryPaths: []string{"/Users/user/project/src/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/Users/user/project/out.js",
+		},
+	})
+}
+
+func TestPackageJsonImportsErrorMissingRemappedPackage(t *testing.T) {
+	packagejson_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/Users/user/project/src/entry.js": `
+				import '#foo'
+			`,
+			"/Users/user/project/src/package.json": `
+				{
+					"imports": {
+						"#foo": "bar"
+					}
+				}
+			`,
+		},
+		entryPaths: []string{"/Users/user/project/src/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/Users/user/project/out.js",
+		},
+		expectedScanLog: `Users/user/project/src/entry.js: error: Could not resolve "#foo" (mark it as external to exclude it from the bundle)
+Users/user/project/src/package.json: note: The remapped path "bar" could not be resolved
+`,
+	})
+}
+
+func TestPackageJsonImportsInvalidPackageConfiguration(t *testing.T) {
+	packagejson_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/Users/user/project/src/entry.js": `
+				import '#foo'
+			`,
+			"/Users/user/project/src/package.json": `
+				{
+					"imports": "#foo"
+				}
+			`,
+		},
+		entryPaths: []string{"/Users/user/project/src/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/Users/user/project/out.js",
+		},
+		expectedScanLog: `Users/user/project/src/entry.js: error: Could not resolve "#foo" (mark it as external to exclude it from the bundle)
+Users/user/project/src/package.json: note: The package configuration has an invalid value here
+Users/user/project/src/package.json: warning: The value for "imports" must be an object
+`,
+	})
+}
+
+func TestPackageJsonImportsErrorEqualsHash(t *testing.T) {
+	packagejson_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/Users/user/project/src/entry.js": `
+				import '#'
+			`,
+			"/Users/user/project/src/package.json": `
+				{
+					"imports": {}
+				}
+			`,
+		},
+		entryPaths: []string{"/Users/user/project/src/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/Users/user/project/out.js",
+		},
+		expectedScanLog: `Users/user/project/src/entry.js: error: Could not resolve "#" (mark it as external to exclude it from the bundle)
+Users/user/project/src/package.json: note: This "imports" map was ignored because the module specifier "#" is invalid
+`,
+	})
+}
+
+func TestPackageJsonImportsErrorStartsWithHashSlash(t *testing.T) {
+	packagejson_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/Users/user/project/src/entry.js": `
+				import '#/foo'
+			`,
+			"/Users/user/project/src/package.json": `
+				{
+					"imports": {}
+				}
+			`,
+		},
+		entryPaths: []string{"/Users/user/project/src/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/Users/user/project/out.js",
+		},
+		expectedScanLog: `Users/user/project/src/entry.js: error: Could not resolve "#/foo" (mark it as external to exclude it from the bundle)
+Users/user/project/src/package.json: note: This "imports" map was ignored because the module specifier "#/foo" is invalid
+`,
+	})
+}
+
+func TestPackageJsonMainFieldsErrorMessageDefault(t *testing.T) {
+	packagejson_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/Users/user/project/src/entry.js": `
+				import 'foo'
+			`,
+			"/Users/user/project/node_modules/foo/package.json": `
+				{
+					"main": "./foo"
+				}
+			`,
+		},
+		entryPaths: []string{"/Users/user/project/src/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/Users/user/project/out.js",
+		},
+		expectedScanLog: `Users/user/project/src/entry.js: error: Could not resolve "foo" (mark it as external to exclude it from the bundle)
+`,
+	})
+}
+
+func TestPackageJsonMainFieldsErrorMessageNotIncluded(t *testing.T) {
+	packagejson_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/Users/user/project/src/entry.js": `
+				import 'foo'
+			`,
+			"/Users/user/project/node_modules/foo/package.json": `
+				{
+					"main": "./foo"
+				}
+			`,
+		},
+		entryPaths: []string{"/Users/user/project/src/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/Users/user/project/out.js",
+			MainFields:    []string{"some", "fields"},
+		},
+		expectedScanLog: `Users/user/project/src/entry.js: error: Could not resolve "foo" (mark it as external to exclude it from the bundle)
+Users/user/project/node_modules/foo/package.json: note: The "main" field was ignored because the list of main fields to use is currently set to ["some", "fields"]
+`,
+	})
+}
+
+func TestPackageJsonMainFieldsErrorMessageEmpty(t *testing.T) {
+	packagejson_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/Users/user/project/src/entry.js": `
+				import 'foo'
+			`,
+			"/Users/user/project/node_modules/foo/package.json": `
+				{
+					"main": "./foo"
+				}
+			`,
+		},
+		entryPaths: []string{"/Users/user/project/src/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/Users/user/project/out.js",
+			MainFields:    []string{},
+		},
+		expectedScanLog: `Users/user/project/src/entry.js: error: Could not resolve "foo" (mark it as external to exclude it from the bundle)
+Users/user/project/node_modules/foo/package.json: note: The "main" field was ignored because the list of main fields to use is currently set to []
 `,
 	})
 }

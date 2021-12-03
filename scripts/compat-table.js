@@ -153,9 +153,11 @@ mergeVersions('BigInt', { es2020: true })
 mergeVersions('ImportMeta', { es2020: true })
 mergeVersions('NullishCoalescing', { es2020: true })
 mergeVersions('OptionalChain', { es2020: true })
+mergeVersions('LogicalAssignment', { es2021: true })
 mergeVersions('TopLevelAwait', {})
 mergeVersions('ArbitraryModuleNamespaceNames', {})
 mergeVersions('ImportAssertions', {})
+mergeVersions('ClassStaticBlocks', {})
 
 // Manually copied from https://caniuse.com/?search=export%20*%20as
 mergeVersions('ExportStarAs', {
@@ -164,6 +166,9 @@ mergeVersions('ExportStarAs', {
   es2020: true,
   firefox80: true,
   node12: true, // From https://developer.mozilla.org/en-US/docs/web/javascript/reference/statements/export
+
+  // This feature has been implemented in Safari but I have no idea what version
+  // this bug corresponds to: https://bugs.webkit.org/show_bug.cgi?id=214379
 })
 
 // Manually copied from https://caniuse.com/#search=import.meta
@@ -179,7 +184,10 @@ mergeVersions('ImportMeta', {
 // Manually copied from https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/await
 mergeVersions('TopLevelAwait', {
   chrome89: true,
+  edge89: true,
+  firefox89: true,
   node14_8: true,
+  safari15: true,
 })
 
 // Manually copied from https://caniuse.com/es6-module-dynamic-import
@@ -192,15 +200,34 @@ mergeVersions('DynamicImport', {
   safari11_1: true,
 })
 
-// From https://github.com/tc39/ecma262/pull/2154#issuecomment-825201030
 mergeVersions('ArbitraryModuleNamespaceNames', {
+  // From https://github.com/tc39/ecma262/pull/2154#issuecomment-825201030
   chrome90: true,
   node16: true,
+
+  // From https://bugzilla.mozilla.org/show_bug.cgi?id=1670044
+  firefox87: true,
+
+  // This feature has been implemented in Safari but I have no idea what version
+  // this bug corresponds to: https://bugs.webkit.org/show_bug.cgi?id=217576
 })
 
-// From https://www.chromestatus.com/feature/5765269513306112
 mergeVersions('ImportAssertions', {
+  // From https://www.chromestatus.com/feature/5765269513306112
   chrome91: true,
+
+  // Not yet in Firefox: https://bugzilla.mozilla.org/show_bug.cgi?id=1668330
+})
+
+mergeVersions('ClassStaticBlocks', {
+  // From https://www.chromestatus.com/feature/6482797915013120
+  chrome91: true,
+
+  // https://github.com/nodejs/node/blob/master/doc/changelogs/CHANGELOG_V16.md
+  // combined with https://v8.dev/blog/v8-release-94
+  node16_11: true,
+
+  // Not yet in Firefox: https://bugzilla.mozilla.org/show_bug.cgi?id=1670018
 })
 
 for (const test of [...es5.tests, ...es6.tests, ...stage4.tests, ...stage1to3.tests]) {

@@ -1,15 +1,16 @@
 {
 	"name": "@netlify/esbuild-linux-32",
-	"version": "0.13.6",
-	"description": "The Linux 32-bit binary for esbuild, a JavaScript bundler.",
-	"repository": "https://github.com/netlify/esbuild",
-	"license": "MIT",
-	"os": [
-		"linux"
-	],
-	"cpu": [
-		"ia32"
-	],
+  "version": "0.13.13",
+  "description": "The Linux 32-bit binary for esbuild, a JavaScript bundler.",
+  "repository": "https://github.com/netlify/esbuild",
+  "license": "MIT",
+  "preferUnplugged": false,
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "ia32"
+  ],
 	"directories": {
 		"bin": "bin"
 	}

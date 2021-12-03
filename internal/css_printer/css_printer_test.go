@@ -31,8 +31,8 @@ func expectPrintedCommon(t *testing.T, name string, contents string, expected st
 			}
 		}
 		assertEqual(t, text, "")
-		css := Print(tree, options)
-		assertEqual(t, string(css), expected)
+		result := Print(tree, options)
+		assertEqual(t, string(result.CSS), expected)
 	})
 }
 
@@ -61,7 +61,7 @@ func expectPrintedString(t *testing.T, stringValue string, expected string) {
 		t.Helper()
 		p := printer{}
 		p.printQuoted(stringValue)
-		assertEqual(t, p.sb.String(), expected)
+		assertEqual(t, string(p.css), expected)
 	})
 }
 
@@ -86,6 +86,15 @@ func TestStringQuote(t *testing.T) {
 	expectPrintedString(t, "f\nG", "\"f\\aG\"")
 	expectPrintedString(t, "f\x01o", "\"f\x01o\"")
 	expectPrintedString(t, "f\to", "\"f\to\"")
+
+	expectPrintedString(t, "</script>", "\"</script>\"")
+	expectPrintedString(t, "</style>", "\"<\\/style>\"")
+	expectPrintedString(t, "</style", "\"<\\/style\"")
+	expectPrintedString(t, "</STYLE", "\"<\\/STYLE\"")
+	expectPrintedString(t, "</StYlE", "\"<\\/StYlE\"")
+	expectPrintedString(t, ">/style", "\">/style\"")
+	expectPrintedString(t, ">/STYLE", "\">/STYLE\"")
+	expectPrintedString(t, ">/StYlE", "\">/StYlE\"")
 }
 
 func TestURLQuote(t *testing.T) {

@@ -134,6 +134,12 @@ import "//example.com/code.js";
 import "data:application/javascript;base64,ZXhwb3J0IGRlZmF1bHQgMTIz";
 
 ================================================================================
+TestAutoExternalNode
+---------- /out/entry.js ----------
+// entry.js
+import fs from "node:fs/promises";
+
+================================================================================
 TestAvoidTDZ
 ---------- /out.js ----------
 // entry.js
@@ -174,6 +180,32 @@ async function main(name) {
   }
 }
 main("fs");
+
+================================================================================
+TestBuiltInNodeModulePrecedence
+---------- /out/entry.js ----------
+// node_modules/fs/abc.js
+var require_abc = __commonJS({
+  "node_modules/fs/abc.js"() {
+    console.log("include this");
+  }
+});
+
+// node_modules/fs/index.js
+var require_fs = __commonJS({
+  "node_modules/fs/index.js"() {
+    console.log("include this too");
+  }
+});
+
+// entry.js
+console.log([
+  require("fs"),
+  require("fs/promises"),
+  require("node:foo"),
+  require_abc(),
+  require_fs()
+]);
 
 ================================================================================
 TestCallImportNamespaceWarning
@@ -376,6 +408,18 @@ TestDefineImportMeta
 console.log(1, 2, 3, 2 .baz, 1 .bar);
 
 ================================================================================
+TestDefineThis
+---------- /out.js ----------
+// entry.js
+ok(1, 2, 3, 2 .baz, 1 .bar);
+(() => {
+  ok(1, 2, 3, 2 .baz, 1 .bar);
+})();
+(function() {
+  doNotSubstitute(this, this.foo, this.foo.bar, this.foo.baz, this.bar);
+})();
+
+================================================================================
 TestDirectEvalTaintingNoBundle
 ---------- /out.js ----------
 function test1() {
@@ -500,6 +544,25 @@ var init_types = __esm({
 
 // entry.js
 console.log((init_types(), types_exports));
+
+================================================================================
+TestEntryNamesNoSlashAfterDir
+---------- /out/app1-main.js ----------
+console.log(1);
+
+---------- /out/app2-main.js ----------
+console.log(2);
+
+---------- /out/-customPath.js ----------
+console.log(3);
+
+================================================================================
+TestEntryNamesNonPortableCharacter
+---------- /out/entry1-_.js ----------
+console.log(1);
+
+---------- /out/entry2-*.js ----------
+console.log(2);
 
 ================================================================================
 TestExportChain
@@ -1348,12 +1411,63 @@ var clsExprKeep = /* @__PURE__ */ __name(class {
 new clsExprKeep();
 
 ================================================================================
-TestLegalCommentsExternal
----------- /out.js.LEGAL.txt ----------
-//! Copyright notice 1
-//! Copyright notice 2
+TestLegalCommentsAvoidSlashTagEndOfFile
+---------- /out/entry.js ----------
+// entry.js
+var x;
+export {
+  x
+};
+//! <script>foo<\/script>
 
----------- /out.js ----------
+---------- /out/entry.css ----------
+/* entry.css */
+x {
+  y: z;
+}
+/*! <style>foo<\/style> */
+
+================================================================================
+TestLegalCommentsAvoidSlashTagExternal
+---------- /out/entry.js.LEGAL.txt ----------
+//! <script>foo</script>
+
+---------- /out/entry.js ----------
+// entry.js
+var x;
+export {
+  x
+};
+
+---------- /out/entry.css.LEGAL.txt ----------
+/*! <style>foo</style> */
+
+---------- /out/entry.css ----------
+/* entry.css */
+x {
+  y: z;
+}
+
+================================================================================
+TestLegalCommentsAvoidSlashTagInline
+---------- /out/entry.js ----------
+// entry.js
+//! <script>foo<\/script>
+var x;
+export {
+  x
+};
+
+---------- /out/entry.css ----------
+/* entry.css */
+/*! <style>foo<\/style> */
+x {
+  y: z;
+}
+
+================================================================================
+TestLegalCommentsEndOfFile
+---------- /out/entry.js ----------
 // a.js
 console.log("in a");
 
@@ -1362,10 +1476,70 @@ console.log("in b");
 
 // c.js
 console.log("in c");
+//! Copyright notice 1
+//! Copyright notice 2
+
+---------- /out/entry.css ----------
+/* a.css */
+a {
+  zoom: 2;
+}
+
+/* b.css */
+b {
+  zoom: 2;
+}
+
+/* c.css */
+c {
+  zoom: 2;
+}
+
+/* entry.css */
+/*! Copyright notice 1 */
+/*! Copyright notice 2 */
+
+================================================================================
+TestLegalCommentsExternal
+---------- /out/entry.js.LEGAL.txt ----------
+//! Copyright notice 1
+//! Copyright notice 2
+
+---------- /out/entry.js ----------
+// a.js
+console.log("in a");
+
+// b.js
+console.log("in b");
+
+// c.js
+console.log("in c");
+
+---------- /out/entry.css.LEGAL.txt ----------
+/*! Copyright notice 1 */
+/*! Copyright notice 2 */
+
+---------- /out/entry.css ----------
+/* a.css */
+a {
+  zoom: 2;
+}
+
+/* b.css */
+b {
+  zoom: 2;
+}
+
+/* c.css */
+c {
+  zoom: 2;
+}
+
+/* entry.css */
 
 ================================================================================
 TestLegalCommentsInline
----------- /out.js ----------
+---------- /out/entry.js ----------
 // a.js
 console.log("in a");
 //! Copyright notice 1
@@ -1377,14 +1551,35 @@ console.log("in b");
 // c.js
 console.log("in c");
 //! Copyright notice 2
+
+---------- /out/entry.css ----------
+/* a.css */
+a {
+  zoom: 2;
+}
+/*! Copyright notice 1 */
+
+/* b.css */
+b {
+  zoom: 2;
+}
+/*! Copyright notice 1 */
+
+/* c.css */
+c {
+  zoom: 2;
+}
+/*! Copyright notice 2 */
+
+/* entry.css */
 
 ================================================================================
 TestLegalCommentsLinked
----------- /out.js.LEGAL.txt ----------
+---------- /out/entry.js.LEGAL.txt ----------
 //! Copyright notice 1
 //! Copyright notice 2
 
----------- /out.js ----------
+---------- /out/entry.js ----------
 // a.js
 console.log("in a");
 
@@ -1393,11 +1588,58 @@ console.log("in b");
 
 // c.js
 console.log("in c");
-/*! For license information please see out.js.LEGAL.txt */
+/*! For license information please see entry.js.LEGAL.txt */
+
+---------- /out/entry.css.LEGAL.txt ----------
+/*! Copyright notice 1 */
+/*! Copyright notice 2 */
+
+---------- /out/entry.css ----------
+/* a.css */
+a {
+  zoom: 2;
+}
+
+/* b.css */
+b {
+  zoom: 2;
+}
+
+/* c.css */
+c {
+  zoom: 2;
+}
+
+/* entry.css */
+/*! For license information please see entry.css.LEGAL.txt */
+
+================================================================================
+TestLegalCommentsModifyIndent
+---------- /out/entry.js ----------
+// entry.js
+var entry_default = () => {
+  /**
+   * @preserve
+   */
+};
+export {
+  entry_default as default
+};
+
+---------- /out/entry.css ----------
+/* entry.css */
+@media (x: y) {
+  /**
+   * @preserve
+   */
+  z {
+    zoom: 2;
+  }
+}
 
 ================================================================================
 TestLegalCommentsNone
----------- /out.js ----------
+---------- /out/entry.js ----------
 // a.js
 console.log("in a");
 
@@ -1406,6 +1648,24 @@ console.log("in b");
 
 // c.js
 console.log("in c");
+
+---------- /out/entry.css ----------
+/* a.css */
+a {
+  zoom: 2;
+}
+
+/* b.css */
+b {
+  zoom: 2;
+}
+
+/* c.css */
+c {
+  zoom: 2;
+}
+
+/* entry.css */
 
 ================================================================================
 TestLoaderDataURLApplicationJSON
@@ -2535,6 +2795,21 @@ foo();
 //# sourceMappingURL=out.js.map
 
 ================================================================================
+TestStrictModeNestedFnDeclKeepNamesVariableInliningIssue1552
+---------- /out/entry.js ----------
+export function outer() {
+  {
+    let inner = function() {
+      return Math.random();
+    };
+    __name(inner, "inner");
+    const x = inner();
+    console.log(x);
+  }
+}
+__name(outer, "outer"), outer();
+
+================================================================================
 TestSwitchScopeNoBundle
 ---------- /out.js ----------
 switch (foo) {
@@ -2545,6 +2820,102 @@ switch (bar) {
   default:
     let a;
 }
+
+================================================================================
+TestTSAbstractClassFieldUseAssign
+---------- /out.js ----------
+const keepThis = Symbol("keepThis");
+class Foo {
+}
+keepThis;
+(() => new Foo())();
+
+================================================================================
+TestTSAbstractClassFieldUseDefine
+---------- /out.js ----------
+const keepThisToo = Symbol("keepThisToo");
+class Foo {
+  keepThis;
+  [keepThisToo];
+}
+(() => new Foo())();
+
+================================================================================
+TestTSComputedClassFieldUseDefineFalse
+---------- /out.js ----------
+var _a, _b, _c;
+class Foo {
+  constructor() {
+    this[_a] = s;
+    this[_c] = z;
+  }
+}
+q, _a = r, _b = x, _c = y;
+__decorateClass([
+  dec
+], Foo.prototype, _b, 2);
+__decorateClass([
+  dec
+], Foo.prototype, _c, 2);
+new Foo();
+
+================================================================================
+TestTSComputedClassFieldUseDefineTrue
+---------- /out.js ----------
+var _a, _b;
+class Foo {
+  [q];
+  [r] = s;
+  [_a = x];
+  [_b = y] = z;
+}
+__decorateClass([
+  dec
+], Foo.prototype, _a, 2);
+__decorateClass([
+  dec
+], Foo.prototype, _b, 2);
+new Foo();
+
+================================================================================
+TestTSComputedClassFieldUseDefineTrueLower
+---------- /out.js ----------
+var _a, _b, _c, _d;
+class Foo {
+  constructor() {
+    __publicField(this, _a);
+    __publicField(this, _b, s);
+    __publicField(this, _c);
+    __publicField(this, _d, z);
+  }
+}
+_a = q, _b = r, _c = x, _d = y;
+__decorateClass([
+  dec
+], Foo.prototype, _c, 2);
+__decorateClass([
+  dec
+], Foo.prototype, _d, 2);
+new Foo();
+
+================================================================================
+TestTSImportCTS
+---------- /out.js ----------
+// required.cjs
+var require_required = __commonJS({
+  "required.cjs"() {
+    console.log("works");
+  }
+});
+
+// entry.ts
+require_required();
+
+================================================================================
+TestTSImportMTS
+---------- /out.js ----------
+// imported.mts
+console.log("works");
 
 ================================================================================
 TestThisInsideFunction
@@ -3260,15 +3631,6 @@ switch (x) {
 var import_return_asi = __toModule(require_return_asi());
 var import_return_asi2 = __toModule(require_return_asi2());
 var import_return_asi3 = __toModule(require_return_asi3());
-
-// bad-typeof.js
-typeof x == "null";
-
-// node_modules/bad-typeof.js
-typeof x == "null";
-
-// plugin-dir/node_modules/bad-typeof.js
-typeof x == "null";
 
 // equals-neg-zero.js
 x === -0;

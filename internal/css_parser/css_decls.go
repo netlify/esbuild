@@ -1,6 +1,7 @@
 package css_parser
 
 import (
+	"github.com/evanw/esbuild/internal/compat"
 	"github.com/evanw/esbuild/internal/css_ast"
 	"github.com/evanw/esbuild/internal/css_lexer"
 )
@@ -16,8 +17,19 @@ func (p *parser) commaToken() css_ast.Token {
 	return t
 }
 
-func expandTokenQuad(tokens []css_ast.Token) (result [4]css_ast.Token) {
+func expandTokenQuad(tokens []css_ast.Token, allowedIdent string) (result [4]css_ast.Token, ok bool) {
 	n := len(tokens)
+	if n < 1 || n > 4 {
+		return
+	}
+
+	// Don't do this if we encounter any unexpected tokens such as "var()"
+	for i := 0; i < n; i++ {
+		if t := tokens[i]; !t.Kind.IsNumeric() && (t.Kind != css_lexer.TIdent || allowedIdent == "" || t.Text != allowedIdent) {
+			return
+		}
+	}
+
 	result[0] = tokens[0]
 	if n > 1 {
 		result[1] = tokens[1]
@@ -34,6 +46,8 @@ func expandTokenQuad(tokens []css_ast.Token) (result [4]css_ast.Token) {
 	} else {
 		result[3] = result[1]
 	}
+
+	ok = true
 	return
 }
 
@@ -63,13 +77,14 @@ func compactTokenQuad(a css_ast.Token, b css_ast.Token, c css_ast.Token, d css_a
 	return tokens
 }
 
-func (p *parser) processDeclarations(rules []css_ast.R) []css_ast.R {
-	margin := boxTracker{}
-	padding := boxTracker{}
+func (p *parser) processDeclarations(rules []css_ast.Rule) []css_ast.Rule {
+	margin := boxTracker{key: css_ast.DMargin, keyText: "margin", allowAuto: true}
+	padding := boxTracker{key: css_ast.DPadding, keyText: "padding", allowAuto: false}
+	inset := boxTracker{key: css_ast.DInset, keyText: "inset", allowAuto: true}
 	borderRadius := borderRadiusTracker{}
 
 	for i, rule := range rules {
-		decl, ok := rule.(*css_ast.RDeclaration)
+		decl, ok := rule.Data.(*css_ast.RDeclaration)
 		if !ok {
 			continue
 		}
@@ -101,8 +116,16 @@ func (p *parser) processDeclarations(rules []css_ast.R) []css_ast.R {
 				decl.Value[0] = p.lowerColor(decl.Value[0])
 
 				if p.options.MangleSyntax {
-					decl.Value[0] = p.mangleColor(decl.Value[0])
+					t := decl.Value[0]
+					if hex, ok := parseColor(t); ok {
+						decl.Value[0] = p.mangleColor(t, hex)
+					}
 				}
+			}
+
+		case css_ast.DTransform:
+			if p.options.MangleSyntax {
+				decl.Value = p.mangleTransforms(decl.Value)
 			}
 
 		case css_ast.DBoxShadow:
@@ -110,27 +133,7 @@ func (p *parser) processDeclarations(rules []css_ast.R) []css_ast.R {
 				decl.Value = p.mangleBoxShadows(decl.Value)
 			}
 
-		case css_ast.DPadding:
-			if p.options.MangleSyntax {
-				padding.mangleSides(rules, decl, i, p.options.RemoveWhitespace)
-			}
-		case css_ast.DPaddingTop:
-			if p.options.MangleSyntax {
-				padding.mangleSide(rules, decl, i, p.options.RemoveWhitespace, boxTop)
-			}
-		case css_ast.DPaddingRight:
-			if p.options.MangleSyntax {
-				padding.mangleSide(rules, decl, i, p.options.RemoveWhitespace, boxRight)
-			}
-		case css_ast.DPaddingBottom:
-			if p.options.MangleSyntax {
-				padding.mangleSide(rules, decl, i, p.options.RemoveWhitespace, boxBottom)
-			}
-		case css_ast.DPaddingLeft:
-			if p.options.MangleSyntax {
-				padding.mangleSide(rules, decl, i, p.options.RemoveWhitespace, boxLeft)
-			}
-
+		// Margin
 		case css_ast.DMargin:
 			if p.options.MangleSyntax {
 				margin.mangleSides(rules, decl, i, p.options.RemoveWhitespace)
@@ -152,6 +155,51 @@ func (p *parser) processDeclarations(rules []css_ast.R) []css_ast.R {
 				margin.mangleSide(rules, decl, i, p.options.RemoveWhitespace, boxLeft)
 			}
 
+		// Padding
+		case css_ast.DPadding:
+			if p.options.MangleSyntax {
+				padding.mangleSides(rules, decl, i, p.options.RemoveWhitespace)
+			}
+		case css_ast.DPaddingTop:
+			if p.options.MangleSyntax {
+				padding.mangleSide(rules, decl, i, p.options.RemoveWhitespace, boxTop)
+			}
+		case css_ast.DPaddingRight:
+			if p.options.MangleSyntax {
+				padding.mangleSide(rules, decl, i, p.options.RemoveWhitespace, boxRight)
+			}
+		case css_ast.DPaddingBottom:
+			if p.options.MangleSyntax {
+				padding.mangleSide(rules, decl, i, p.options.RemoveWhitespace, boxBottom)
+			}
+		case css_ast.DPaddingLeft:
+			if p.options.MangleSyntax {
+				padding.mangleSide(rules, decl, i, p.options.RemoveWhitespace, boxLeft)
+			}
+
+		// Inset
+		case css_ast.DInset:
+			if !p.options.UnsupportedCSSFeatures.Has(compat.InsetProperty) && p.options.MangleSyntax {
+				inset.mangleSides(rules, decl, i, p.options.RemoveWhitespace)
+			}
+		case css_ast.DTop:
+			if !p.options.UnsupportedCSSFeatures.Has(compat.InsetProperty) && p.options.MangleSyntax {
+				inset.mangleSide(rules, decl, i, p.options.RemoveWhitespace, boxTop)
+			}
+		case css_ast.DRight:
+			if !p.options.UnsupportedCSSFeatures.Has(compat.InsetProperty) && p.options.MangleSyntax {
+				inset.mangleSide(rules, decl, i, p.options.RemoveWhitespace, boxRight)
+			}
+		case css_ast.DBottom:
+			if !p.options.UnsupportedCSSFeatures.Has(compat.InsetProperty) && p.options.MangleSyntax {
+				inset.mangleSide(rules, decl, i, p.options.RemoveWhitespace, boxBottom)
+			}
+		case css_ast.DLeft:
+			if !p.options.UnsupportedCSSFeatures.Has(compat.InsetProperty) && p.options.MangleSyntax {
+				inset.mangleSide(rules, decl, i, p.options.RemoveWhitespace, boxLeft)
+			}
+
+		// Border radius
 		case css_ast.DBorderRadius:
 			if p.options.MangleSyntax {
 				borderRadius.mangleCorners(rules, decl, i, p.options.RemoveWhitespace)
@@ -179,7 +227,7 @@ func (p *parser) processDeclarations(rules []css_ast.R) []css_ast.R {
 	if p.options.MangleSyntax {
 		end := 0
 		for _, rule := range rules {
-			if rule != nil {
+			if rule.Data != nil {
 				rules[end] = rule
 				end++
 			}
