@@ -2410,6 +2410,72 @@ require("/assets/file.png");
     assert.strictEqual(outputFiles[0].path, path.join(testDir, 'entry', 'out', 'TIORPBNU-1.js'))
     assert.strictEqual(outputFiles[1].path, path.join(testDir, 'entry', 'out', '3KY7NOSR-2.js'))
   },
+
+  async nodeColonPrefixImport({ esbuild }) {
+    const tryTargetESM = async target => {
+      const result = await esbuild.build({
+        stdin: { contents: `import 'node:fs'; import('node:fs')` },
+        bundle: true,
+        platform: 'node',
+        target,
+        format: 'esm',
+        write: false,
+      })
+      const code = result.outputFiles[0].text
+      return code.slice(code.indexOf(`// <stdin>\n`))
+    }
+
+    assert.strictEqual(await tryTargetESM('node14.13.1'), `// <stdin>\nimport "node:fs";\nimport("node:fs");\n`)
+    assert.strictEqual(await tryTargetESM('node14.13.0'), `// <stdin>\nimport "fs";\nimport("fs");\n`)
+    assert.strictEqual(await tryTargetESM('node13'), `// <stdin>\nimport "fs";\nPromise.resolve().then(() => __toModule(__require("fs")));\n`)
+    assert.strictEqual(await tryTargetESM('node12.99'), `// <stdin>\nimport "node:fs";\nimport("node:fs");\n`)
+    assert.strictEqual(await tryTargetESM('node12.20'), `// <stdin>\nimport "node:fs";\nimport("node:fs");\n`)
+    assert.strictEqual(await tryTargetESM('node12.19'), `// <stdin>\nimport "fs";\nPromise.resolve().then(() => __toModule(__require("fs")));\n`)
+  },
+
+  async nodeColonPrefixRequire({ esbuild }) {
+    const tryTargetESM = async target => {
+      const result = await esbuild.build({
+        stdin: { contents: `require('node:fs'); require.resolve('node:fs')` },
+        bundle: true,
+        platform: 'node',
+        target,
+        format: 'cjs',
+        write: false,
+      })
+      const code = result.outputFiles[0].text
+      return code.slice(code.indexOf(`// <stdin>\n`))
+    }
+
+    assert.strictEqual(await tryTargetESM('node16'), `// <stdin>\nrequire("node:fs");\nrequire.resolve("node:fs");\n`)
+    assert.strictEqual(await tryTargetESM('node15.99'), `// <stdin>\nrequire("fs");\nrequire.resolve("fs");\n`)
+    assert.strictEqual(await tryTargetESM('node15'), `// <stdin>\nrequire("fs");\nrequire.resolve("fs");\n`)
+    assert.strictEqual(await tryTargetESM('node14.99'), `// <stdin>\nrequire("node:fs");\nrequire.resolve("node:fs");\n`)
+    assert.strictEqual(await tryTargetESM('node14.18'), `// <stdin>\nrequire("node:fs");\nrequire.resolve("node:fs");\n`)
+    assert.strictEqual(await tryTargetESM('node14.17'), `// <stdin>\nrequire("fs");\nrequire.resolve("fs");\n`)
+  },
+
+  async nodeColonPrefixImportTurnedIntoRequire({ esbuild }) {
+    const tryTargetESM = async target => {
+      const result = await esbuild.build({
+        stdin: { contents: `import 'node:fs'; import('node:fs')` },
+        bundle: true,
+        platform: 'node',
+        target,
+        format: 'cjs',
+        write: false,
+      })
+      const code = result.outputFiles[0].text
+      return code.slice(code.indexOf(`// <stdin>\n`))
+    }
+
+    assert.strictEqual(await tryTargetESM('node16'), `// <stdin>\nvar import_node_fs = __toModule(require("node:fs"));\nimport("node:fs");\n`)
+    assert.strictEqual(await tryTargetESM('node15.99'), `// <stdin>\nvar import_node_fs = __toModule(require("fs"));\nimport("fs");\n`)
+    assert.strictEqual(await tryTargetESM('node15'), `// <stdin>\nvar import_node_fs = __toModule(require("fs"));\nimport("fs");\n`)
+    assert.strictEqual(await tryTargetESM('node14.99'), `// <stdin>\nvar import_node_fs = __toModule(require("node:fs"));\nimport("node:fs");\n`)
+    assert.strictEqual(await tryTargetESM('node14.18'), `// <stdin>\nvar import_node_fs = __toModule(require("node:fs"));\nimport("node:fs");\n`)
+    assert.strictEqual(await tryTargetESM('node14.17'), `// <stdin>\nvar import_node_fs = __toModule(require("fs"));\nimport("fs");\n`)
+  },
 }
 
 function fetch(host, port, path, headers) {
@@ -3897,31 +3963,59 @@ let transformTests = {
   },
 
   async dynamicImportString({ esbuild }) {
-    const { code: code1 } = await esbuild.transform(`import('foo')`, { target: 'chrome63' })
-    assert.strictEqual(code1, `import("foo");\n`)
+    const { code } = await esbuild.transform(`import('foo')`, { target: 'chrome63' })
+    assert.strictEqual(code, `import("foo");\n`)
   },
 
   async dynamicImportStringES6({ esbuild }) {
     const fromPromiseResolve = text => text.slice(text.indexOf('Promise.resolve'))
-    const { code: code2 } = await esbuild.transform(`import('foo')`, { target: 'chrome62' })
-    assert.strictEqual(fromPromiseResolve(code2), `Promise.resolve().then(() => __toModule(require("foo")));\n`)
+    const { code } = await esbuild.transform(`import('foo')`, { target: 'chrome62' })
+    assert.strictEqual(fromPromiseResolve(code), `Promise.resolve().then(() => __toModule(require("foo")));\n`)
   },
 
   async dynamicImportStringES5({ esbuild }) {
     const fromPromiseResolve = text => text.slice(text.indexOf('Promise.resolve'))
-    const { code: code3 } = await esbuild.transform(`import('foo')`, { target: 'chrome48' })
-    assert.strictEqual(fromPromiseResolve(code3), `Promise.resolve().then(function() {\n  return __toModule(require("foo"));\n});\n`)
+    const { code } = await esbuild.transform(`import('foo')`, { target: 'chrome48' })
+    assert.strictEqual(fromPromiseResolve(code), `Promise.resolve().then(function() {\n  return __toModule(require("foo"));\n});\n`)
   },
 
   async dynamicImportStringES5Minify({ esbuild }) {
     const fromPromiseResolve = text => text.slice(text.indexOf('Promise.resolve'))
-    const { code: code4 } = await esbuild.transform(`import('foo')`, { target: 'chrome48', minifyWhitespace: true })
-    assert.strictEqual(fromPromiseResolve(code4), `Promise.resolve().then(function(){return __toModule(require("foo"))});\n`)
+    const { code } = await esbuild.transform(`import('foo')`, { target: 'chrome48', minifyWhitespace: true })
+    assert.strictEqual(fromPromiseResolve(code), `Promise.resolve().then(function(){return __toModule(require("foo"))});\n`)
+  },
+
+  async dynamicImportStringNode12_19({ esbuild }) {
+    const fromPromiseResolve = text => text.slice(text.indexOf('Promise.resolve'))
+    const { code } = await esbuild.transform(`import('foo')`, { target: 'node12.19' })
+    assert.strictEqual(fromPromiseResolve(code), `Promise.resolve().then(() => __toModule(require("foo")));\n`)
+  },
+
+  async dynamicImportStringNode12_20({ esbuild }) {
+    const { code } = await esbuild.transform(`import('foo')`, { target: 'node12.20' })
+    assert.strictEqual(code, `import("foo");\n`)
+  },
+
+  async dynamicImportStringNode13({ esbuild }) {
+    const fromPromiseResolve = text => text.slice(text.indexOf('Promise.resolve'))
+    const { code } = await esbuild.transform(`import('foo')`, { target: 'node13' })
+    assert.strictEqual(fromPromiseResolve(code), `Promise.resolve().then(() => __toModule(require("foo")));\n`)
+  },
+
+  async dynamicImportStringNode13_1({ esbuild }) {
+    const fromPromiseResolve = text => text.slice(text.indexOf('Promise.resolve'))
+    const { code } = await esbuild.transform(`import('foo')`, { target: 'node13.1' })
+    assert.strictEqual(fromPromiseResolve(code), `Promise.resolve().then(() => __toModule(require("foo")));\n`)
+  },
+
+  async dynamicImportStringNode13_2({ esbuild }) {
+    const { code } = await esbuild.transform(`import('foo')`, { target: 'node13.2' })
+    assert.strictEqual(code, `import("foo");\n`)
   },
 
   async dynamicImportExpression({ esbuild }) {
-    const { code: code1 } = await esbuild.transform(`import(foo)`, { target: 'chrome63' })
-    assert.strictEqual(code1, `import(foo);\n`)
+    const { code } = await esbuild.transform(`import(foo)`, { target: 'chrome63' })
+    assert.strictEqual(code, `import(foo);\n`)
   },
 
   async dynamicImportExpressionES6({ esbuild }) {
