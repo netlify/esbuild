@@ -25,6 +25,7 @@
 
   const nodeMajorVersion = +process.versions.node.split('.')[0]
   const testDir = path.join(dirname, '.end-to-end-tests')
+  const errorIcon = process.platform !== 'win32' ? '✘' : 'X'
   const esbuildPath = buildBinary()
   const tests = []
   let testCount = 0
@@ -62,9 +63,11 @@
       'entry.js': `import "./file.js/what/is/this"`,
       'file.js': `some file`,
     }, {
-      expectedStderr: ` > entry.js:1:7: error: Could not resolve "./file.js/what/is/this"
-    1 │ import "./file.js/what/is/this"
-      ╵        ~~~~~~~~~~~~~~~~~~~~~~~~
+      expectedStderr: `${errorIcon} [ERROR] Could not resolve "./file.js/what/is/this"
+
+    entry.js:1:7:
+      1 │ import "./file.js/what/is/this"
+        ╵        ~~~~~~~~~~~~~~~~~~~~~~~~
 
 `,
     }),
@@ -81,39 +84,131 @@
     }),
   )
 
+  // Test TypeScript enum scope merging
+  tests.push(
+    test(['entry.ts', '--bundle', '--minify', '--outfile=node.js'], {
+      'entry.ts': `
+        const id = x => x
+        enum a { b = 1 }
+        enum a { c = 2 }
+        if (id(a).c !== 2 || id(a)[2] !== 'c' || id(a).b !== 1 || id(a)[1] !== 'b') throw 'fail'
+      `,
+    }),
+    test(['entry.ts', '--bundle', '--minify', '--outfile=node.js'], {
+      'entry.ts': `
+        const id = x => x
+        {
+          enum a { b = 1 }
+        }
+        {
+          enum a { c = 2 }
+          if (id(a).c !== 2 || id(a)[2] !== 'c' || id(a).b !== void 0 || id(a)[1] !== void 0) throw 'fail'
+        }
+      `,
+    }),
+    test(['entry.ts', '--bundle', '--minify', '--outfile=node.js'], {
+      'entry.ts': `
+        const id = x => x
+        enum a { b = 1 }
+        namespace a {
+          if (id(a).b !== 1 || id(a)[1] !== 'b') throw 'fail'
+        }
+      `,
+    }),
+    test(['entry.ts', '--bundle', '--minify', '--outfile=node.js'], {
+      'entry.ts': `
+        const id = x => x
+        namespace a {
+          export function foo() {
+            if (id(a).b !== 1 || id(a)[1] !== 'b') throw 'fail'
+          }
+        }
+        enum a { b = 1 }
+        a.foo()
+      `,
+    }),
+    test(['entry.ts', '--bundle', '--minify', '--outfile=node.js'], {
+      'entry.ts': `
+        import './enum-to-namespace'
+        import './namespace-to-enum'
+        import './namespace-to-namespace'
+      `,
+      'enum-to-namespace.ts': `
+        let foo, bar, y = 2, z = 4
+        enum x { y = 1 }
+        namespace x { foo = y }
+        enum x { z = y * 3 }
+        namespace x { bar = z }
+        if (foo !== 2 || bar !== 4) throw 'fail'
+      `,
+      'namespace-to-enum.ts': `
+        let y = 2, z = 4
+        namespace x { export let y = 1 }
+        enum x { foo = y }
+        namespace x { export let z = y * 3 }
+        enum x { bar = z }
+        if (x.foo !== 2 || x.bar !== 4) throw 'fail'
+      `,
+      'namespace-to-namespace.ts': `
+        let foo, bar, y = 2, z = 4
+        namespace x { export const y = 1 }
+        namespace x { foo = y }
+        namespace x { export const z = y * 3 }
+        namespace x { bar = z }
+        if (foo !== 1 || bar !== 3) throw 'fail'
+      `,
+    }),
+  )
+
   // Test coverage for a special JSX error message
   tests.push(
     test(['example.jsx', '--outfile=node.js'], {
       'example.jsx': `let button = <Button content="some so-called \\"button text\\"" />`,
     }, {
-      expectedStderr: ` > example.jsx:1:58: error: Unexpected backslash in JSX element
-    1 │ let button = <Button content="some so-called \\"button text\\"" />
-      ╵                                                           ^
-   example.jsx:1:45: note: Quoted JSX attributes use XML-style escapes instead of JavaScript-style escapes
-    1 │ let button = <Button content="some so-called \\"button text\\"" />
-      │                                              ~~
-      ╵                                              &quot;
-   example.jsx:1:29: note: Consider using a JavaScript string inside {...} instead of a quoted JSX attribute
-    1 │ let button = <Button content="some so-called \\"button text\\"" />
-      │                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-      ╵                              {"some so-called \\"button text\\""}
+      expectedStderr: `${errorIcon} [ERROR] Unexpected backslash in JSX element
+
+    example.jsx:1:58:
+      1 │ let button = <Button content="some so-called \\"button text\\"" />
+        ╵                                                           ^
+
+  Quoted JSX attributes use XML-style escapes instead of JavaScript-style escapes:
+
+    example.jsx:1:45:
+      1 │ let button = <Button content="some so-called \\"button text\\"" />
+        │                                              ~~
+        ╵                                              &quot;
+
+  Consider using a JavaScript string inside {...} instead of a quoted JSX attribute:
+
+    example.jsx:1:29:
+      1 │ let button = <Button content="some so-called \\"button text\\"" />
+        │                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        ╵                              {"some so-called \\"button text\\""}
 
 `,
     }),
     test(['example.jsx', '--outfile=node.js'], {
       'example.jsx': `let button = <Button content='some so-called \\'button text\\'' />`,
     }, {
-      expectedStderr: ` > example.jsx:1:58: error: Unexpected backslash in JSX element
-    1 │ let button = <Button content='some so-called \\'button text\\'' />
-      ╵                                                           ^
-   example.jsx:1:45: note: Quoted JSX attributes use XML-style escapes instead of JavaScript-style escapes
-    1 │ let button = <Button content='some so-called \\'button text\\'' />
-      │                                              ~~
-      ╵                                              &apos;
-   example.jsx:1:29: note: Consider using a JavaScript string inside {...} instead of a quoted JSX attribute
-    1 │ let button = <Button content='some so-called \\'button text\\'' />
-      │                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-      ╵                              {'some so-called \\'button text\\''}
+      expectedStderr: `${errorIcon} [ERROR] Unexpected backslash in JSX element
+
+    example.jsx:1:58:
+      1 │ let button = <Button content='some so-called \\'button text\\'' />
+        ╵                                                           ^
+
+  Quoted JSX attributes use XML-style escapes instead of JavaScript-style escapes:
+
+    example.jsx:1:45:
+      1 │ let button = <Button content='some so-called \\'button text\\'' />
+        │                                              ~~
+        ╵                                              &apos;
+
+  Consider using a JavaScript string inside {...} instead of a quoted JSX attribute:
+
+    example.jsx:1:29:
+      1 │ let button = <Button content='some so-called \\'button text\\'' />
+        │                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        ╵                              {'some so-called \\'button text\\''}
 
 `,
     }),
@@ -504,6 +599,8 @@
           if (\`\${obj}c\` !== 'bc') throw 'fail'
           if (\`a\${obj}c\` !== 'abc') throw 'fail'
         `,
+      }),
+      test(['in.js', '--outfile=node.js', target], {
         'in.js': `
           var obj = {}
           obj[Symbol.toPrimitive] = hint => {
@@ -515,14 +612,18 @@
           if (\`\${obj}c\` !== 'bc') throw 'fail'
           if (\`a\${obj}c\` !== 'abc') throw 'fail'
         `,
+      }),
+      test(['in.js', '--outfile=node.js', target], {
         'in.js': `
           var list = []
           var trace = x => list.push(x)
-          var obj2 = { toString: () => trace(2) }
-          var obj4 = { toString: () => trace(4) }
+          var obj2 = { toString: () => trace(2) };
+          var obj4 = { toString: () => trace(4) };
           \`\${trace(1), obj2}\${trace(3), obj4}\`
           if (list.join('') !== '1234') throw 'fail'
         `,
+      }),
+      test(['in.js', '--outfile=node.js', target], {
         'in.js': `
           x: {
             try {
@@ -590,6 +691,30 @@
           var foo = () => (x => x)\`y\`;
           var bar = () => (x => x)\`y\`;
           if (foo() === bar()) throw 'fail'
+        `,
+      }),
+
+      // Unused minified template literals. See this for more info:
+      // https://github.com/terser/terser/issues/1128#issuecomment-994209801
+      test(['in.js', '--outfile=node.js', '--minify', target], {
+        'in.js': `
+          var text = '';
+          var foo = {
+            toString: () => text += 'toString',
+            valueOf: () => text += 'valueOf',
+          };
+          \`\${foo}\`;
+          if (text !== 'toString') throw 'fail: ' + text + ' !== toString'
+        `,
+      }),
+      test(['in.js', '--outfile=node.js', '--minify', target], {
+        'in.js': `
+          var text = '';
+          var foo = {
+            toString: () => text += 'toString',
+          };
+          \`abc \${text += 'A', foo} xyz \${text += 'B', foo} 123\`;
+          if (text !== 'AtoStringBtoString') throw 'fail: ' + text + ' !== AtoStringBtoString'
         `,
       }),
     )
@@ -1109,6 +1234,8 @@
       'in.js': `
         import a from './a'
         if (a !== 'runner1.js') throw 'fail'
+        import b from './b'
+        if (b !== 'runner2.js') throw 'fail'
       `,
       'a.js': `
         import { run } from './runner1'
@@ -1117,10 +1244,6 @@
       'runner1.js': `
         let data = eval('"runner1" + ".js"')
         export function run() { return data }
-
-        // Do this here instead of in "in.js" so that log order is deterministic
-        import b from './b'
-        if (b !== 'runner2.js') throw 'fail'
       `,
       'b.js': `
         import { run } from './runner2'
@@ -1131,15 +1254,42 @@
         export function run() { return data }
       `,
     }, {
-      expectedStderr: ` > runner1.js:2:19: warning: Using direct eval with a bundler is not recommended and may cause problems (more info: https://esbuild.github.io/link/direct-eval)
-    2 │         let data = eval('"runner1" + ".js"')
-      ╵                    ~~~~
+      // There are two possible output orders due to log output order non-determinism
+      expectedStderr: [
+        `▲ [WARNING] Using direct eval with a bundler is not recommended and may cause problems
 
- > runner2.js:2:19: warning: Using direct eval with a bundler is not recommended and may cause problems (more info: https://esbuild.github.io/link/direct-eval)
-    2 │         let data = eval('"runner2" + ".js"')
-      ╵                    ~~~~
+    runner1.js:2:19:
+      2 │         let data = eval('"runner1" + ".js"')
+        ╵                    ~~~~
+
+  You can read more about direct eval and bundling here: https://esbuild.github.io/link/direct-eval
+
+▲ [WARNING] Using direct eval with a bundler is not recommended and may cause problems
+
+    runner2.js:2:19:
+      2 │         let data = eval('"runner2" + ".js"')
+        ╵                    ~~~~
+
+  You can read more about direct eval and bundling here: https://esbuild.github.io/link/direct-eval
+
+`, `▲ [WARNING] Using direct eval with a bundler is not recommended and may cause problems
+
+    runner2.js:2:19:
+      2 │         let data = eval('"runner2" + ".js"')
+        ╵                    ~~~~
+
+  You can read more about direct eval and bundling here: https://esbuild.github.io/link/direct-eval
+
+▲ [WARNING] Using direct eval with a bundler is not recommended and may cause problems
+
+    runner1.js:2:19:
+      2 │         let data = eval('"runner1" + ".js"')
+        ╵                    ~~~~
+
+  You can read more about direct eval and bundling here: https://esbuild.github.io/link/direct-eval
 
 `,
+      ],
     }),
     test(['--bundle', '--format=esm', '--splitting', 'in.js', 'in2.js', '--outdir=out'], {
       'in.js': `
@@ -1172,15 +1322,42 @@
         if (ab[0] !== 'runner1.js' || ab[1] !== 'runner2.js') throw 'fail'
       `,
     }, {
-      expectedStderr: ` > runner2.js:2:19: warning: Using direct eval with a bundler is not recommended and may cause problems (more info: https://esbuild.github.io/link/direct-eval)
-    2 │         let data = eval('"runner2" + ".js"')
-      ╵                    ~~~~
+      // There are two possible output orders due to log output order non-determinism
+      expectedStderr: [
+        `▲ [WARNING] Using direct eval with a bundler is not recommended and may cause problems
 
- > runner1.js:2:19: warning: Using direct eval with a bundler is not recommended and may cause problems (more info: https://esbuild.github.io/link/direct-eval)
-    2 │         let data = eval('"runner1" + ".js"')
-      ╵                    ~~~~
+    runner1.js:2:19:
+      2 │         let data = eval('"runner1" + ".js"')
+        ╵                    ~~~~
+
+  You can read more about direct eval and bundling here: https://esbuild.github.io/link/direct-eval
+
+▲ [WARNING] Using direct eval with a bundler is not recommended and may cause problems
+
+    runner2.js:2:19:
+      2 │         let data = eval('"runner2" + ".js"')
+        ╵                    ~~~~
+
+  You can read more about direct eval and bundling here: https://esbuild.github.io/link/direct-eval
+
+`, `▲ [WARNING] Using direct eval with a bundler is not recommended and may cause problems
+
+    runner2.js:2:19:
+      2 │         let data = eval('"runner2" + ".js"')
+        ╵                    ~~~~
+
+  You can read more about direct eval and bundling here: https://esbuild.github.io/link/direct-eval
+
+▲ [WARNING] Using direct eval with a bundler is not recommended and may cause problems
+
+    runner1.js:2:19:
+      2 │         let data = eval('"runner1" + ".js"')
+        ╵                    ~~~~
+
+  You can read more about direct eval and bundling here: https://esbuild.github.io/link/direct-eval
 
 `,
+      ],
     }),
   )
 
@@ -1195,12 +1372,85 @@
       'foo.js': `exports.__esModule = true; exports.default = 123`,
     }),
     test(['in.js', '--outfile=node.js', '--format=cjs'], {
-      'in.js': `import def from './foo'; if (!def || def.foo !== 123) throw 'fail'`,
+      'in.js': `import def from './foo'; if (def !== void 0) throw 'fail'`,
       'foo.js': `exports.__esModule = true; exports.foo = 123`,
     }),
     test(['in.js', '--outfile=node.js', '--format=cjs'], {
-      'in.js': `import * as ns from './foo'; if (!ns.default || ns.default.foo !== 123) throw 'fail'`,
+      'in.js': `import * as ns from './foo'; if (ns.default !== void 0 || ns.foo !== 123) throw 'fail'`,
       'foo.js': `exports.__esModule = true; exports.foo = 123`,
+    }),
+    test(['in.js', '--outfile=node.js', '--format=cjs'], {
+      'in.js': `import def from './foo'; if (!def || def.foo !== 123) throw 'fail'`,
+      'foo.js': `exports.__esModule = false; exports.foo = 123`,
+    }),
+    test(['in.js', '--outfile=node.js', '--format=cjs'], {
+      'in.js': `import * as ns from './foo'; if (!ns.default || ns.default.foo !== 123) throw 'fail'`,
+      'foo.js': `exports.__esModule = false; exports.foo = 123`,
+    }),
+    test(['in.mjs', '--outfile=node.js', '--format=cjs'], {
+      'in.mjs': `import def from './foo'; if (!def || def.foo !== 123) throw 'fail'`,
+      'foo.js': `exports.__esModule = true; exports.foo = 123`,
+    }),
+    test(['in.mjs', '--outfile=node.js', '--format=cjs'], {
+      'in.mjs': `import * as ns from './foo'; if (!ns.default || ns.default.foo !== 123) throw 'fail'`,
+      'foo.js': `exports.__esModule = true; exports.foo = 123`,
+    }),
+
+    // Make sure "import {} from; export {}" behaves like "export {} from"
+    // https://github.com/evanw/esbuild/issues/1890
+    test(['node.ts', 'foo.ts', '--outdir=.', '--format=cjs'], {
+      'node.ts': `import * as foo from './foo.js'; if (foo.bar !== 123) throw 'fail'`,
+      'foo.ts': `import bar from './lib.js'; export { bar }`,
+      'lib.js': `module.exports = 123`,
+    }),
+    test(['node.ts', 'foo.ts', '--outdir=.', '--format=cjs'], {
+      'node.ts': `import * as foo from './foo.js'; if (foo.bar !== 123) throw 'fail'`,
+      'foo.ts': `import { default as bar } from './lib.js'; export { bar }`,
+      'lib.js': `module.exports = 123`,
+    }),
+    test(['node.ts', 'foo.ts', '--outdir=.', '--format=cjs'], {
+      'node.ts': `import * as foo from './foo.js'; if (foo.bar !== 123) throw 'fail'`,
+      'foo.ts': `export { default as bar } from './lib.js'`,
+      'lib.js': `module.exports = 123`,
+    }),
+    test(['node.ts', 'foo.ts', '--outdir=.', '--format=cjs'], {
+      'node.ts': `import { foo } from './foo.js'; if (foo.default !== 123) throw 'fail'`,
+      'foo.ts': `import * as foo from './lib.js'; export { foo }`,
+      'lib.js': `module.exports = 123`,
+    }),
+    test(['node.ts', 'foo.ts', '--outdir=.', '--format=cjs'], {
+      'node.ts': `import { foo } from './foo.js'; if (foo.default !== 123) throw 'fail'`,
+      'foo.ts': `export * as foo from './lib.js'`,
+      'lib.js': `module.exports = 123`,
+    }),
+    test(['node.ts', 'foo.ts', '--outdir=.', '--format=cjs'], {
+      'node.ts': `import * as foo from './foo.js'; if (foo.default !== void 0) throw 'fail'`,
+      'foo.ts': `export * from './lib.js'`,
+      'lib.js': `module.exports = 123`,
+    }),
+  )
+
+  // Test external wildcards
+  tests.push(
+    test(['--bundle', 'src/foo.js', '--outfile=node.js', '--external:./src/dir/*', '--format=cjs'], {
+      'src/foo.js': `
+        function foo() {
+          require('./dir/bar')
+        }
+        let worked = false
+        try {
+          foo()
+          worked = true
+        } catch (e) {
+        }
+        if (worked) throw 'fail'
+      `,
+    }),
+    test(['--bundle', 'src/foo.js', '--outfile=node.js', '--external:./src/dir/*', '--format=cjs'], {
+      'src/foo.js': `
+        require('./dir/bar')
+      `,
+      'src/dir/bar.js': ``,
     }),
   )
 
@@ -1362,12 +1612,6 @@
         if (ns.default !== void 0) throw 'fail'
       `,
       'node_modules/pkg/index.mjs': ``,
-    }, {
-      expectedStderr: ` > in.js:3:15: warning: Import "default" will always be undefined because there is no matching export
-    3 │         if (ns.default !== void 0) throw 'fail'
-      ╵                ~~~~~~~
-
-`,
     }),
     test(['in.js', '--outfile=node.js', '--bundle'], {
       'in.js': `
@@ -1375,12 +1619,6 @@
         if (ns.default !== void 0) throw 'fail'
       `,
       'node_modules/pkg/index.mts': ``,
-    }, {
-      expectedStderr: ` > in.js:3:15: warning: Import "default" will always be undefined because there is no matching export
-    3 │         if (ns.default !== void 0) throw 'fail'
-      ╵                ~~~~~~~
-
-`,
     }),
     test(['in.js', '--outfile=node.js', '--bundle'], {
       'in.js': `
@@ -1401,12 +1639,20 @@
         "type": "module"
       }`,
       'node_modules/pkg/index.js': ``,
-    }, {
-      expectedStderr: ` > in.js:3:15: warning: Import "default" will always be undefined because there is no matching export
-    3 │         if (ns.default !== void 0) throw 'fail'
-      ╵                ~~~~~~~
-
-`,
+    }),
+    test(['in.js', '--outfile=node.js', '--bundle', '--external:pkg'], {
+      'in.js': `
+        import * as ns from 'pkg'
+        if (ns.default === void 0) throw 'fail'
+      `,
+      'node_modules/pkg/index.js': ``,
+    }),
+    test(['in.js', '--outfile=node.js', '--bundle', '--external:pkg'], {
+      'in.js': `
+        import * as ns from 'pkg'
+        if (ns.foo !== void 0) throw 'fail'
+      `,
+      'node_modules/pkg/index.js': ``,
     }),
   )
 
@@ -1765,9 +2011,11 @@
       `,
     }, {
       async: true,
-      expectedStderr: ` > in.js:2:25: warning: Converting "require" to "esm" is currently not supported
-    2 │         const {exists} = require('fs')
-      ╵                          ~~~~~~~
+      expectedStderr: `▲ [WARNING] Converting "require" to "esm" is currently not supported
+
+    in.js:2:25:
+      2 │         const {exists} = require('fs')
+        ╵                          ~~~~~~~
 
 `,
     }),
@@ -1786,9 +2034,11 @@
       `,
     }, {
       async: true,
-      expectedStderr: ` > in.js:2:19: warning: Converting "require" to "esm" is currently not supported
-    2 │         const fs = require('fs')
-      ╵                    ~~~~~~~
+      expectedStderr: `▲ [WARNING] Converting "require" to "esm" is currently not supported
+
+    in.js:2:19:
+      2 │         const fs = require('fs')
+        ╵                    ~~~~~~~
 
 `,
     }),
@@ -2111,6 +2361,41 @@
         if (y + '' !== '1') throw 'fail: ' + y
       `,
     }),
+
+    // https://github.com/evanw/esbuild/issues/1812
+    test(['in.js', '--outfile=node.js'], {
+      'in.js': `
+        let a = 1;
+        let def = "PASS2";
+        try {
+          throw [ "FAIL2", "PASS1" ];
+        } catch ({ [a]: b, 3: d = def }) {
+          let a = 0, def = "FAIL3";
+          if (b !== 'PASS1' || d !== 'PASS2') throw 'fail: ' + b + ' ' + d
+        }
+      `,
+    }),
+    test(['in.js', '--outfile=node.js', '--bundle'], {
+      'in.js': `
+        let a = 1;
+        let def = "PASS2";
+        try {
+          throw [ "FAIL2", "PASS1" ];
+        } catch ({ [a]: b, 3: d = def }) {
+          let a = 0, def = "FAIL3";
+          if (b !== 'PASS1' || d !== 'PASS2') throw 'fail: ' + b + ' ' + d
+        }
+      `,
+    }),
+    test(['in.js', '--outfile=node.js'], {
+      'in.js': `
+        try {
+          throw { x: 'z', z: 123 }
+        } catch ({ x, [x]: y }) {
+          if (y !== 123) throw 'fail'
+        }
+      `,
+    }),
   )
 
   // Test cyclic import issues (shouldn't crash on evaluation)
@@ -2138,7 +2423,7 @@
     }),
     test(['entry.js', '--outfile=node.js', '--target=es6'], {
       'entry.js': `
-        //! @license comment
+        //! @legal comment
         'use strict'
         function f(a) {
           a **= 2
@@ -2597,6 +2882,18 @@
     }),
   )
 
+  // Test minification of mangled properties (class and object) with a keyword before them
+  tests.push(
+    test(['in.js', '--outfile=node.js', '--minify', '--mangle-props=.'], {
+      'in.js': `
+        class Foo {
+          static bar = { get baz() { return 123 } }
+        }
+        if (Foo.bar.baz !== 123) throw 'fail'
+      `,
+    }),
+  )
+
   // Test minification of hoisted top-level symbols declared in nested scopes.
   // Previously this code was incorrectly transformed into this, which crashes:
   //
@@ -2757,6 +3054,34 @@
       'entry.js': `import './foo'; if (global.dce6 !== 123) throw 'fail'`,
       'foo/dir/x.js': `global.dce6 = 123`,
       'foo/package.json': `{ "main": "dir/x", "sideEffects": ["**/x.*"] }`,
+    }),
+
+    // Test side effect detection for destructuring
+    test(['--bundle', 'entry.js', '--outfile=out.js'], {
+      'entry.js': `
+        let [a] = {}; // This must not be tree-shaken
+      `,
+      'node.js': `
+        pass: {
+          try {
+            require('./out.js')
+          } catch (e) {
+            break pass
+          }
+          throw 'fail'
+        }
+      `,
+    }),
+    test(['--bundle', 'entry.js', '--outfile=node.js'], {
+      'entry.js': `
+        let sideEffect = false
+        let { a } = { // This must not be tree-shaken
+          get a() {
+            sideEffect = true
+          },
+        };
+        if (!sideEffect) throw 'fail'
+      `,
     }),
   )
 
@@ -3136,21 +3461,29 @@
           new Foo().bar()
         `,
       }, {
-        expectedStderr: ` > in.js:22:31: warning: Writing to read-only method "#method" will throw
-    22 │               expect(() => obj.#method = 1, 'Cannot write to private...
-       ╵                                ~~~~~~~
+        expectedStderr: `▲ [WARNING] Writing to read-only method "#method" will throw
 
- > in.js:23:32: warning: Reading from setter-only property "#setter" will throw
-    23 │               expect(() => this.#setter, 'member.get is not a functi...
-       ╵                                 ~~~~~~~
+    in.js:22:31:
+      22 │               expect(() => obj.#method = 1, 'Cannot write to priva...
+         ╵                                ~~~~~~~
 
- > in.js:24:32: warning: Writing to getter-only property "#getter" will throw
-    24 │               expect(() => this.#getter = 1, 'member.set is not a fu...
-       ╵                                 ~~~~~~~
+▲ [WARNING] Reading from setter-only property "#setter" will throw
 
- > in.js:25:32: warning: Writing to read-only method "#method" will throw
-    25 │               expect(() => this.#method = 1, 'member.set is not a fu...
-       ╵                                 ~~~~~~~
+    in.js:23:32:
+      23 │ ...          expect(() => this.#setter, 'member.get is not a funct...
+         ╵                                ~~~~~~~
+
+▲ [WARNING] Writing to getter-only property "#getter" will throw
+
+    in.js:24:32:
+      24 │ ...          expect(() => this.#getter = 1, 'member.set is not a f...
+         ╵                                ~~~~~~~
+
+▲ [WARNING] Writing to read-only method "#method" will throw
+
+    in.js:25:32:
+      25 │ ...          expect(() => this.#method = 1, 'member.set is not a f...
+         ╵                                ~~~~~~~
 
 `,
       }),
@@ -3313,12 +3646,17 @@
           }
         `,
       }, {
-        expectedStderr: ` > in.js:5:28: warning: This assignment will throw because "Foo" is a constant
-    5 │               static #foo = Foo = class Bar {}
-      ╵                             ~~~
-   in.js:3:18: note: "Foo" was declared a constant here
-    3 │             class Foo {
-      ╵                   ~~~
+        expectedStderr: `▲ [WARNING] This assignment will throw because "Foo" is a constant
+
+    in.js:5:28:
+      5 │               static #foo = Foo = class Bar {}
+        ╵                             ~~~
+
+  The symbol "Foo" was declared a constant here:
+
+    in.js:3:18:
+      3 │             class Foo {
+        ╵                   ~~~
 
 `,
       }),
@@ -3337,12 +3675,17 @@
           }
         `,
       }, {
-        expectedStderr: ` > in.js:4:28: warning: This assignment will throw because "Foo" is a constant
-    4 │             static #foo() { Foo = class Bar{} }
-      ╵                             ~~~
-   in.js:2:16: note: "Foo" was declared a constant here
-    2 │           class Foo {
-      ╵                 ~~~
+        expectedStderr: `▲ [WARNING] This assignment will throw because "Foo" is a constant
+
+    in.js:4:28:
+      4 │             static #foo() { Foo = class Bar{} }
+        ╵                             ~~~
+
+  The symbol "Foo" was declared a constant here:
+
+    in.js:2:16:
+      2 │           class Foo {
+        ╵                 ~~~
 
 `,
       }),
@@ -5066,9 +5409,11 @@
       `,
         'src/entry.js.map/x': ``,
       }, {
-        expectedStderr: ` > src/entry.js:2:29: warning: Cannot read file "src/entry.js.map": ${errorText}
-    2 │         //# sourceMappingURL=entry.js.map
-      ╵                              ~~~~~~~~~~~~
+        expectedStderr: `▲ [WARNING] Cannot read file "src/entry.js.map": ${errorText}
+
+    src/entry.js:2:29:
+      2 │         //# sourceMappingURL=entry.js.map
+        ╵                              ~~~~~~~~~~~~
 
 `,
       }),
@@ -5077,9 +5422,11 @@
         'src/tsconfig.json': `{"extends": "./base.json"}`,
         'src/base.json/x': ``,
       }, {
-        expectedStderr: ` > src/tsconfig.json:1:12: error: Cannot read file "src/base.json": ${errorText}
-    1 │ {"extends": "./base.json"}
-      ╵             ~~~~~~~~~~~~~
+        expectedStderr: `${errorIcon} [ERROR] Cannot read file "src/base.json": ${errorText}
+
+    src/tsconfig.json:1:12:
+      1 │ {"extends": "./base.json"}
+        ╵             ~~~~~~~~~~~~~
 
 `,
       }),
@@ -5088,9 +5435,11 @@
         'src/tsconfig.json': `{"extends": "foo"}`,
         'node_modules/foo/tsconfig.json/x': ``,
       }, {
-        expectedStderr: ` > src/tsconfig.json:1:12: error: Cannot read file "node_modules/foo/tsconfig.json": ${errorText}
-    1 │ {"extends": "foo"}
-      ╵             ~~~~~
+        expectedStderr: `${errorIcon} [ERROR] Cannot read file "node_modules/foo/tsconfig.json": ${errorText}
+
+    src/tsconfig.json:1:12:
+      1 │ {"extends": "foo"}
+        ╵             ~~~~~
 
 `,
       }),
@@ -5111,8 +5460,10 @@
     test(['in.js', `'--define:process.env.NODE_ENV="production"'`], {
       'in.js': ``,
     }, {
-      expectedStderr: ` > error: Unexpected single quote character before flag (use \\" to ` +
-        `escape double quotes): '--define:process.env.NODE_ENV="production"'
+      expectedStderr: `${errorIcon} [ERROR] Unexpected single quote character before flag: '--define:process.env.NODE_ENV="production"'
+
+  This typically happens when attempting to use single quotes to quote arguments with a shell that doesn't recognize single quotes. `+
+        `Try using double quote characters to quote arguments instead.
 
 `,
     }),
@@ -5533,9 +5884,11 @@
       `,
       'file.js': `This file should not be imported on Windows`,
     }, {
-      expectedStderr: ` > in.js:2:15: error: Could not resolve "/file.js"
-    2 │         import "/file.js"
-      ╵                ~~~~~~~~~~
+      expectedStderr: `${errorIcon} [ERROR] Could not resolve "/file.js"
+
+    in.js:2:15:
+      2 │         import "/file.js"
+        ╵                ~~~~~~~~~~
 
 `,
     }),
@@ -5554,13 +5907,17 @@
         'file1.js': `export default 123`,
         'File2.js': `export default 234`,
       }, {
-        expectedStderr: ` > in.js:2:24: warning: Use "file1.js" instead of "File1.js" to avoid issues with case-sensitive file systems
-    2 │           import x from "./File1.js"
-      ╵                         ~~~~~~~~~~~~
+        expectedStderr: `▲ [WARNING] Use "file1.js" instead of "File1.js" to avoid issues with case-sensitive file systems
 
- > in.js:3:24: warning: Use "File2.js" instead of "file2.js" to avoid issues with case-sensitive file systems
-    3 │           import y from "./file2.js"
-      ╵                         ~~~~~~~~~~~~
+    in.js:2:24:
+      2 │           import x from "./File1.js"
+        ╵                         ~~~~~~~~~~~~
+
+▲ [WARNING] Use "File2.js" instead of "file2.js" to avoid issues with case-sensitive file systems
+
+    in.js:3:24:
+      3 │           import y from "./file2.js"
+        ╵                         ~~~~~~~~~~~~
 
 `,
       }),
@@ -5584,13 +5941,17 @@
         'node_modules/pkg/file1.js': `export default 123`,
         'node_modules/pkg/File2.js': `export default 234`,
       }, {
-        expectedStderr: ` > in.js:2:24: warning: Use "node_modules/pkg/file1.js" instead of "node_modules/pkg/File1.js" to avoid issues with case-sensitive file systems
-    2 │           import x from "pkg/File1.js"
-      ╵                         ~~~~~~~~~~~~~~
+        expectedStderr: `▲ [WARNING] Use "node_modules/pkg/file1.js" instead of "node_modules/pkg/File1.js" to avoid issues with case-sensitive file systems
 
- > in.js:3:24: warning: Use "node_modules/pkg/File2.js" instead of "node_modules/pkg/file2.js" to avoid issues with case-sensitive file systems
-    3 │           import y from "pkg/file2.js"
-      ╵                         ~~~~~~~~~~~~~~
+    in.js:2:24:
+      2 │           import x from "pkg/File1.js"
+        ╵                         ~~~~~~~~~~~~~~
+
+▲ [WARNING] Use "node_modules/pkg/File2.js" instead of "node_modules/pkg/file2.js" to avoid issues with case-sensitive file systems
+
+    in.js:3:24:
+      3 │           import y from "pkg/file2.js"
+        ╵                         ~~~~~~~~~~~~~~
 
 `,
       }),
@@ -5654,7 +6015,13 @@
           } else {
             stderr = (await execFileAsync(esbuildPath, modifiedArgs, { cwd: thisTestDir, stdio: 'pipe' })).stderr
           }
-          assert.strictEqual(stderr, expectedStderr);
+          if (Array.isArray(expectedStderr)) {
+            // An array of possible outputs (due to log output order non-determinism)
+            if (!expectedStderr.includes(stderr))
+              assert.strictEqual(stderr, expectedStderr[0]);
+          } else {
+            assert.strictEqual(stderr, expectedStderr);
+          }
 
           // Run the resulting node.js file and make sure it exits cleanly. The
           // use of "pathToFileURL" is a workaround for a problem where node
@@ -5691,7 +6058,13 @@
         catch (e) {
           if (e && e.stderr !== void 0) {
             try {
-              assert.strictEqual(e.stderr, expectedStderr);
+              if (Array.isArray(expectedStderr)) {
+                // An array of possible outputs (due to log output order non-determinism)
+                if (!expectedStderr.includes(e.stderr))
+                  assert.strictEqual(e.stderr, expectedStderr[0]);
+              } else {
+                assert.strictEqual(e.stderr, expectedStderr);
+              }
 
               // Clean up test output
               removeRecursiveSync(thisTestDir)

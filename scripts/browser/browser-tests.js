@@ -49,6 +49,13 @@ async function runAllTests({ esbuild }) {
   }
 
   const tests = {
+    async defaultExport() {
+      assertStrictEqual(typeof esbuild.version, 'string')
+      assertStrictEqual(esbuild.version, esbuild.default.version)
+      assertStrictEqual(esbuild.version, esbuild.default.default.version)
+      assertStrictEqual(esbuild.version, esbuild.default.default.default.version)
+    },
+
     async transformJS() {
       const { code } = await esbuild.transform('1+2')
       assertStrictEqual(code, '1 + 2;\n')
@@ -268,7 +275,7 @@ const server = http.createServer((req, res) => {
 
   console.log(`[http] ${req.method} ${req.url}`)
   res.writeHead(404)
-  res.end()
+  res.end('404 not found')
 })
 
 server.listen()

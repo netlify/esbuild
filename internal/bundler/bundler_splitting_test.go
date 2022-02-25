@@ -272,7 +272,7 @@ func TestSplittingMissingLazyExport(t *testing.T) {
 			OutputFormat:  config.FormatESModule,
 			AbsOutputDir:  "/out",
 		},
-		expectedCompileLog: `common.js: warning: Import "missing" will always be undefined because the file "empty.js" has no exports
+		expectedCompileLog: `common.js: WARNING: Import "missing" will always be undefined because the file "empty.js" has no exports
 `,
 	})
 }
@@ -449,7 +449,7 @@ func TestSplittingDuplicateChunkCollision(t *testing.T) {
 		options: config.Options{
 			Mode:             config.ModeBundle,
 			CodeSplitting:    true,
-			RemoveWhitespace: true,
+			MinifyWhitespace: true,
 			OutputFormat:     config.FormatESModule,
 			AbsOutputDir:     "/out",
 		},

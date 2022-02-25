@@ -10,7 +10,7 @@ var require_util = __commonJS({
 });
 
 // Users/user/project/src/app/entry.js
-var import_util = __toModule(require_util());
+var import_util = __toESM(require_util());
 console.log((0, import_util.default)());
 
 ================================================================================
@@ -199,6 +199,14 @@ var test_default = 123;
 console.log(test_default);
 
 ================================================================================
+TestTsconfigImportsNotUsedAsValuesPreserve
+---------- /Users/user/project/out.js ----------
+import "./foo";
+import "./foo";
+import "./foo";
+console.log(1, 2, 3);
+
+================================================================================
 TestTsconfigJsonAbsoluteBaseUrl
 ---------- /Users/user/project/out.js ----------
 // Users/user/project/src/lib/util.js
@@ -211,7 +219,7 @@ var require_util = __commonJS({
 });
 
 // Users/user/project/src/app/entry.js
-var import_util = __toModule(require_util());
+var import_util = __toESM(require_util());
 console.log((0, import_util.default)());
 
 ================================================================================
@@ -227,7 +235,7 @@ var require_util = __commonJS({
 });
 
 // Users/user/project/src/app/entry.js
-var import_util = __toModule(require_util());
+var import_util = __toESM(require_util());
 console.log((0, import_util.default)());
 
 ================================================================================
@@ -243,7 +251,7 @@ var require_util = __commonJS({
 });
 
 // Users/user/project/src/app/entry.js
-var import_util = __toModule(require_util());
+var import_util = __toESM(require_util());
 console.log((0, import_util.default)());
 
 ================================================================================
@@ -316,16 +324,8 @@ var require_util = __commonJS({
 });
 
 // Users/user/project/src/app/entry.js
-var import_util = __toModule(require_util());
+var import_util = __toESM(require_util());
 console.log((0, import_util.default)());
-
-================================================================================
-TestTsconfigPreserveUnusedImportClause
----------- /Users/user/project/out.js ----------
-import { x, y } from "./foo";
-import z from "./foo";
-import * as ns from "./foo";
-console.log(1, 2, 3);
 
 ================================================================================
 TestTsconfigPreserveUnusedImports
@@ -333,6 +333,14 @@ TestTsconfigPreserveUnusedImports
 // Users/user/project/src/entry.ts
 import "./src/foo";
 console.log(1);
+
+================================================================================
+TestTsconfigPreserveValueImports
+---------- /Users/user/project/out.js ----------
+import { x, y } from "./foo";
+import z from "./foo";
+import * as ns from "./foo";
+console.log(1, 2, 3);
 
 ================================================================================
 TestTsconfigRemoveUnusedImports

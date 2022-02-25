@@ -3,6 +3,7 @@ package js_ast
 import (
 	"math"
 	"sort"
+	"strconv"
 
 	"github.com/evanw/esbuild/internal/ast"
 	"github.com/evanw/esbuild/internal/compat"
@@ -24,7 +25,7 @@ import (
 // has been parsed should create a copy of the mutated parts of the tree
 // instead of mutating the original tree.
 
-type L int
+type L uint8
 
 // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Operator_Precedence
 const (
@@ -53,7 +54,7 @@ const (
 	LMember
 )
 
-type OpCode int
+type OpCode uint8
 
 func (op OpCode) IsPrefix() bool {
 	return op < UnOpPostDec
@@ -249,11 +250,11 @@ type LocRef struct {
 }
 
 type Comment struct {
-	Loc  logger.Loc
 	Text string
+	Loc  logger.Loc
 }
 
-type PropertyKind int
+type PropertyKind uint8
 
 const (
 	PropertyNormal PropertyKind = iota
@@ -265,12 +266,11 @@ const (
 )
 
 type ClassStaticBlock struct {
-	Loc   logger.Loc
 	Stmts []Stmt
+	Loc   logger.Loc
 }
 
 type Property struct {
-	TSDecorators     []Expr
 	ClassStaticBlock *ClassStaticBlock
 
 	Key Expr
@@ -288,6 +288,8 @@ type Property struct {
 	//   class Foo { a = 1 }
 	//
 	InitializerOrNil Expr
+
+	TSDecorators []Expr
 
 	Kind            PropertyKind
 	IsComputed      bool
@@ -307,9 +309,9 @@ type PropertyBinding struct {
 }
 
 type Arg struct {
-	TSDecorators []Expr
 	Binding      Binding
 	DefaultOrNil Expr
+	TSDecorators []Expr
 
 	// "constructor(public x: boolean) {}"
 	IsTypeScriptCtorField bool
@@ -317,10 +319,10 @@ type Arg struct {
 
 type Fn struct {
 	Name         *LocRef
-	OpenParenLoc logger.Loc
 	Args         []Arg
 	Body         FnBody
 	ArgumentsRef Ref
+	OpenParenLoc logger.Loc
 
 	IsAsync     bool
 	IsGenerator bool
@@ -332,17 +334,17 @@ type Fn struct {
 }
 
 type FnBody struct {
-	Loc   logger.Loc
 	Stmts []Stmt
+	Loc   logger.Loc
 }
 
 type Class struct {
-	ClassKeyword logger.Range
 	TSDecorators []Expr
 	Name         *LocRef
 	ExtendsOrNil Expr
-	BodyLoc      logger.Loc
 	Properties   []Property
+	ClassKeyword logger.Range
+	BodyLoc      logger.Loc
 }
 
 type ArrayBinding struct {
@@ -351,8 +353,8 @@ type ArrayBinding struct {
 }
 
 type Binding struct {
-	Loc  logger.Loc
 	Data B
+	Loc  logger.Loc
 }
 
 // This interface is never called. Its purpose is to encode a variant type in
@@ -380,8 +382,8 @@ type BObject struct {
 }
 
 type Expr struct {
-	Loc  logger.Loc
 	Data E
+	Loc  logger.Loc
 }
 
 // This interface is never called. Its purpose is to encode a variant type in
@@ -408,6 +410,7 @@ func (*EClass) isExpr()                {}
 func (*EIdentifier) isExpr()           {}
 func (*EImportIdentifier) isExpr()     {}
 func (*EPrivateIdentifier) isExpr()    {}
+func (*EMangledProp) isExpr()          {}
 func (*EJSXElement) isExpr()           {}
 func (*EMissing) isExpr()              {}
 func (*ENumber) isExpr()               {}
@@ -417,6 +420,7 @@ func (*ESpread) isExpr()               {}
 func (*EString) isExpr()               {}
 func (*ETemplate) isExpr()             {}
 func (*ERegExp) isExpr()               {}
+func (*EInlinedEnum) isExpr()          {}
 func (*EAwait) isExpr()                {}
 func (*EYield) isExpr()                {}
 func (*EIf) isExpr()                   {}
@@ -433,8 +437,8 @@ type EArray struct {
 }
 
 type EUnary struct {
-	Op    OpCode
 	Value Expr
+	Op    OpCode
 }
 
 type EBinary struct {
@@ -459,7 +463,9 @@ type ENewTarget struct {
 	Range logger.Range
 }
 
-type EImportMeta struct{}
+type EImportMeta struct {
+	RangeLen int32
+}
 
 // These help reduce unnecessary memory allocations
 var BMissingShared = &BMissing{}
@@ -468,7 +474,6 @@ var ESuperShared = &ESuper{}
 var ENullShared = &ENull{}
 var EUndefinedShared = &EUndefined{}
 var EThisShared = &EThis{}
-var EImportMetaShared = &EImportMeta{}
 
 type ENew struct {
 	Target Expr
@@ -621,6 +626,12 @@ type EPrivateIdentifier struct {
 	Ref Ref
 }
 
+// This represents an internal property name that can be mangled. The symbol
+// referenced by this expression should be a "SymbolMangledProp" symbol.
+type EMangledProp struct {
+	Ref Ref
+}
+
 type EJSXElement struct {
 	TagOrNil   Expr
 	Properties []Property
@@ -651,21 +662,26 @@ type EString struct {
 
 type TemplatePart struct {
 	Value      Expr
-	TailLoc    logger.Loc
-	TailCooked []uint16 // Only use when "TagOrNil" is nil
 	TailRaw    string   // Only use when "TagOrNil" is not nil
+	TailCooked []uint16 // Only use when "TagOrNil" is nil
+	TailLoc    logger.Loc
 }
 
 type ETemplate struct {
 	TagOrNil       Expr
-	HeadLoc        logger.Loc
-	HeadCooked     []uint16 // Only use when "TagOrNil" is nil
 	HeadRaw        string   // Only use when "TagOrNil" is not nil
+	HeadCooked     []uint16 // Only use when "TagOrNil" is nil
 	Parts          []TemplatePart
+	HeadLoc        logger.Loc
 	LegacyOctalLoc logger.Loc
 }
 
 type ERegExp struct{ Value string }
+
+type EInlinedEnum struct {
+	Value   Expr
+	Comment string
+}
 
 type EAwait struct {
 	Value Expr
@@ -691,8 +707,6 @@ type ERequireResolveString struct {
 }
 
 type EImportString struct {
-	ImportRecordIndex uint32
-
 	// Comments inside "import()" expressions have special meaning for Webpack.
 	// Preserving comments inside these expressions makes it possible to use
 	// esbuild as a TypeScript-to-JavaScript frontend for Webpack to improve
@@ -701,13 +715,15 @@ type EImportString struct {
 	// harmless, easy to maintain, and useful to people. See the Webpack docs for
 	// more info: https://webpack.js.org/api/module-methods/#magic-comments.
 	LeadingInteriorComments []Comment
+
+	ImportRecordIndex uint32
 }
 
 type EImportCall struct {
 	Expr         Expr
 	OptionsOrNil Expr
 
-	// See the comment for this same field on "EImportCall" for more information
+	// See the comment for this same field on "EImportString" for more information
 	LeadingInteriorComments []Comment
 
 	// If this call represents an import() with a dynamic expression, this field
@@ -753,6 +769,11 @@ func Not(expr Expr) Expr {
 // that is undesired.
 func MaybeSimplifyNot(expr Expr) (Expr, bool) {
 	switch e := expr.Data.(type) {
+	case *EInlinedEnum:
+		if value, ok := MaybeSimplifyNot(e.Value); ok {
+			return value, true
+		}
+
 	case *ENull, *EUndefined:
 		return Expr{Loc: expr.Loc, Data: &EBoolean{Value: true}}, true
 
@@ -773,7 +794,7 @@ func MaybeSimplifyNot(expr Expr) (Expr, bool) {
 
 	case *EUnary:
 		// "!!!a" => "!a"
-		if e.Op == UnOpNot && IsBooleanValue(e.Value) {
+		if e.Op == UnOpNot && KnownPrimitiveType(e.Value) == PrimitiveBoolean {
 			return e.Value, true
 		}
 
@@ -812,100 +833,158 @@ func MaybeSimplifyNot(expr Expr) (Expr, bool) {
 	return Expr{}, false
 }
 
-func IsBooleanValue(a Expr) bool {
+type PrimitiveType uint8
+
+const (
+	PrimitiveUnknown PrimitiveType = iota
+	PrimitiveMixed
+	PrimitiveNull
+	PrimitiveUndefined
+	PrimitiveBoolean
+	PrimitiveNumber
+	PrimitiveString
+	PrimitiveBigInt
+)
+
+// This can be used when the returned type is either one or the other
+func MergedKnownPrimitiveTypes(a Expr, b Expr) PrimitiveType {
+	x := KnownPrimitiveType(a)
+	y := KnownPrimitiveType(b)
+	if x == PrimitiveUnknown || y == PrimitiveUnknown {
+		return PrimitiveUnknown
+	}
+	if x == y {
+		return x
+	}
+	return PrimitiveMixed // Definitely some kind of primitive
+}
+
+func KnownPrimitiveType(a Expr) PrimitiveType {
 	switch e := a.Data.(type) {
+	case *EInlinedEnum:
+		return KnownPrimitiveType(e.Value)
+
+	case *ENull:
+		return PrimitiveNull
+
+	case *EUndefined:
+		return PrimitiveUndefined
+
 	case *EBoolean:
-		return true
+		return PrimitiveBoolean
+
+	case *ENumber:
+		return PrimitiveNumber
+
+	case *EString:
+		return PrimitiveString
+
+	case *EBigInt:
+		return PrimitiveBigInt
+
+	case *ETemplate:
+		if e.TagOrNil.Data == nil {
+			return PrimitiveString
+		}
 
 	case *EIf:
-		return IsBooleanValue(e.Yes) && IsBooleanValue(e.No)
+		return MergedKnownPrimitiveTypes(e.Yes, e.No)
 
 	case *EUnary:
-		return e.Op == UnOpNot || e.Op == UnOpDelete
+		switch e.Op {
+		case UnOpVoid:
+			return PrimitiveUndefined
+
+		case UnOpTypeof:
+			return PrimitiveString
+
+		case UnOpNot, UnOpDelete:
+			return PrimitiveBoolean
+
+		case UnOpPos:
+			return PrimitiveNumber // Cannot be bigint because that throws an exception
+
+		case UnOpNeg, UnOpCpl:
+			value := KnownPrimitiveType(e.Value)
+			if value == PrimitiveBigInt {
+				return PrimitiveBigInt
+			}
+			if value != PrimitiveUnknown && value != PrimitiveMixed {
+				return PrimitiveNumber
+			}
+			return PrimitiveMixed // Can be number or bigint
+
+		case UnOpPreDec, UnOpPreInc, UnOpPostDec, UnOpPostInc:
+			return PrimitiveMixed // Can be number or bigint
+		}
 
 	case *EBinary:
 		switch e.Op {
 		case BinOpStrictEq, BinOpStrictNe, BinOpLooseEq, BinOpLooseNe,
 			BinOpLt, BinOpGt, BinOpLe, BinOpGe,
 			BinOpInstanceof, BinOpIn:
-			return true
+			return PrimitiveBoolean
 
 		case BinOpLogicalOr, BinOpLogicalAnd:
-			return IsBooleanValue(e.Left) && IsBooleanValue(e.Right)
+			return MergedKnownPrimitiveTypes(e.Left, e.Right)
 
 		case BinOpNullishCoalescing:
-			return IsBooleanValue(e.Left)
-		}
-	}
+			left := KnownPrimitiveType(e.Left)
+			right := KnownPrimitiveType(e.Right)
+			if left == PrimitiveNull || left == PrimitiveUndefined {
+				return right
+			}
+			if left != PrimitiveUnknown {
+				if left != PrimitiveMixed {
+					return left // Definitely not null or undefined
+				}
+				if right != PrimitiveUnknown {
+					return PrimitiveMixed // Definitely some kind of primitive
+				}
+			}
 
-	return false
-}
-
-func IsNumericValue(a Expr) bool {
-	switch e := a.Data.(type) {
-	case *ENumber:
-		return true
-
-	case *EIf:
-		return IsNumericValue(e.Yes) && IsNumericValue(e.No)
-
-	case *EUnary:
-		switch e.Op {
-		case UnOpPos, UnOpNeg, UnOpCpl, UnOpPreDec, UnOpPreInc, UnOpPostDec, UnOpPostInc:
-			return true
-		}
-
-	case *EBinary:
-		switch e.Op {
 		case BinOpAdd:
-			return IsNumericValue(e.Left) && IsNumericValue(e.Right)
+			left := KnownPrimitiveType(e.Left)
+			right := KnownPrimitiveType(e.Right)
+			if left == PrimitiveString || right == PrimitiveString {
+				return PrimitiveString
+			}
+			if left == PrimitiveBigInt && right == PrimitiveBigInt {
+				return PrimitiveBigInt
+			}
+			if left != PrimitiveUnknown && left != PrimitiveMixed && left != PrimitiveBigInt &&
+				right != PrimitiveUnknown && right != PrimitiveMixed && right != PrimitiveBigInt {
+				return PrimitiveNumber
+			}
+			return PrimitiveMixed // Can be number or bigint or string (or an exception)
+
+		case BinOpAddAssign:
+			right := KnownPrimitiveType(e.Right)
+			if right == PrimitiveString {
+				return PrimitiveString
+			}
+			return PrimitiveMixed // Can be number or bigint or string (or an exception)
 
 		case
 			BinOpSub, BinOpSubAssign,
 			BinOpMul, BinOpMulAssign,
 			BinOpDiv, BinOpDivAssign,
 			BinOpRem, BinOpRemAssign,
+			BinOpPow, BinOpPowAssign,
 			BinOpBitwiseAnd, BinOpBitwiseAndAssign,
 			BinOpBitwiseOr, BinOpBitwiseOrAssign,
 			BinOpBitwiseXor, BinOpBitwiseXorAssign,
 			BinOpShl, BinOpShlAssign,
 			BinOpShr, BinOpShrAssign,
 			BinOpUShr, BinOpUShrAssign:
-			return true
+			return PrimitiveMixed // Can be number or bigint (or an exception)
 
 		case BinOpAssign, BinOpComma:
-			return IsNumericValue(e.Right)
+			return KnownPrimitiveType(e.Right)
 		}
 	}
 
-	return false
-}
-
-func IsStringValue(a Expr) bool {
-	switch e := a.Data.(type) {
-	case *EString:
-		return true
-
-	case *ETemplate:
-		return e.TagOrNil.Data == nil
-
-	case *EIf:
-		return IsStringValue(e.Yes) && IsStringValue(e.No)
-
-	case *EUnary:
-		return e.Op == UnOpTypeof
-
-	case *EBinary:
-		switch e.Op {
-		case BinOpAdd:
-			return IsStringValue(e.Left) || IsStringValue(e.Right)
-
-		case BinOpAssign, BinOpAddAssign, BinOpComma:
-			return IsNumericValue(e.Right)
-		}
-	}
-
-	return false
+	return PrimitiveUnknown
 }
 
 // The goal of this function is to "rotate" the AST if it's possible to use the
@@ -954,8 +1033,8 @@ func JoinAllWithComma(all []Expr) (result Expr) {
 }
 
 type Stmt struct {
-	Loc  logger.Loc
 	Data S
+	Loc  logger.Loc
 }
 
 // This interface is never called. Its purpose is to encode a variant type in
@@ -1032,22 +1111,22 @@ type SExportFrom struct {
 }
 
 type SExportDefault struct {
-	DefaultName LocRef
 	Value       Stmt // May be a SExpr or SFunction or SClass
+	DefaultName LocRef
 }
 
 type ExportStarAlias struct {
-	Loc logger.Loc
-
 	// Although this alias name starts off as being the same as the statement's
 	// namespace symbol, it may diverge if the namespace symbol name is minified.
 	// The original alias name is preserved here to avoid this scenario.
 	OriginalName string
+
+	Loc logger.Loc
 }
 
 type SExportStar struct {
-	NamespaceRef      Ref
 	Alias             *ExportStarAlias
+	NamespaceRef      Ref
 	ImportRecordIndex uint32
 }
 
@@ -1072,23 +1151,23 @@ type SExpr struct {
 }
 
 type EnumValue struct {
-	Name       []uint16
 	ValueOrNil Expr
+	Name       []uint16
 	Ref        Ref
 	Loc        logger.Loc
 }
 
 type SEnum struct {
+	Values   []EnumValue
 	Name     LocRef
 	Arg      Ref
-	Values   []EnumValue
 	IsExport bool
 }
 
 type SNamespace struct {
+	Stmts    []Stmt
 	Name     LocRef
 	Arg      Ref
-	Stmts    []Stmt
 	IsExport bool
 }
 
@@ -1103,8 +1182,8 @@ type SClass struct {
 }
 
 type SLabel struct {
-	Name LocRef
 	Stmt Stmt
+	Name LocRef
 }
 
 type SIf struct {
@@ -1127,10 +1206,10 @@ type SForIn struct {
 }
 
 type SForOf struct {
-	IsAwait bool
 	Init    Stmt // May be a SConst, SLet, SVar, or SExpr
 	Value   Expr
 	Body    Stmt
+	IsAwait bool
 }
 
 type SDoWhile struct {
@@ -1145,26 +1224,27 @@ type SWhile struct {
 
 type SWith struct {
 	Value   Expr
-	BodyLoc logger.Loc
 	Body    Stmt
+	BodyLoc logger.Loc
 }
 
 type Catch struct {
-	Loc          logger.Loc
 	BindingOrNil Binding
 	Body         []Stmt
+	Loc          logger.Loc
+	BodyLoc      logger.Loc
 }
 
 type Finally struct {
-	Loc   logger.Loc
 	Stmts []Stmt
+	Loc   logger.Loc
 }
 
 type STry struct {
-	BodyLoc logger.Loc
-	Body    []Stmt
 	Catch   *Catch
 	Finally *Finally
+	Body    []Stmt
+	BodyLoc logger.Loc
 }
 
 type Case struct {
@@ -1174,8 +1254,8 @@ type Case struct {
 
 type SSwitch struct {
 	Test    Expr
-	BodyLoc logger.Loc
 	Cases   []Case
+	BodyLoc logger.Loc
 }
 
 // This object represents all of these types of import statements:
@@ -1189,6 +1269,10 @@ type SSwitch struct {
 // Many parts are optional and can be combined in different ways. The only
 // restriction is that you cannot have both a clause and a star namespace.
 type SImport struct {
+	DefaultName *LocRef
+	Items       *[]ClauseItem
+	StarNameLoc *logger.Loc
+
 	// If this is a star import: This is a Ref for the namespace symbol. The Loc
 	// for the symbol is StarLoc.
 	//
@@ -1197,9 +1281,6 @@ type SImport struct {
 	// when converting this module to a CommonJS module.
 	NamespaceRef Ref
 
-	DefaultName       *LocRef
-	Items             *[]ClauseItem
-	StarNameLoc       *logger.Loc
 	ImportRecordIndex uint32
 	IsSingleLine      bool
 }
@@ -1255,9 +1336,7 @@ func IsSuperCall(stmt Stmt) bool {
 }
 
 type ClauseItem struct {
-	Alias    string
-	AliasLoc logger.Loc
-	Name     LocRef
+	Alias string
 
 	// This is the original name of the symbol stored in "Name". It's needed for
 	// "SExportClause" statements such as this:
@@ -1268,6 +1347,9 @@ type ClauseItem struct {
 	// We need to preserve both aliases in case the symbol is renamed. In this
 	// example, "foo" is "OriginalName" and "bar" is "Alias".
 	OriginalName string
+
+	AliasLoc logger.Loc
+	Name     LocRef
 }
 
 type Decl struct {
@@ -1358,6 +1440,9 @@ const (
 	// Injected symbols can be overridden by provided defines
 	SymbolInjected
 
+	// Properties can optionally be renamed to shorter names
+	SymbolMangledProp
+
 	// This annotates all other symbols that don't have special behavior.
 	SymbolOther
 )
@@ -1431,94 +1516,27 @@ const (
 	ImportItemMissing
 )
 
-// Note: the order of values in this struct matters to reduce struct size.
-type Symbol struct {
-	// This is the name that came from the parser. Printed names may be renamed
-	// during minification or to avoid name collisions. Do not use the original
-	// name during printing.
-	OriginalName string
+type SymbolFlags uint16
 
-	// This is used for symbols that represent items in the import clause of an
-	// ES6 import statement. These should always be referenced by EImportIdentifier
-	// instead of an EIdentifier. When this is present, the expression should
-	// be printed as a property access off the namespace instead of as a bare
-	// identifier.
-	//
-	// For correctness, this must be stored on the symbol instead of indirectly
-	// associated with the Ref for the symbol somehow. In ES6 "flat bundling"
-	// mode, re-exported symbols are collapsed using MergeSymbols() and renamed
-	// symbols from other files that end up at this symbol must be able to tell
-	// if it has a namespace alias.
-	NamespaceAlias *NamespaceAlias
-
-	// Used by the parser for single pass parsing. Symbols that have been merged
-	// form a linked-list where the last link is the symbol to use. This link is
-	// an invalid ref if it's the last link. If this isn't invalid, you need to
-	// FollowSymbols to get the real one.
-	Link Ref
-
-	// An estimate of the number of uses of this symbol. This is used to detect
-	// whether a symbol is used or not. For example, TypeScript imports that are
-	// unused must be removed because they are probably type-only imports. This
-	// is an estimate and may not be completely accurate due to oversights in the
-	// code. But it should always be non-zero when the symbol is used.
-	UseCountEstimate uint32
-
-	// This is for generating cross-chunk imports and exports for code splitting.
-	ChunkIndex ast.Index32
-
-	// This is used for minification. Symbols that are declared in sibling scopes
-	// can share a name. A good heuristic (from Google Closure Compiler) is to
-	// assign names to symbols from sibling scopes in declaration order. That way
-	// local variable names are reused in each global function like this, which
-	// improves gzip compression:
-	//
-	//   function x(a, b) { ... }
-	//   function y(a, b, c) { ... }
-	//
-	// The parser fills this in for symbols inside nested scopes. There are three
-	// slot namespaces: regular symbols, label symbols, and private symbols.
-	NestedScopeSlot ast.Index32
-
-	Kind SymbolKind
-
+const (
 	// Certain symbols must not be renamed or minified. For example, the
 	// "arguments" variable is declared by the runtime for every function.
 	// Renaming can also break any identifier used inside a "with" statement.
-	MustNotBeRenamed bool
+	MustNotBeRenamed SymbolFlags = 1 << iota
 
 	// In React's version of JSX, lower-case names are strings while upper-case
 	// names are identifiers. If we are preserving JSX syntax (i.e. not
 	// transforming it), then we need to be careful to name the identifiers
 	// something with a capital letter so further JSX processing doesn't treat
 	// them as strings instead.
-	MustStartWithCapitalLetterForJSX bool
+	MustStartWithCapitalLetterForJSX
 
 	// If true, this symbol is the target of a "__name" helper function call.
 	// This call is special because it deliberately doesn't count as a use
 	// of the symbol (otherwise keeping names would disable tree shaking)
 	// so "UseCountEstimate" is not incremented. This flag helps us know to
 	// avoid optimizing this symbol when "UseCountEstimate" is 1 in this case.
-	DidKeepName bool
-
-	// We automatically generate import items for property accesses off of
-	// namespace imports. This lets us remove the expensive namespace imports
-	// while bundling in many cases, replacing them with a cheap import item
-	// instead:
-	//
-	//   import * as ns from 'path'
-	//   ns.foo()
-	//
-	// That can often be replaced by this, which avoids needing the namespace:
-	//
-	//   import {foo} from 'path'
-	//   foo()
-	//
-	// However, if the import is actually missing then we don't want to report a
-	// compile-time error like we do for real import items. This status lets us
-	// avoid this. We also need to be able to replace such import items with
-	// undefined, which this status is also used for.
-	ImportItemStatus ImportItemStatus
+	DidKeepName
 
 	// Sometimes we lower private symbols even if they are supported. For example,
 	// consider the following TypeScript code:
@@ -1571,7 +1589,124 @@ type Symbol struct {
 	//   };
 	//   Foo.#foo = Foo;
 	//
-	PrivateSymbolMustBeLowered bool
+	PrivateSymbolMustBeLowered
+
+	// This is used to remove the all but the last function re-declaration if a
+	// function is re-declared multiple times like this:
+	//
+	//   function foo() { console.log(1) }
+	//   function foo() { console.log(2) }
+	//
+	RemoveOverwrittenFunctionDeclaration
+
+	// This flag is to avoid warning about this symbol more than once. It only
+	// applies to the "module" and "exports" unbound symbols.
+	DidWarnAboutCommonJSInESM
+
+	// If this is present, the symbol could potentially be overwritten. This means
+	// it's not safe to make assumptions about this symbol from the initializer.
+	CouldPotentiallyBeMutated
+
+	// This flags all symbols that were exported from the module using the ES6
+	// "export" keyword, either directly on the declaration or using "export {}".
+	WasExported
+
+	// This means the symbol is a normal function that has no body statements.
+	IsEmptyFunction
+
+	// This means the symbol is a normal function that takes a single argument
+	// and returns that argument.
+	IsIdentityFunction
+)
+
+func (flags SymbolFlags) Has(flag SymbolFlags) bool {
+	return (flags & flag) != 0
+}
+
+// Note: the order of values in this struct matters to reduce struct size.
+type Symbol struct {
+	// This is used for symbols that represent items in the import clause of an
+	// ES6 import statement. These should always be referenced by EImportIdentifier
+	// instead of an EIdentifier. When this is present, the expression should
+	// be printed as a property access off the namespace instead of as a bare
+	// identifier.
+	//
+	// For correctness, this must be stored on the symbol instead of indirectly
+	// associated with the Ref for the symbol somehow. In ES6 "flat bundling"
+	// mode, re-exported symbols are collapsed using MergeSymbols() and renamed
+	// symbols from other files that end up at this symbol must be able to tell
+	// if it has a namespace alias.
+	NamespaceAlias *NamespaceAlias
+
+	// This is the name that came from the parser. Printed names may be renamed
+	// during minification or to avoid name collisions. Do not use the original
+	// name during printing.
+	OriginalName string
+
+	// Used by the parser for single pass parsing. Symbols that have been merged
+	// form a linked-list where the last link is the symbol to use. This link is
+	// an invalid ref if it's the last link. If this isn't invalid, you need to
+	// FollowSymbols to get the real one.
+	Link Ref
+
+	// An estimate of the number of uses of this symbol. This is used to detect
+	// whether a symbol is used or not. For example, TypeScript imports that are
+	// unused must be removed because they are probably type-only imports. This
+	// is an estimate and may not be completely accurate due to oversights in the
+	// code. But it should always be non-zero when the symbol is used.
+	UseCountEstimate uint32
+
+	// This is for generating cross-chunk imports and exports for code splitting.
+	ChunkIndex ast.Index32
+
+	// This is used for minification. Symbols that are declared in sibling scopes
+	// can share a name. A good heuristic (from Google Closure Compiler) is to
+	// assign names to symbols from sibling scopes in declaration order. That way
+	// local variable names are reused in each global function like this, which
+	// improves gzip compression:
+	//
+	//   function x(a, b) { ... }
+	//   function y(a, b, c) { ... }
+	//
+	// The parser fills this in for symbols inside nested scopes. There are three
+	// slot namespaces: regular symbols, label symbols, and private symbols.
+	NestedScopeSlot ast.Index32
+
+	// Boolean values should all be flags instead to save space
+	Flags SymbolFlags
+
+	Kind SymbolKind
+
+	// We automatically generate import items for property accesses off of
+	// namespace imports. This lets us remove the expensive namespace imports
+	// while bundling in many cases, replacing them with a cheap import item
+	// instead:
+	//
+	//   import * as ns from 'path'
+	//   ns.foo()
+	//
+	// That can often be replaced by this, which avoids needing the namespace:
+	//
+	//   import {foo} from 'path'
+	//   foo()
+	//
+	// However, if the import is actually missing then we don't want to report a
+	// compile-time error like we do for real import items. This status lets us
+	// avoid this. We also need to be able to replace such import items with
+	// undefined, which this status is also used for.
+	ImportItemStatus ImportItemStatus
+}
+
+// You should call "MergeSymbols" instead of calling this directly
+func (newSymbol *Symbol) MergeContentsWith(oldSymbol *Symbol) {
+	newSymbol.UseCountEstimate += oldSymbol.UseCountEstimate
+	if oldSymbol.Flags.Has(MustNotBeRenamed) {
+		newSymbol.OriginalName = oldSymbol.OriginalName
+		newSymbol.Flags |= MustNotBeRenamed
+	}
+	if oldSymbol.Flags.Has(MustStartWithCapitalLetterForJSX) {
+		newSymbol.Flags |= MustStartWithCapitalLetterForJSX
+	}
 }
 
 type SlotNamespace uint8
@@ -1580,11 +1715,12 @@ const (
 	SlotDefault SlotNamespace = iota
 	SlotLabel
 	SlotPrivateName
+	SlotMangledProp
 	SlotMustNotBeRenamed
 )
 
 func (s *Symbol) SlotNamespace() SlotNamespace {
-	if s.Kind == SymbolUnbound || s.MustNotBeRenamed {
+	if s.Kind == SymbolUnbound || s.Flags.Has(MustNotBeRenamed) {
 		return SlotMustNotBeRenamed
 	}
 	if s.Kind.IsPrivate() {
@@ -1593,10 +1729,13 @@ func (s *Symbol) SlotNamespace() SlotNamespace {
 	if s.Kind == SymbolLabel {
 		return SlotLabel
 	}
+	if s.Kind == SymbolMangledProp {
+		return SlotMangledProp
+	}
 	return SlotDefault
 }
 
-type SlotCounts [3]uint32
+type SlotCounts [4]uint32
 
 func (a *SlotCounts) UnionMax(b SlotCounts) {
 	for i := range *a {
@@ -1609,11 +1748,11 @@ func (a *SlotCounts) UnionMax(b SlotCounts) {
 }
 
 type NamespaceAlias struct {
-	NamespaceRef Ref
 	Alias        string
+	NamespaceRef Ref
 }
 
-type ScopeKind int
+type ScopeKind uint8
 
 const (
 	ScopeBlock ScopeKind = iota
@@ -1621,6 +1760,7 @@ const (
 	ScopeLabel
 	ScopeClassName
 	ScopeClassBody
+	ScopeCatchBinding
 
 	// The scopes below stop hoisted variables from extending into parent scopes
 	ScopeEntry // This is a module, TypeScript enum, or TypeScript namespace
@@ -1639,7 +1779,9 @@ type ScopeMember struct {
 }
 
 type Scope struct {
-	Kind      ScopeKind
+	// This will be non-nil if this is a TypeScript "namespace" or "enum"
+	TSNamespace *TSNamespaceScope
+
 	Parent    *Scope
 	Children  []*Scope
 	Members   map[string]ScopeMember
@@ -1660,7 +1802,13 @@ type Scope struct {
 	// This is to help forbid "arguments" inside class body scopes
 	ForbidArguments bool
 
+	// As a special case, we enable constant propagation for any chain of "const"
+	// declarations at the start of a statement list. This special case doesn't
+	// have any TDZ considerations because no other statements come before it.
+	IsAfterConstLocalPrefix bool
+
 	StrictMode StrictModeKind
+	Kind       ScopeKind
 }
 
 type StrictModeKind uint8
@@ -1668,10 +1816,8 @@ type StrictModeKind uint8
 const (
 	SloppyMode StrictModeKind = iota
 	ExplicitStrictMode
-	ImplicitStrictModeImport
-	ImplicitStrictModeExport
-	ImplicitStrictModeTopLevelAwait
 	ImplicitStrictModeClass
+	ImplicitStrictModeESM
 )
 
 func (s *Scope) RecursiveSetStrictMode(kind StrictModeKind) {
@@ -1681,6 +1827,143 @@ func (s *Scope) RecursiveSetStrictMode(kind StrictModeKind) {
 			child.RecursiveSetStrictMode(kind)
 		}
 	}
+}
+
+// This is for TypeScript "enum" and "namespace" blocks. Each block can
+// potentially be instantiated multiple times. The exported members of each
+// block are merged into a single namespace while the non-exported code is
+// still scoped to just within that block:
+//
+//   let x = 1;
+//   namespace Foo {
+//     let x = 2;
+//     export let y = 3;
+//   }
+//   namespace Foo {
+//     console.log(x); // 1
+//     console.log(y); // 3
+//   }
+//
+// Doing this also works inside an enum:
+//
+//   enum Foo {
+//     A = 3,
+//     B = A + 1,
+//   }
+//   enum Foo {
+//     C = A + 2,
+//   }
+//   console.log(Foo.B) // 4
+//   console.log(Foo.C) // 5
+//
+// This is a form of identifier lookup that works differently than the
+// hierarchical scope-based identifier lookup in JavaScript. Lookup now needs
+// to search sibling scopes in addition to parent scopes. This is accomplished
+// by sharing the map of exported members between all matching sibling scopes.
+type TSNamespaceScope struct {
+	// This is shared between all sibling namespace blocks
+	ExportedMembers TSNamespaceMembers
+
+	// This is a lazily-generated map of identifiers that actually represent
+	// property accesses to this namespace's properties. For example:
+	//
+	//   namespace x {
+	//     export let y = 123
+	//   }
+	//   namespace x {
+	//     export let z = y
+	//   }
+	//
+	// This should be compiled into the following code:
+	//
+	//   var x;
+	//   (function(x2) {
+	//     x2.y = 123;
+	//   })(x || (x = {}));
+	//   (function(x3) {
+	//     x3.z = x3.y;
+	//   })(x || (x = {}));
+	//
+	// When we try to find the symbol "y", we instead return one of these lazily
+	// generated proxy symbols that represent the property access "x3.y". This
+	// map is unique per namespace block because "x3" is the argument symbol that
+	// is specific to that particular namespace block.
+	LazilyGeneratedProperyAccesses map[string]Ref
+
+	// This is specific to this namespace block. It's the argument of the
+	// immediately-invoked function expression that the namespace block is
+	// compiled into:
+	//
+	//   var ns;
+	//   (function (ns2) {
+	//     ns2.x = 123;
+	//   })(ns || (ns = {}));
+	//
+	// This variable is "ns2" in the above example. It's the symbol to use when
+	// generating property accesses off of this namespace when it's in scope.
+	ArgRef Ref
+
+	// Even though enums are like namespaces and both enums and namespaces allow
+	// implicit references to properties of sibling scopes, they behave like
+	// separate, er, namespaces. Implicit references only work namespace-to-
+	// namespace and enum-to-enum. They do not work enum-to-namespace. And I'm
+	// not sure what's supposed to happen for the namespace-to-enum case because
+	// the compiler crashes: https://github.com/microsoft/TypeScript/issues/46891.
+	// So basically these both work:
+	//
+	//   enum a { b = 1 }
+	//   enum a { c = b }
+	//
+	//   namespace x { export let y = 1 }
+	//   namespace x { export let z = y }
+	//
+	// This doesn't work:
+	//
+	//   enum a { b = 1 }
+	//   namespace a { export let c = b }
+	//
+	// And this crashes the TypeScript compiler:
+	//
+	//   namespace a { export let b = 1 }
+	//   enum a { c = b }
+	//
+	// Therefore we only allow enum/enum and namespace/namespace interactions.
+	IsEnumScope bool
+}
+
+type TSNamespaceMembers map[string]TSNamespaceMember
+
+type TSNamespaceMember struct {
+	Data        TSNamespaceMemberData
+	Loc         logger.Loc
+	IsEnumValue bool
+}
+
+type TSNamespaceMemberData interface {
+	isTSNamespaceMember()
+}
+
+func (TSNamespaceMemberProperty) isTSNamespaceMember()   {}
+func (TSNamespaceMemberNamespace) isTSNamespaceMember()  {}
+func (TSNamespaceMemberEnumNumber) isTSNamespaceMember() {}
+func (TSNamespaceMemberEnumString) isTSNamespaceMember() {}
+
+// "namespace ns { export let it }"
+type TSNamespaceMemberProperty struct{}
+
+// "namespace ns { export namespace it {} }"
+type TSNamespaceMemberNamespace struct {
+	ExportedMembers TSNamespaceMembers
+}
+
+// "enum ns { it }"
+type TSNamespaceMemberEnumNumber struct {
+	Value float64
+}
+
+// "enum ns { it = 'it' }"
+type TSNamespaceMemberEnumString struct {
+	Value []uint16
 }
 
 type SymbolMap struct {
@@ -1736,6 +2019,36 @@ func (kind ExportsKind) IsDynamic() bool {
 	return kind == ExportsCommonJS || kind == ExportsESMWithDynamicFallback
 }
 
+type ModuleType uint8
+
+const (
+	ModuleUnknown ModuleType = iota
+
+	// ".cjs" or ".cts" or "type: commonjs" in package.json
+	ModuleCommonJS_CJS
+	ModuleCommonJS_CTS
+	ModuleCommonJS_PackageJSON
+
+	// ".mjs" or ".mts" or "type: module" in package.json
+	ModuleESM_MJS
+	ModuleESM_MTS
+	ModuleESM_PackageJSON
+)
+
+func (mt ModuleType) IsCommonJS() bool {
+	return mt >= ModuleCommonJS_CJS && mt <= ModuleCommonJS_PackageJSON
+}
+
+func (mt ModuleType) IsESM() bool {
+	return mt >= ModuleESM_MJS && mt <= ModuleESM_PackageJSON
+}
+
+type ModuleTypeData struct {
+	Source *logger.Source
+	Range  logger.Range
+	Type   ModuleType
+}
+
 // This is the index to the automatically-generated part containing code that
 // calls "__export(exports, { ... getters ... })". This is used to generate
 // getters on an exports object for ES6 export statements, and is both for
@@ -1744,34 +2057,38 @@ func (kind ExportsKind) IsDynamic() bool {
 const NSExportPartIndex = uint32(0)
 
 type AST struct {
-	ApproximateLineCount  int32
-	NestedScopeSlotCounts SlotCounts
-	HasLazyExport         bool
+	ModuleTypeData ModuleTypeData
+	Parts          []Part
+	Symbols        []Symbol
+	ModuleScope    *Scope
+	CharFreq       *CharFreq
 
-	// This is a list of CommonJS features. When a file uses CommonJS features,
-	// it's not a candidate for "flat bundling" and must be wrapped in its own
-	// closure. Note that this also includes top-level "return" but these aren't
-	// here because only the parser checks those.
-	UsesExportsRef bool
-	UsesModuleRef  bool
-	ExportsKind    ExportsKind
+	Hashbang  string
+	Directive string
+	URLForCSS string
 
-	// This is a list of ES6 features. They are ranges instead of booleans so
-	// that they can be used in log messages. Check to see if "Len > 0".
-	ImportKeyword        logger.Range // Does not include TypeScript-specific syntax or "import()"
-	ExportKeyword        logger.Range // Does not include TypeScript-specific syntax
-	TopLevelAwaitKeyword logger.Range
+	// Note: If you're in the linker, do not use this map directly. This map is
+	// filled in by the parser and is considered immutable. For performance reasons,
+	// the linker doesn't mutate this map (cloning a map is slow in Go). Instead the
+	// linker super-imposes relevant information on top in a method call. You should
+	// call "TopLevelSymbolToParts" instead.
+	TopLevelSymbolToPartsFromParser map[Ref][]uint32
 
-	Hashbang    string
-	Directive   string
-	URLForCSS   string
-	Parts       []Part
-	Symbols     []Symbol
-	ModuleScope *Scope
-	CharFreq    *CharFreq
-	ExportsRef  Ref
-	ModuleRef   Ref
-	WrapperRef  Ref
+	// This contains all top-level exported TypeScript enum constants. It exists
+	// to enable cross-module inlining of constant enums.
+	TSEnums map[Ref]map[string]TSEnumValue
+
+	// This contains the values of all detected inlinable constants. It exists
+	// to enable cross-module inlining of these constants.
+	ConstValues map[Ref]ConstValue
+
+	// Properties in here are represented as symbols instead of strings, which
+	// allows them to be renamed to smaller names.
+	MangledProps map[string]Ref
+
+	// Properties in here are existing non-mangled properties in the source code
+	// and must not be used when generating mangled names to avoid a collision.
+	ReservedProps map[string]bool
 
 	// These are stored at the AST level instead of on individual AST nodes so
 	// they can be manipulated efficiently without a full AST traversal
@@ -1788,14 +2105,105 @@ type AST struct {
 	NamedExports            map[string]NamedExport
 	ExportStarImportRecords []uint32
 
-	// Note: If you're in the linker, do not use this map directly. This map is
-	// filled in by the parser and is considered immutable. For performance reasons,
-	// the linker doesn't mutate this map (cloning a map is slow in Go). Instead the
-	// linker super-imposes relevant information on top in a method call. You should
-	// call "TopLevelSymbolToParts" instead.
-	TopLevelSymbolToPartsFromParser map[Ref][]uint32
-
 	SourceMapComment logger.Span
+
+	// This is a list of ES6 features. They are ranges instead of booleans so
+	// that they can be used in log messages. Check to see if "Len > 0".
+	ExportKeyword        logger.Range // Does not include TypeScript-specific syntax
+	TopLevelAwaitKeyword logger.Range
+
+	ExportsRef Ref
+	ModuleRef  Ref
+	WrapperRef Ref
+
+	ApproximateLineCount  int32
+	NestedScopeSlotCounts SlotCounts
+	HasLazyExport         bool
+
+	// This is a list of CommonJS features. When a file uses CommonJS features,
+	// it's not a candidate for "flat bundling" and must be wrapped in its own
+	// closure. Note that this also includes top-level "return" but these aren't
+	// here because only the parser checks those.
+	UsesExportsRef bool
+	UsesModuleRef  bool
+	ExportsKind    ExportsKind
+}
+
+type TSEnumValue struct {
+	String []uint16 // Use this if it's not nil
+	Number float64  // Use this if "String" is nil
+}
+
+type ConstValueKind uint8
+
+const (
+	ConstValueNone ConstValueKind = iota
+	ConstValueNull
+	ConstValueUndefined
+	ConstValueTrue
+	ConstValueFalse
+	ConstValueNumber
+)
+
+type ConstValue struct {
+	Number float64 // Use this for "ConstValueNumber"
+	Kind   ConstValueKind
+}
+
+func ExprToConstValue(expr Expr) ConstValue {
+	switch v := expr.Data.(type) {
+	case *ENull:
+		return ConstValue{Kind: ConstValueNull}
+
+	case *EUndefined:
+		return ConstValue{Kind: ConstValueUndefined}
+
+	case *EBoolean:
+		if v.Value {
+			return ConstValue{Kind: ConstValueTrue}
+		} else {
+			return ConstValue{Kind: ConstValueFalse}
+		}
+
+	case *ENumber:
+		// Inline integers and other small numbers. Don't inline large
+		// real numbers because people may not want them to be inlined
+		// as it will increase the minified code size by too much.
+		if asInt := int64(v.Value); v.Value == float64(asInt) || len(strconv.FormatFloat(v.Value, 'g', -1, 64)) <= 8 {
+			return ConstValue{Kind: ConstValueNumber, Number: v.Value}
+		}
+
+	case *EString:
+		// I'm deliberately not inlining strings here. It seems more likely that
+		// people won't want them to be inlined since they can be arbitrarily long.
+
+	case *EBigInt:
+		// I'm deliberately not inlining bigints here for the same reason (they can
+		// be arbitrarily long).
+	}
+
+	return ConstValue{}
+}
+
+func ConstValueToExpr(loc logger.Loc, value ConstValue) Expr {
+	switch value.Kind {
+	case ConstValueNull:
+		return Expr{Loc: loc, Data: ENullShared}
+
+	case ConstValueUndefined:
+		return Expr{Loc: loc, Data: EUndefinedShared}
+
+	case ConstValueTrue:
+		return Expr{Loc: loc, Data: &EBoolean{Value: true}}
+
+	case ConstValueFalse:
+		return Expr{Loc: loc, Data: &EBoolean{Value: false}}
+
+	case ConstValueNumber:
+		return Expr{Loc: loc, Data: &ENumber{Value: value.Number}}
+	}
+
+	panic("Internal error: invalid constant value")
 }
 
 // This is a histogram of character frequencies for minification
@@ -1841,9 +2249,9 @@ var DefaultNameMinifier = NameMinifier{
 }
 
 type charAndCount struct {
-	index byte
-	count int32
 	char  string
+	count int32
+	index byte
 }
 
 // This type is just so we can use Go's native sort function
@@ -1897,10 +2305,11 @@ func (minifier *NameMinifier) NumberToMinifiedName(i int) string {
 }
 
 type NamedImport struct {
+	Alias string
+
 	// Parts within this file that use this import
 	LocalPartsWithUses []uint32
 
-	Alias             string
 	AliasLoc          logger.Loc
 	NamespaceRef      Ref
 	ImportRecordIndex uint32
@@ -1942,6 +2351,17 @@ type Part struct {
 	// An estimate of the number of uses of all symbols used within this part.
 	SymbolUses map[Ref]SymbolUse
 
+	// An estimate of the number of uses of all symbols used as the target of
+	// function calls within this part.
+	SymbolCallUses map[Ref]SymbolCallUse
+
+	// This tracks property accesses off of imported symbols. We don't know
+	// during parsing if an imported symbol is going to be an inlined enum
+	// value or not. This is only known during linking. So we defer adding
+	// a dependency on these imported symbols until we know whether the
+	// property access is an inlined enum value or not.
+	ImportSymbolPropertyUses map[Ref]map[string]SymbolUse
+
 	// The indices of the other parts in this file that are needed if this part
 	// is needed.
 	Dependencies []Dependency
@@ -1973,6 +2393,11 @@ type DeclaredSymbol struct {
 
 type SymbolUse struct {
 	CountEstimate uint32
+}
+
+type SymbolCallUse struct {
+	CallCountEstimate          uint32
+	SingleArgCallCountEstimate uint32
 }
 
 // Returns the canonical ref that represents the ref for the provided symbol.
@@ -2027,14 +2452,7 @@ func MergeSymbols(symbols SymbolMap, old Ref, new Ref) Ref {
 	}
 
 	oldSymbol.Link = new
-	newSymbol.UseCountEstimate += oldSymbol.UseCountEstimate
-	if oldSymbol.MustNotBeRenamed {
-		newSymbol.OriginalName = oldSymbol.OriginalName
-		newSymbol.MustNotBeRenamed = true
-	}
-	if oldSymbol.MustStartWithCapitalLetterForJSX {
-		newSymbol.MustStartWithCapitalLetterForJSX = true
-	}
+	newSymbol.MergeContentsWith(oldSymbol)
 	return new
 }
 
@@ -2145,4 +2563,422 @@ func ConvertBindingToExpr(binding Binding, wrapIdentifier func(logger.Loc, Ref) 
 	default:
 		panic("Internal error")
 	}
+}
+
+// Returns true if this expression is known to result in a primitive value (i.e.
+// null, undefined, boolean, number, bigint, or string), even if the expression
+// cannot be removed due to side effects.
+func IsPrimitiveWithSideEffects(data E) bool {
+	switch e := data.(type) {
+	case *EInlinedEnum:
+		return IsPrimitiveWithSideEffects(e.Value.Data)
+
+	case *ENull, *EUndefined, *EBoolean, *ENumber, *EBigInt, *EString:
+		return true
+
+	case *EUnary:
+		switch e.Op {
+		case
+			// Number or bigint
+			UnOpPos, UnOpNeg, UnOpCpl,
+			UnOpPreDec, UnOpPreInc, UnOpPostDec, UnOpPostInc,
+			// Boolean
+			UnOpNot, UnOpDelete,
+			// Undefined
+			UnOpVoid,
+			// String
+			UnOpTypeof:
+			return true
+		}
+
+	case *EBinary:
+		switch e.Op {
+		case
+			// Boolean
+			BinOpLt, BinOpLe, BinOpGt, BinOpGe, BinOpIn,
+			BinOpInstanceof, BinOpLooseEq, BinOpLooseNe, BinOpStrictEq, BinOpStrictNe,
+			// String, number, or bigint
+			BinOpAdd, BinOpAddAssign,
+			// Number or bigint
+			BinOpSub, BinOpMul, BinOpDiv, BinOpRem, BinOpPow,
+			BinOpSubAssign, BinOpMulAssign, BinOpDivAssign, BinOpRemAssign, BinOpPowAssign,
+			BinOpShl, BinOpShr, BinOpUShr,
+			BinOpShlAssign, BinOpShrAssign, BinOpUShrAssign,
+			BinOpBitwiseOr, BinOpBitwiseAnd, BinOpBitwiseXor,
+			BinOpBitwiseOrAssign, BinOpBitwiseAndAssign, BinOpBitwiseXorAssign:
+			return true
+
+		// These always return one of the arguments unmodified
+		case BinOpLogicalAnd, BinOpLogicalOr, BinOpNullishCoalescing,
+			BinOpLogicalAndAssign, BinOpLogicalOrAssign, BinOpNullishCoalescingAssign:
+			return IsPrimitiveWithSideEffects(e.Left.Data) && IsPrimitiveWithSideEffects(e.Right.Data)
+
+		case BinOpComma:
+			return IsPrimitiveWithSideEffects(e.Right.Data)
+		}
+
+	case *EIf:
+		return IsPrimitiveWithSideEffects(e.Yes.Data) && IsPrimitiveWithSideEffects(e.No.Data)
+	}
+
+	return false
+}
+
+// This will return a nil expression if the expression can be totally removed
+func SimplifyUnusedExpr(expr Expr, isUnbound func(Ref) bool) Expr {
+	switch e := expr.Data.(type) {
+	case *EInlinedEnum:
+		return SimplifyUnusedExpr(e.Value, isUnbound)
+
+	case *ENull, *EUndefined, *EMissing, *EBoolean, *ENumber, *EBigInt,
+		*EString, *EThis, *ERegExp, *EFunction, *EArrow, *EImportMeta:
+		return Expr{}
+
+	case *EDot:
+		if e.CanBeRemovedIfUnused {
+			return Expr{}
+		}
+
+	case *EIdentifier:
+		if e.MustKeepDueToWithStmt {
+			break
+		}
+		if e.CanBeRemovedIfUnused || !isUnbound(e.Ref) {
+			return Expr{}
+		}
+
+	case *ETemplate:
+		if e.TagOrNil.Data == nil {
+			var comma Expr
+			var templateLoc logger.Loc
+			var template *ETemplate
+			for _, part := range e.Parts {
+				// If we know this value is some kind of primitive, then we know that
+				// "ToString" has no side effects and can be avoided.
+				if KnownPrimitiveType(part.Value) != PrimitiveUnknown {
+					if template != nil {
+						comma = JoinWithComma(comma, Expr{Loc: templateLoc, Data: template})
+						template = nil
+					}
+					comma = JoinWithComma(comma, SimplifyUnusedExpr(part.Value, isUnbound))
+					continue
+				}
+
+				// Make sure "ToString" is still evaluated on the value. We can't use
+				// string addition here because that may evaluate "ValueOf" instead.
+				if template == nil {
+					template = &ETemplate{}
+					templateLoc = part.Value.Loc
+				}
+				template.Parts = append(template.Parts, TemplatePart{Value: part.Value})
+			}
+			if template != nil {
+				comma = JoinWithComma(comma, Expr{Loc: templateLoc, Data: template})
+			}
+			return comma
+		}
+
+	case *EArray:
+		// Arrays with "..." spread expressions can't be unwrapped because the
+		// "..." triggers code evaluation via iterators. In that case, just trim
+		// the other items instead and leave the array expression there.
+		for _, spread := range e.Items {
+			if _, ok := spread.Data.(*ESpread); ok {
+				end := 0
+				for _, item := range e.Items {
+					item = SimplifyUnusedExpr(item, isUnbound)
+					if item.Data != nil {
+						e.Items[end] = item
+						end++
+					}
+				}
+				e.Items = e.Items[:end]
+				return expr
+			}
+		}
+
+		// Otherwise, the array can be completely removed. We only need to keep any
+		// array items with side effects. Apply this simplification recursively.
+		var result Expr
+		for _, item := range e.Items {
+			result = JoinWithComma(result, SimplifyUnusedExpr(item, isUnbound))
+		}
+		return result
+
+	case *EObject:
+		// Objects with "..." spread expressions can't be unwrapped because the
+		// "..." triggers code evaluation via getters. In that case, just trim
+		// the other items instead and leave the object expression there.
+		for _, spread := range e.Properties {
+			if spread.Kind == PropertySpread {
+				end := 0
+				for _, property := range e.Properties {
+					// Spread properties must always be evaluated
+					if property.Kind != PropertySpread {
+						value := SimplifyUnusedExpr(property.ValueOrNil, isUnbound)
+						if value.Data != nil {
+							// Keep the value
+							property.ValueOrNil = value
+						} else if !property.IsComputed {
+							// Skip this property if the key doesn't need to be computed
+							continue
+						} else {
+							// Replace values without side effects with "0" because it's short
+							property.ValueOrNil.Data = &ENumber{}
+						}
+					}
+					e.Properties[end] = property
+					end++
+				}
+				e.Properties = e.Properties[:end]
+				return expr
+			}
+		}
+
+		// Otherwise, the object can be completely removed. We only need to keep any
+		// object properties with side effects. Apply this simplification recursively.
+		var result Expr
+		for _, property := range e.Properties {
+			if property.IsComputed {
+				// Make sure "ToString" is still evaluated on the key
+				result = JoinWithComma(result, Expr{Loc: property.Key.Loc, Data: &EBinary{
+					Op:    BinOpAdd,
+					Left:  property.Key,
+					Right: Expr{Loc: property.Key.Loc, Data: &EString{}},
+				}})
+			}
+			result = JoinWithComma(result, SimplifyUnusedExpr(property.ValueOrNil, isUnbound))
+		}
+		return result
+
+	case *EIf:
+		e.Yes = SimplifyUnusedExpr(e.Yes, isUnbound)
+		e.No = SimplifyUnusedExpr(e.No, isUnbound)
+
+		// "foo() ? 1 : 2" => "foo()"
+		if e.Yes.Data == nil && e.No.Data == nil {
+			return SimplifyUnusedExpr(e.Test, isUnbound)
+		}
+
+		// "foo() ? 1 : bar()" => "foo() || bar()"
+		if e.Yes.Data == nil {
+			return JoinWithLeftAssociativeOp(BinOpLogicalOr, e.Test, e.No)
+		}
+
+		// "foo() ? bar() : 2" => "foo() && bar()"
+		if e.No.Data == nil {
+			return JoinWithLeftAssociativeOp(BinOpLogicalAnd, e.Test, e.Yes)
+		}
+
+	case *EUnary:
+		switch e.Op {
+		// These operators must not have any type conversions that can execute code
+		// such as "toString" or "valueOf". They must also never throw any exceptions.
+		case UnOpVoid, UnOpNot:
+			return SimplifyUnusedExpr(e.Value, isUnbound)
+
+		case UnOpTypeof:
+			if _, ok := e.Value.Data.(*EIdentifier); ok {
+				// "typeof x" must not be transformed into if "x" since doing so could
+				// cause an exception to be thrown. Instead we can just remove it since
+				// "typeof x" is special-cased in the standard to never throw.
+				return Expr{}
+			}
+			return SimplifyUnusedExpr(e.Value, isUnbound)
+		}
+
+	case *EBinary:
+		switch e.Op {
+		// These operators must not have any type conversions that can execute code
+		// such as "toString" or "valueOf". They must also never throw any exceptions.
+		case BinOpStrictEq, BinOpStrictNe, BinOpComma:
+			return JoinWithComma(SimplifyUnusedExpr(e.Left, isUnbound), SimplifyUnusedExpr(e.Right, isUnbound))
+
+		// We can simplify "==" and "!=" even though they can call "toString" and/or
+		// "valueOf" if we can statically determine that the types of both sides are
+		// primitives. In that case there won't be any chance for user-defined
+		// "toString" and/or "valueOf" to be called.
+		case BinOpLooseEq, BinOpLooseNe:
+			if IsPrimitiveWithSideEffects(e.Left.Data) && IsPrimitiveWithSideEffects(e.Right.Data) {
+				return JoinWithComma(SimplifyUnusedExpr(e.Left, isUnbound), SimplifyUnusedExpr(e.Right, isUnbound))
+			}
+
+		case BinOpLogicalAnd, BinOpLogicalOr, BinOpNullishCoalescing:
+			// Preserve short-circuit behavior: the left expression is only unused if
+			// the right expression can be completely removed. Otherwise, the left
+			// expression is important for the branch.
+			e.Right = SimplifyUnusedExpr(e.Right, isUnbound)
+			if e.Right.Data == nil {
+				return SimplifyUnusedExpr(e.Left, isUnbound)
+			}
+
+		case BinOpAdd:
+			if result, isStringAddition := simplifyUnusedStringAdditionChain(expr); isStringAddition {
+				return result
+			}
+		}
+
+	case *ECall:
+		// A call that has been marked "__PURE__" can be removed if all arguments
+		// can be removed. The annotation causes us to ignore the target.
+		if e.CanBeUnwrappedIfUnused {
+			expr = Expr{}
+			for _, arg := range e.Args {
+				expr = JoinWithComma(expr, SimplifyUnusedExpr(arg, isUnbound))
+			}
+		}
+
+		// Attempt to shorten IIFEs
+		if len(e.Args) == 0 {
+			switch target := e.Target.Data.(type) {
+			case *EFunction:
+				if len(target.Fn.Args) != 0 {
+					break
+				}
+
+				// Just delete "(function() {})()" completely
+				if len(target.Fn.Body.Stmts) == 0 {
+					return Expr{}
+				}
+
+			case *EArrow:
+				if len(target.Args) != 0 {
+					break
+				}
+
+				// Just delete "(() => {})()" completely
+				if len(target.Body.Stmts) == 0 {
+					return Expr{}
+				}
+
+				if len(target.Body.Stmts) == 1 {
+					switch s := target.Body.Stmts[0].Data.(type) {
+					case *SExpr:
+						if !target.IsAsync {
+							// Replace "(() => { foo() })()" with "foo()"
+							return s.Value
+						} else {
+							// Replace "(async () => { foo() })()" with "(async () => foo())()"
+							target.Body.Stmts[0].Data = &SReturn{ValueOrNil: s.Value}
+							target.PreferExpr = true
+						}
+
+					case *SReturn:
+						if !target.IsAsync {
+							// Replace "(() => foo())()" with "foo()"
+							return s.ValueOrNil
+						}
+					}
+				}
+			}
+		}
+
+	case *ENew:
+		// A constructor call that has been marked "__PURE__" can be removed if all
+		// arguments can be removed. The annotation causes us to ignore the target.
+		if e.CanBeUnwrappedIfUnused {
+			expr = Expr{}
+			for _, arg := range e.Args {
+				expr = JoinWithComma(expr, SimplifyUnusedExpr(arg, isUnbound))
+			}
+		}
+	}
+
+	return expr
+}
+
+func simplifyUnusedStringAdditionChain(expr Expr) (Expr, bool) {
+	switch e := expr.Data.(type) {
+	case *EString:
+		// "'x' + y" => "'' + y"
+		return Expr{Loc: expr.Loc, Data: &EString{}}, true
+
+	case *EBinary:
+		if e.Op == BinOpAdd {
+			left, leftIsStringAddition := simplifyUnusedStringAdditionChain(e.Left)
+			e.Left = left
+
+			if _, rightIsString := e.Right.Data.(*EString); rightIsString {
+				// "('' + x) + 'y'" => "'' + x"
+				if leftIsStringAddition {
+					return left, true
+				}
+
+				// "x + 'y'" => "x + ''"
+				if !leftIsStringAddition {
+					e.Right.Data = &EString{}
+					return expr, true
+				}
+			}
+
+			return expr, leftIsStringAddition
+		}
+	}
+
+	return expr, false
+}
+
+func ToInt32(f float64) int32 {
+	// The easy way
+	i := int32(f)
+	if float64(i) == f {
+		return i
+	}
+
+	// The hard way
+	i = int32(uint32(math.Mod(math.Abs(f), 4294967296)))
+	if math.Signbit(f) {
+		return -i
+	}
+	return i
+}
+
+func ToUint32(f float64) uint32 {
+	return uint32(ToInt32(f))
+}
+
+func ToNumberWithoutSideEffects(data E) (float64, bool) {
+	switch e := data.(type) {
+	case *EInlinedEnum:
+		return ToNumberWithoutSideEffects(e.Value.Data)
+
+	case *ENull:
+		return 0, true
+
+	case *EUndefined:
+		return math.NaN(), true
+
+	case *EBoolean:
+		if e.Value {
+			return 1, true
+		} else {
+			return 0, true
+		}
+
+	case *ENumber:
+		return e.Value, true
+	}
+
+	return 0, false
+}
+
+func extractNumericValue(data E) (float64, bool) {
+	switch e := data.(type) {
+	case *EInlinedEnum:
+		return extractNumericValue(e.Value.Data)
+
+	case *ENumber:
+		return e.Value, true
+	}
+
+	return 0, false
+}
+
+func ExtractNumericValues(left Expr, right Expr) (float64, float64, bool) {
+	if a, ok := extractNumericValue(left.Data); ok {
+		if b, ok := extractNumericValue(right.Data); ok {
+			return a, b, true
+		}
+	}
+	return 0, 0, false
 }

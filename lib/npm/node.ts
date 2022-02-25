@@ -1,5 +1,6 @@
 import * as types from "../shared/types";
 import * as common from "../shared/common";
+import * as ourselves from "./node"
 import { ESBUILD_BINARY_PATH, generateBinPath } from "./node-platform";
 
 import child_process = require('child_process');
@@ -249,12 +250,19 @@ let ensureServiceIsRunning = (): Service => {
 
   let { readFromStdout, afterClose, service } = common.createChannel({
     writeToStdin(bytes) {
-      child.stdin.write(bytes);
+      child.stdin.write(bytes, err => {
+        // Assume the service was stopped if we get an error writing to stdin
+        if (err) afterClose();
+      });
     },
     readFileSync: fs.readFileSync,
     isSync: false,
     isBrowser: false,
+    esbuild: ourselves,
   });
+
+  // Assume the service was stopped if we get an error writing to stdin
+  child.stdin.on('error', afterClose);
 
   const stdin: typeof child.stdin & { unref?(): void } = child.stdin;
   const stdout: typeof child.stdout & { unref?(): void } = child.stdout;
@@ -349,6 +357,7 @@ let runServiceSync = (callback: (service: common.StreamService) => void): void =
     },
     isSync: true,
     isBrowser: false,
+    esbuild: ourselves,
   });
   callback(service);
   let stdout = child_process.execFileSync(command, args.concat(`--service=${ESBUILD_VERSION}`), {
@@ -561,3 +570,17 @@ let startSyncServiceWorker = () => {
 if (isInternalWorkerThread) {
   startSyncServiceWorker();
 }
+
+// Export this module's exports as an export named "default" to try to work
+// around problems due to the "default" import mess.
+//
+// More detail: When this module is converted to CommonJS, we add Babel's
+// "__esModule" marker since this module used to be ESM. However, without this
+// default export below, tools that respect the "__esModule" marker will have
+// a default export of undefined since there was no default export. This is
+// problematic because node's implementation of importing CommonJS into ESM
+// broke compatibility with the ecosystem and decided to set the "default"
+// export to "module.exports" regardless of the "__esModule" marker. I'm hoping
+// that by setting "module.exports.default = module.exports", we can hopefully
+// make this work ok in both environments.
+export default ourselves

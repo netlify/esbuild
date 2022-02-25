@@ -30,45 +30,45 @@ func lexerError(contents string) string {
 func TestTokens(t *testing.T) {
 	expected := []struct {
 		contents string
-		token    T
 		text     string
+		token    T
 	}{
-		{"", TEndOfFile, "end of file"},
-		{"@media", TAtKeyword, "@-keyword"},
-		{"url(x y", TBadURL, "bad URL token"},
-		{"-->", TCDC, "\"-->\""},
-		{"<!--", TCDO, "\"<!--\""},
-		{"}", TCloseBrace, "\"}\""},
-		{"]", TCloseBracket, "\"]\""},
-		{")", TCloseParen, "\")\""},
-		{":", TColon, "\":\""},
-		{",", TComma, "\",\""},
-		{"?", TDelim, "delimiter"},
-		{"&", TDelimAmpersand, "\"&\""},
-		{"*", TDelimAsterisk, "\"*\""},
-		{"|", TDelimBar, "\"|\""},
-		{"^", TDelimCaret, "\"^\""},
-		{"$", TDelimDollar, "\"$\""},
-		{".", TDelimDot, "\".\""},
-		{"=", TDelimEquals, "\"=\""},
-		{"!", TDelimExclamation, "\"!\""},
-		{">", TDelimGreaterThan, "\">\""},
-		{"+", TDelimPlus, "\"+\""},
-		{"/", TDelimSlash, "\"/\""},
-		{"~", TDelimTilde, "\"~\""},
-		{"1px", TDimension, "dimension"},
-		{"max(", TFunction, "function token"},
-		{"#name", THash, "hash token"},
-		{"name", TIdent, "identifier"},
-		{"123", TNumber, "number"},
-		{"{", TOpenBrace, "\"{\""},
-		{"[", TOpenBracket, "\"[\""},
-		{"(", TOpenParen, "\"(\""},
-		{"50%", TPercentage, "percentage"},
-		{";", TSemicolon, "\";\""},
-		{"'abc'", TString, "string token"},
-		{"url(test)", TURL, "URL token"},
-		{" ", TWhitespace, "whitespace"},
+		{"", "end of file", TEndOfFile},
+		{"@media", "@-keyword", TAtKeyword},
+		{"url(x y", "bad URL token", TBadURL},
+		{"-->", "\"-->\"", TCDC},
+		{"<!--", "\"<!--\"", TCDO},
+		{"}", "\"}\"", TCloseBrace},
+		{"]", "\"]\"", TCloseBracket},
+		{")", "\")\"", TCloseParen},
+		{":", "\":\"", TColon},
+		{",", "\",\"", TComma},
+		{"?", "delimiter", TDelim},
+		{"&", "\"&\"", TDelimAmpersand},
+		{"*", "\"*\"", TDelimAsterisk},
+		{"|", "\"|\"", TDelimBar},
+		{"^", "\"^\"", TDelimCaret},
+		{"$", "\"$\"", TDelimDollar},
+		{".", "\".\"", TDelimDot},
+		{"=", "\"=\"", TDelimEquals},
+		{"!", "\"!\"", TDelimExclamation},
+		{">", "\">\"", TDelimGreaterThan},
+		{"+", "\"+\"", TDelimPlus},
+		{"/", "\"/\"", TDelimSlash},
+		{"~", "\"~\"", TDelimTilde},
+		{"1px", "dimension", TDimension},
+		{"max(", "function token", TFunction},
+		{"#name", "hash token", THash},
+		{"name", "identifier", TIdent},
+		{"123", "number", TNumber},
+		{"{", "\"{\"", TOpenBrace},
+		{"[", "\"[\"", TOpenBracket},
+		{"(", "\"(\"", TOpenParen},
+		{"50%", "percentage", TPercentage},
+		{";", "\";\"", TSemicolon},
+		{"'abc'", "string token", TString},
+		{"url(test)", "URL token", TURL},
+		{" ", "whitespace", TWhitespace},
 	}
 
 	for _, it := range expected {
@@ -122,19 +122,19 @@ func TestURLParsing(t *testing.T) {
 }
 
 func TestComment(t *testing.T) {
-	test.AssertEqual(t, lexerError("/*"), "<stdin>: error: Expected \"*/\" to terminate multi-line comment\n<stdin>: note: The multi-line comment starts here\n")
-	test.AssertEqual(t, lexerError("/*/"), "<stdin>: error: Expected \"*/\" to terminate multi-line comment\n<stdin>: note: The multi-line comment starts here\n")
-	test.AssertEqual(t, lexerError("/**/"), "")
-	test.AssertEqual(t, lexerError("//"), "<stdin>: warning: Comments in CSS use \"/* ... */\" instead of \"//\"\n")
+	test.AssertEqualWithDiff(t, lexerError("/*"), "<stdin>: ERROR: Expected \"*/\" to terminate multi-line comment\n<stdin>: NOTE: The multi-line comment starts here:\n")
+	test.AssertEqualWithDiff(t, lexerError("/*/"), "<stdin>: ERROR: Expected \"*/\" to terminate multi-line comment\n<stdin>: NOTE: The multi-line comment starts here:\n")
+	test.AssertEqualWithDiff(t, lexerError("/**/"), "")
+	test.AssertEqualWithDiff(t, lexerError("//"), "<stdin>: WARNING: Comments in CSS use \"/* ... */\" instead of \"//\"\n")
 }
 
 func TestString(t *testing.T) {
-	test.AssertEqual(t, lexerError("'"), "<stdin>: error: Unterminated string token\n")
-	test.AssertEqual(t, lexerError("\""), "<stdin>: error: Unterminated string token\n")
-	test.AssertEqual(t, lexerError("'\\'"), "<stdin>: error: Unterminated string token\n")
-	test.AssertEqual(t, lexerError("\"\\\""), "<stdin>: error: Unterminated string token\n")
-	test.AssertEqual(t, lexerError("''"), "")
-	test.AssertEqual(t, lexerError("\"\""), "")
+	test.AssertEqualWithDiff(t, lexerError("'"), "<stdin>: ERROR: Unterminated string token\n")
+	test.AssertEqualWithDiff(t, lexerError("\""), "<stdin>: ERROR: Unterminated string token\n")
+	test.AssertEqualWithDiff(t, lexerError("'\\'"), "<stdin>: ERROR: Unterminated string token\n")
+	test.AssertEqualWithDiff(t, lexerError("\"\\\""), "<stdin>: ERROR: Unterminated string token\n")
+	test.AssertEqualWithDiff(t, lexerError("''"), "")
+	test.AssertEqualWithDiff(t, lexerError("\"\""), "")
 }
 
 func TestBOM(t *testing.T) {

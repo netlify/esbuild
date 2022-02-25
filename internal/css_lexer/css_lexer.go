@@ -107,6 +107,13 @@ func (t T) IsNumeric() bool {
 	return t == TNumber || t == TPercentage || t == TDimension
 }
 
+type TokenFlags uint8
+
+const (
+	IsID TokenFlags = 1 << iota
+	DidWarnAboutSingleLineComment
+)
+
 // This token struct is designed to be memory-efficient. It just references a
 // range in the input file instead of directly containing the substring of text
 // since a range takes up less memory than a string.
@@ -114,7 +121,7 @@ type Token struct {
 	Range      logger.Range // 8 bytes
 	UnitOffset uint16       // 2 bytes
 	Kind       T            // 1 byte
-	IsID       bool         // 1 byte
+	Flags      TokenFlags   // 1 byte
 }
 
 func (token Token) DecodedText(contents string) string {
@@ -154,13 +161,14 @@ func (token Token) DecodedText(contents string) string {
 type lexer struct {
 	log                     logger.Log
 	source                  logger.Source
+	legalCommentsBefore     []Comment
+	sourceMappingURL        logger.Span
 	tracker                 logger.LineColumnTracker
+	approximateNewlineCount int
 	current                 int
+	oldSingleLineCommentEnd logger.Loc
 	codePoint               rune
 	Token                   Token
-	licenseCommentsBefore   []Comment
-	approximateNewlineCount int
-	sourceMappingURL        logger.Span
 }
 
 type Comment struct {
@@ -171,9 +179,9 @@ type Comment struct {
 
 type TokenizeResult struct {
 	Tokens               []Token
-	LicenseComments      []Comment
-	ApproximateLineCount int32
+	LegalComments        []Comment
 	SourceMapComment     logger.Span
+	ApproximateLineCount int32
 }
 
 func Tokenize(log logger.Log, source logger.Source) TokenizeResult {
@@ -198,26 +206,26 @@ func Tokenize(log logger.Log, source logger.Source) TokenizeResult {
 	var tokens []Token
 	var comments []Comment
 	for lexer.Token.Kind != TEndOfFile {
-		if lexer.licenseCommentsBefore != nil {
-			for _, comment := range lexer.licenseCommentsBefore {
+		if lexer.legalCommentsBefore != nil {
+			for _, comment := range lexer.legalCommentsBefore {
 				comment.TokenIndexAfter = uint32(len(tokens))
 				comments = append(comments, comment)
 			}
-			lexer.licenseCommentsBefore = nil
+			lexer.legalCommentsBefore = nil
 		}
 		tokens = append(tokens, lexer.Token)
 		lexer.next()
 	}
-	if lexer.licenseCommentsBefore != nil {
-		for _, comment := range lexer.licenseCommentsBefore {
+	if lexer.legalCommentsBefore != nil {
+		for _, comment := range lexer.legalCommentsBefore {
 			comment.TokenIndexAfter = uint32(len(tokens))
 			comments = append(comments, comment)
 		}
-		lexer.licenseCommentsBefore = nil
+		lexer.legalCommentsBefore = nil
 	}
 	return TokenizeResult{
 		Tokens:               tokens,
-		LicenseComments:      comments,
+		LegalComments:        comments,
 		ApproximateLineCount: int32(lexer.approximateNewlineCount) + 1,
 		SourceMapComment:     lexer.sourceMappingURL,
 	}
@@ -264,9 +272,19 @@ func (lexer *lexer) next() {
 				lexer.consumeToEndOfMultiLineComment(lexer.Token.Range)
 				continue
 			case '/':
-				lexer.step()
-				lexer.consumeToEndOfSingleLineComment()
-				continue
+				// Warn when people use "//" comments, which are invalid in CSS
+				loc := lexer.Token.Range.Loc
+				if loc.Start >= lexer.oldSingleLineCommentEnd.Start {
+					contents := lexer.source.Contents
+					end := lexer.current
+					for end < len(contents) && !isNewline(rune(contents[end])) {
+						end++
+					}
+					lexer.log.Add(logger.Warning, &lexer.tracker, logger.Range{Loc: loc, Len: 2},
+						"Comments in CSS use \"/* ... */\" instead of \"//\"")
+					lexer.oldSingleLineCommentEnd.Start = int32(end)
+					lexer.Token.Flags |= DidWarnAboutSingleLineComment
+				}
 			}
 			lexer.Token.Kind = TDelimSlash
 
@@ -294,7 +312,7 @@ func (lexer *lexer) next() {
 			if IsNameContinue(lexer.codePoint) || lexer.isValidEscape() {
 				lexer.Token.Kind = THash
 				if lexer.wouldStartIdentifier() {
-					lexer.Token.IsID = true
+					lexer.Token.Flags |= IsID
 				}
 				lexer.consumeName()
 			} else {
@@ -394,7 +412,7 @@ func (lexer *lexer) next() {
 				lexer.Token.Kind = lexer.consumeIdentLike()
 			} else {
 				lexer.step()
-				lexer.log.AddRangeError(&lexer.tracker, lexer.Token.Range, "Invalid escape")
+				lexer.log.Add(logger.Error, &lexer.tracker, lexer.Token.Range, "Invalid escape")
 				lexer.Token.Kind = TDelim
 			}
 
@@ -452,7 +470,7 @@ func (lexer *lexer) next() {
 
 func (lexer *lexer) consumeToEndOfMultiLineComment(startRange logger.Range) {
 	startOfSourceMappingURL := 0
-	isLicenseComment := false
+	isLegalComment := false
 
 	switch lexer.codePoint {
 	case '#', '@':
@@ -462,8 +480,8 @@ func (lexer *lexer) consumeToEndOfMultiLineComment(startRange logger.Range) {
 		}
 
 	case '!':
-		// Remember if this is a license comment
-		isLicenseComment = true
+		// Remember if this is a legal comment
+		isLegalComment = true
 	}
 
 	for {
@@ -485,17 +503,18 @@ func (lexer *lexer) consumeToEndOfMultiLineComment(startRange logger.Range) {
 					lexer.sourceMappingURL = logger.Span{Text: text[:r.Len], Range: r}
 				}
 
-				// Record license comments
-				if text := lexer.source.Contents[startRange.Loc.Start:commentEnd]; isLicenseComment || containsAtPreserveOrAtLicense(text) {
+				// Record legal comments
+				if text := lexer.source.Contents[startRange.Loc.Start:commentEnd]; isLegalComment || containsAtPreserveOrAtLicense(text) {
 					text = helpers.RemoveMultiLineCommentIndent(lexer.source.Contents[:startRange.Loc.Start], text)
-					lexer.licenseCommentsBefore = append(lexer.licenseCommentsBefore, Comment{Loc: startRange.Loc, Text: text})
+					lexer.legalCommentsBefore = append(lexer.legalCommentsBefore, Comment{Loc: startRange.Loc, Text: text})
 				}
 				return
 			}
 
 		case eof: // This indicates the end of the file
-			lexer.log.AddErrorWithNotes(&lexer.tracker, logger.Loc{Start: lexer.Token.Range.End()}, "Expected \"*/\" to terminate multi-line comment",
-				[]logger.MsgData{logger.RangeData(&lexer.tracker, startRange, "The multi-line comment starts here")})
+			lexer.log.AddWithNotes(logger.Error, &lexer.tracker, logger.Range{Loc: logger.Loc{Start: lexer.Token.Range.End()}},
+				"Expected \"*/\" to terminate multi-line comment",
+				[]logger.MsgData{lexer.tracker.MsgData(startRange, "The multi-line comment starts here:")})
 			return
 
 		default:
@@ -511,13 +530,6 @@ func containsAtPreserveOrAtLicense(text string) bool {
 		}
 	}
 	return false
-}
-
-func (lexer *lexer) consumeToEndOfSingleLineComment() {
-	for !isNewline(lexer.codePoint) && lexer.codePoint != eof {
-		lexer.step()
-	}
-	lexer.log.AddRangeWarning(&lexer.tracker, lexer.Token.Range, "Comments in CSS use \"/* ... */\" instead of \"//\"")
 }
 
 func (lexer *lexer) isValidEscape() bool {
@@ -688,7 +700,7 @@ validURL:
 
 		case eof:
 			loc := logger.Loc{Start: lexer.Token.Range.End()}
-			lexer.log.AddError(&lexer.tracker, loc, "Expected \")\" to end URL token")
+			lexer.log.Add(logger.Error, &lexer.tracker, logger.Range{Loc: loc}, "Expected \")\" to end URL token")
 			return TBadURL
 
 		case ' ', '\t', '\n', '\r', '\f':
@@ -698,7 +710,7 @@ validURL:
 			}
 			if lexer.codePoint != ')' {
 				loc := logger.Loc{Start: lexer.Token.Range.End()}
-				lexer.log.AddError(&lexer.tracker, loc, "Expected \")\" to end URL token")
+				lexer.log.Add(logger.Error, &lexer.tracker, logger.Range{Loc: loc}, "Expected \")\" to end URL token")
 				break validURL
 			}
 			lexer.step()
@@ -706,13 +718,13 @@ validURL:
 
 		case '"', '\'', '(':
 			r := logger.Range{Loc: logger.Loc{Start: lexer.Token.Range.End()}, Len: 1}
-			lexer.log.AddRangeError(&lexer.tracker, r, "Expected \")\" to end URL token")
+			lexer.log.Add(logger.Error, &lexer.tracker, r, "Expected \")\" to end URL token")
 			break validURL
 
 		case '\\':
 			if !lexer.isValidEscape() {
 				r := logger.Range{Loc: logger.Loc{Start: lexer.Token.Range.End()}, Len: 1}
-				lexer.log.AddRangeError(&lexer.tracker, r, "Invalid escape")
+				lexer.log.Add(logger.Error, &lexer.tracker, r, "Invalid escape")
 				break validURL
 			}
 			lexer.consumeEscape()
@@ -720,7 +732,7 @@ validURL:
 		default:
 			if isNonPrintable(lexer.codePoint) {
 				r := logger.Range{Loc: logger.Loc{Start: lexer.Token.Range.End()}, Len: 1}
-				lexer.log.AddRangeError(&lexer.tracker, r, "Unexpected non-printable character in URL token")
+				lexer.log.Add(logger.Error, &lexer.tracker, r, "Unexpected non-printable character in URL token")
 			}
 			lexer.step()
 		}
@@ -763,11 +775,15 @@ func (lexer *lexer) consumeString() T {
 			// Otherwise, fall through to ignore the character after the backslash
 
 		case eof:
-			lexer.log.AddError(&lexer.tracker, logger.Loc{Start: lexer.Token.Range.End()}, "Unterminated string token")
+			lexer.log.Add(logger.Error, &lexer.tracker,
+				logger.Range{Loc: logger.Loc{Start: lexer.Token.Range.End()}},
+				"Unterminated string token")
 			return TBadString
 
 		case '\n', '\r', '\f':
-			lexer.log.AddError(&lexer.tracker, logger.Loc{Start: lexer.Token.Range.End()}, "Unterminated string token")
+			lexer.log.Add(logger.Error, &lexer.tracker,
+				logger.Range{Loc: logger.Loc{Start: lexer.Token.Range.End()}},
+				"Unterminated string token")
 			return TBadString
 
 		case quote:

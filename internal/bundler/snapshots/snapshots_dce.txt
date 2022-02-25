@@ -4,6 +4,256 @@ TestBase64LoaderRemoveUnused
 console.log("unused import");
 
 ================================================================================
+TestConstValueInliningBundle
+---------- /out/exported-entry.js ----------
+// exported-entry.js
+var y_keep = 2;
+console.log(1, 2);
+export {
+  y_keep
+};
+
+---------- /out/re-exported-entry.js ----------
+// re-exported-constants.js
+var y_keep = 2;
+
+// re-exported-entry.js
+console.log(1, 2);
+export {
+  y_keep
+};
+
+---------- /out/re-exported-2-entry.js ----------
+// re-exported-2-constants.js
+var y_keep = 2;
+export {
+  y_keep
+};
+
+---------- /out/re-exported-star-entry.js ----------
+// re-exported-star-constants.js
+var x_keep = 1, y_keep = 2;
+export {
+  x_keep,
+  y_keep
+};
+
+---------- /out/cross-module-entry.js ----------
+// cross-module-constants.js
+foo();
+var y_keep = 1;
+function foo() {
+  return [1, y_keep];
+}
+
+// cross-module-entry.js
+console.log(1, y_keep);
+
+---------- /out/print-shorthand-entry.js ----------
+// print-shorthand-entry.js
+console.log({ foo: 123, a: -321 });
+
+---------- /out/circular-import-entry.js ----------
+// circular-import-cycle.js
+console.log(bar());
+
+// circular-import-constants.js
+var foo = 123;
+function bar() {
+  return foo;
+}
+
+---------- /out/circular-re-export-entry.js ----------
+// circular-re-export-cycle.js
+var baz = 0;
+console.log(bar());
+
+// circular-re-export-constants.js
+var foo = 123;
+function bar() {
+  return foo;
+}
+
+// circular-re-export-entry.js
+console.log(baz);
+
+---------- /out/circular-re-export-star-entry.js ----------
+// circular-re-export-star-cycle.js
+console.log(bar());
+
+// circular-re-export-star-constants.js
+var foo = 123;
+function bar() {
+  return foo;
+}
+
+---------- /out/non-circular-export-entry.js ----------
+// non-circular-export-constants.js
+function bar() {
+  return 123;
+}
+
+// non-circular-export-entry.js
+console.log(123, bar());
+
+================================================================================
+TestConstValueInliningNoBundle
+---------- /out/top-level.js ----------
+const n_keep = null, u_keep = void 0, i_keep = 1234567, f_keep = 123.456, s_keep = "";
+console.log(null, null, void 0, void 0, 1234567, 1234567, 123.456, 123.456, s_keep, s_keep);
+
+---------- /out/nested-block.js ----------
+{
+  const s_keep = "";
+  console.log(null, null, void 0, void 0, 1234567, 1234567, 123.456, 123.456, s_keep, s_keep);
+}
+
+---------- /out/nested-function.js ----------
+function nested() {
+  const s_keep = "";
+  console.log(null, null, void 0, void 0, 1234567, 1234567, 123.456, 123.456, s_keep, s_keep);
+}
+
+---------- /out/namespace-export.js ----------
+var ns;
+((ns2) => (ns2.y_keep = 2, console.log(1, 1, 2, 2)))(ns ||= {});
+
+---------- /out/comment-before.js ----------
+{
+  //! comment
+  x = [1, 1];
+}
+
+---------- /out/directive-before.js ----------
+function nested() {
+  x = [1, 1];
+}
+
+---------- /out/semicolon-before.js ----------
+x = [1, 1];
+
+---------- /out/debugger-before.js ----------
+{
+  debugger;
+  x = [1, 1];
+}
+
+---------- /out/type-before.js ----------
+x = [1, 1];
+
+---------- /out/exprs-before.js ----------
+function nested() {
+  const x = [, "", {}, 0n, /./, function() {
+  }, () => {
+  }];
+  function foo() {
+    return 1;
+  }
+}
+
+---------- /out/disabled-tdz.js ----------
+foo();
+const x_keep = 1;
+function foo() {
+  return x_keep;
+}
+
+---------- /out/backwards-reference-top-level.js ----------
+const x = y, y = 1;
+console.log(x, x, y, y);
+
+---------- /out/backwards-reference-nested-function.js ----------
+function foo() {
+  const x = y, y = 1;
+  console.log(x, x, y, y);
+}
+
+================================================================================
+TestCrossModuleConstantFolding
+---------- /out/enum-entry.js ----------
+// enum-entry.ts
+console.log([
+  6,
+  -6,
+  -7,
+  !6 /* b */,
+  typeof 6 /* b */
+], [
+  3 /* a */ + 6 /* b */,
+  3 /* a */ - 6 /* b */,
+  3 /* a */ * 6 /* b */,
+  3 /* a */ / 6 /* b */,
+  3 /* a */ % 6 /* b */,
+  3 /* a */ ** 6 /* b */
+], [
+  3 /* a */ < 6 /* b */,
+  3 /* a */ > 6 /* b */,
+  3 /* a */ <= 6 /* b */,
+  3 /* a */ >= 6 /* b */,
+  3 /* a */ == 6 /* b */,
+  3 /* a */ != 6 /* b */,
+  3 /* a */ === 6 /* b */,
+  3 /* a */ !== 6 /* b */
+], [
+  6 /* b */ << 1,
+  3,
+  6 /* b */ >>> 1
+], [
+  2,
+  7,
+  5
+], [
+  3 /* a */ && 6 /* b */,
+  3 /* a */ || 6 /* b */,
+  3 /* a */ ?? 6 /* b */
+]);
+
+---------- /out/const-entry.js ----------
+// const-entry.js
+console.log([
+  6,
+  -6,
+  -7,
+  !6,
+  typeof 6
+], [
+  3 + 6,
+  3 - 6,
+  3 * 6,
+  3 / 6,
+  3 % 6,
+  3 ** 6
+], [
+  3 < 6,
+  3 > 6,
+  3 <= 6,
+  3 >= 6,
+  3 == 6,
+  3 != 6,
+  3 === 6,
+  3 !== 6
+], [
+  6 << 1,
+  3,
+  6 >>> 1
+], [
+  2,
+  7,
+  5
+], [
+  3 && 6,
+  3 || 6,
+  3 ?? 6
+]);
+
+---------- /out/nested-entry.js ----------
+// nested-entry.ts
+console.log({
+  "should be 4": 4,
+  "should be 32": 32
+});
+
+================================================================================
 TestDCEClassStaticBlocks
 ---------- /out.js ----------
 // entry.ts
@@ -35,8 +285,56 @@ var D_keep = class {
 };
 
 ================================================================================
+TestDCETemplateLiteral
+---------- /out/entry.js ----------
+// entry.js
+var alsoKeep;
+var a = `${keep}`;
+var c = `${keep ? 1 : 2n}`;
+var e = `${alsoKeep}`;
+
+================================================================================
 TestDCETypeOf
 ---------- /out.js ----------
+
+================================================================================
+TestDCETypeOfCompareStringGuardCondition
+---------- /out.js ----------
+(() => {
+  // entry.js
+  var keep_1 = typeof x <= "u" ? y : null;
+  var keep_1 = typeof x < "u" ? y : null;
+  var keep_1 = typeof x >= "u" ? null : y;
+  var keep_1 = typeof x > "u" ? null : y;
+  var keep_1 = typeof x <= "u" && y;
+  var keep_1 = typeof x < "u" && y;
+  var keep_1 = typeof x >= "u" || y;
+  var keep_1 = typeof x > "u" || y;
+  var keep_1 = "u" >= typeof x ? y : null;
+  var keep_1 = "u" > typeof x ? y : null;
+  var keep_1 = "u" <= typeof x ? null : y;
+  var keep_1 = "u" < typeof x ? null : y;
+  var keep_1 = "u" >= typeof x && y;
+  var keep_1 = "u" > typeof x && y;
+  var keep_1 = "u" <= typeof x || y;
+  var keep_1 = "u" < typeof x || y;
+  var keep_2 = typeof x <= "u" ? null : x;
+  var keep_2 = typeof x < "u" ? null : x;
+  var keep_2 = typeof x >= "u" ? x : null;
+  var keep_2 = typeof x > "u" ? x : null;
+  var keep_2 = typeof x <= "u" || x;
+  var keep_2 = typeof x < "u" || x;
+  var keep_2 = typeof x >= "u" && x;
+  var keep_2 = typeof x > "u" && x;
+  var keep_2 = "u" >= typeof x ? null : x;
+  var keep_2 = "u" > typeof x ? null : x;
+  var keep_2 = "u" <= typeof x ? x : null;
+  var keep_2 = "u" < typeof x ? x : null;
+  var keep_2 = "u" >= typeof x || x;
+  var keep_2 = "u" > typeof x || x;
+  var keep_2 = "u" <= typeof x && x;
+  var keep_2 = "u" < typeof x && x;
+})();
 
 ================================================================================
 TestDCETypeOfEqualsString
@@ -251,10 +549,344 @@ var require_foo = __commonJS({
 });
 
 // Users/user/project/node_modules/pkg/index.js
-var import_foo = __toModule(require_foo());
+var import_foo = __toESM(require_foo());
 
 // Users/user/project/entry.js
 console.log(import_foo.default);
+
+================================================================================
+TestInlineEmptyFunctionCalls
+---------- /out/empty.js ----------
+// empty.js
+console.log((foo(), bar(), void 0));
+console.log((foo(), void 0));
+console.log((foo(), void 0));
+console.log(void 0);
+console.log(void 0);
+foo(), bar();
+foo();
+foo();
+
+---------- /out/empty-comma.js ----------
+// empty-comma.js
+console.log(foo());
+console.log((foo(), void 0));
+console.log((foo(), void 0));
+for (; void 0; )
+  ;
+foo();
+foo();
+foo();
+
+---------- /out/empty-if-else.js ----------
+// empty-if-else.js
+if (foo) {
+  let bar = baz();
+  bar(), bar();
+}
+
+---------- /out/empty-last.js ----------
+// empty-last.js
+console.log(void 0);
+
+---------- /out/empty-cross-module.js ----------
+// empty-cross-module.js
+console.log(void 0);
+
+---------- /out/empty-first.js ----------
+// empty-first.js
+function keep() {
+  return x;
+}
+console.log(keep());
+keep(foo());
+keep(1);
+
+---------- /out/empty-generator.js ----------
+// empty-generator.js
+function* keep() {
+}
+console.log(keep());
+keep(foo());
+keep(1);
+
+---------- /out/empty-async.js ----------
+// empty-async.js
+async function keep() {
+}
+console.log(keep());
+keep(foo());
+keep(1);
+
+---------- /out/reassign.js ----------
+// reassign.js
+function keep() {
+}
+keep = reassigned;
+console.log(keep());
+keep(foo());
+keep(1);
+
+---------- /out/reassign-inc.js ----------
+// reassign-inc.js
+function keep() {
+}
+keep++;
+console.log(keep(1));
+keep(foo());
+keep(1);
+
+---------- /out/reassign-div.js ----------
+// reassign-div.js
+function keep() {
+}
+keep /= reassigned;
+console.log(keep(1));
+keep(foo());
+keep(1);
+
+---------- /out/reassign-array.js ----------
+// reassign-array.js
+function keep() {
+}
+[keep] = reassigned;
+console.log(keep(1));
+keep(foo());
+keep(1);
+
+---------- /out/reassign-object.js ----------
+// reassign-object.js
+function keep() {
+}
+({ keep } = reassigned);
+console.log(keep(1));
+keep(foo());
+keep(1);
+
+================================================================================
+TestInlineFunctionCallBehaviorChanges
+---------- /out/entry.js ----------
+function empty() {
+}
+function id(x) {
+  return x;
+}
+export let shouldBeWrapped = [
+  (0, foo.bar)(),
+  (0, foo[bar])(),
+  (0, foo?.bar)(),
+  (0, foo?.[bar])(),
+  (0, foo.bar)(),
+  (0, foo[bar])(),
+  (0, foo?.bar)(),
+  (0, foo?.[bar])(),
+  (0, eval)(),
+  (0, eval)?.(),
+  (0, eval)(),
+  (0, eval)?.(),
+  (0, foo.bar)``,
+  (0, foo[bar])``,
+  (0, foo?.bar)``,
+  (0, foo?.[bar])``,
+  (0, foo.bar)``,
+  (0, foo[bar])``,
+  (0, foo?.bar)``,
+  (0, foo?.[bar])``,
+  delete (0, foo),
+  delete (0, foo.bar),
+  delete (0, foo[bar]),
+  delete (0, foo?.bar),
+  delete (0, foo?.[bar]),
+  delete (0, foo),
+  delete (0, foo.bar),
+  delete (0, foo[bar]),
+  delete (0, foo?.bar),
+  delete (0, foo?.[bar]),
+  delete (0, void 0)
+], shouldNotBeWrapped = [
+  foo(),
+  foo(),
+  foo``,
+  foo``
+], shouldNotBeDoubleWrapped = [
+  delete (foo(), bar()),
+  delete (foo(), bar())
+];
+
+================================================================================
+TestInlineFunctionCallForInitDecl
+---------- /out/entry.js ----------
+// entry.js
+for (y = void 0; !1; )
+  ;
+var y;
+for (z = 123; !1; )
+  ;
+var z;
+
+================================================================================
+TestInlineIdentityFunctionCalls
+---------- /out/identity.js ----------
+// identity.js
+console.log(1);
+foo();
+
+---------- /out/identity-last.js ----------
+// identity-last.js
+console.log(1);
+foo();
+
+---------- /out/identity-first.js ----------
+// identity-first.js
+function keep(x) {
+  return [x];
+}
+console.log(keep(1));
+keep(foo());
+keep(1);
+
+---------- /out/identity-generator.js ----------
+// identity-generator.js
+function* keep(x) {
+  return x;
+}
+console.log(keep(1));
+keep(foo());
+keep(1);
+
+---------- /out/identity-async.js ----------
+// identity-async.js
+async function keep(x) {
+  return x;
+}
+console.log(keep(1));
+keep(foo());
+keep(1);
+
+---------- /out/identity-cross-module.js ----------
+// identity-cross-module.js
+console.log(1);
+foo();
+
+---------- /out/identity-no-args.js ----------
+// identity-no-args.js
+function keep(x) {
+  return x;
+}
+console.log(keep());
+keep();
+
+---------- /out/identity-two-args.js ----------
+// identity-two-args.js
+function keep(x) {
+  return x;
+}
+console.log(keep(1, 2));
+keep(1, 2);
+
+---------- /out/reassign.js ----------
+// reassign.js
+function keep(x) {
+  return x;
+}
+keep = reassigned;
+console.log(keep(1));
+keep(foo());
+keep(1);
+
+---------- /out/reassign-inc.js ----------
+// reassign-inc.js
+function keep(x) {
+  return x;
+}
+keep++;
+console.log(keep(1));
+keep(foo());
+keep(1);
+
+---------- /out/reassign-div.js ----------
+// reassign-div.js
+function keep(x) {
+  return x;
+}
+keep /= reassigned;
+console.log(keep(1));
+keep(foo());
+keep(1);
+
+---------- /out/reassign-array.js ----------
+// reassign-array.js
+function keep(x) {
+  return x;
+}
+[keep] = reassigned;
+console.log(keep(1));
+keep(foo());
+keep(1);
+
+---------- /out/reassign-object.js ----------
+// reassign-object.js
+function keep(x) {
+  return x;
+}
+({ keep } = reassigned);
+console.log(keep(1));
+keep(foo());
+keep(1);
+
+---------- /out/not-identity-two-args.js ----------
+// not-identity-two-args.js
+function keep(x, y) {
+  return x;
+}
+console.log(keep(1));
+keep(foo());
+keep(1);
+
+---------- /out/not-identity-default.js ----------
+// not-identity-default.js
+function keep(x = foo()) {
+  return x;
+}
+console.log(keep(1));
+keep(foo());
+keep(1);
+
+---------- /out/not-identity-array.js ----------
+// not-identity-array.js
+function keep([x]) {
+  return x;
+}
+console.log(keep(1));
+keep(foo());
+keep(1);
+
+---------- /out/not-identity-object.js ----------
+// not-identity-object.js
+function keep({ x }) {
+  return x;
+}
+console.log(keep(1));
+keep(foo());
+keep(1);
+
+---------- /out/not-identity-rest.js ----------
+// not-identity-rest.js
+function keep(...x) {
+  return x;
+}
+console.log(keep(1));
+keep(foo());
+keep(1);
+
+---------- /out/not-identity-return.js ----------
+// not-identity-return.js
+function keep(x) {
+  return [x];
+}
+console.log(keep(1));
+keep(foo());
+keep(1);
 
 ================================================================================
 TestJSONLoaderRemoveUnused
@@ -509,7 +1141,7 @@ var require_demo_pkg = __commonJS({
 });
 
 // Users/user/project/src/entry.js
-var import_demo_pkg = __toModule(require_demo_pkg());
+var import_demo_pkg = __toESM(require_demo_pkg());
 console.log(import_demo_pkg.foo);
 
 ================================================================================
@@ -534,7 +1166,7 @@ var require_demo_pkg = __commonJS({
 });
 
 // Users/user/project/src/entry.js
-var ns = __toModule(require_demo_pkg());
+var ns = __toESM(require_demo_pkg());
 console.log(ns);
 
 ================================================================================
@@ -662,7 +1294,7 @@ var require_demo_pkg = __commonJS({
 });
 
 // Users/user/project/src/entry.js
-var import_demo_pkg = __toModule(require_demo_pkg());
+var import_demo_pkg = __toESM(require_demo_pkg());
 console.log("unused import");
 
 ================================================================================
@@ -848,7 +1480,56 @@ var init_cjs = __esm({
 
 // entry.js
 init_lib();
-console.log(keep1(), (init_cjs(), cjs_exports));
+console.log(keep1(), (init_cjs(), __toCommonJS(cjs_exports)));
+
+================================================================================
+TestTreeShakingLoweredClassStaticField
+---------- /out/entry.js ----------
+// entry.js
+var KeepMe1 = class {
+};
+__publicField(KeepMe1, "x", "x");
+__publicField(KeepMe1, "y", sideEffects());
+__publicField(KeepMe1, "z", "z");
+var KeepMe2 = class {
+};
+__publicField(KeepMe2, "x", "x");
+__publicField(KeepMe2, "y", "y");
+__publicField(KeepMe2, "z", "z");
+new KeepMe2();
+
+================================================================================
+TestTreeShakingLoweredClassStaticFieldAssignment
+---------- /out/entry.js ----------
+// entry.ts
+var KeepMe1 = class {
+};
+KeepMe1.x = "x";
+KeepMe1.y = "y";
+KeepMe1.z = "z";
+var KeepMe2 = class {
+};
+KeepMe2.x = "x";
+KeepMe2.y = sideEffects();
+KeepMe2.z = "z";
+var KeepMe3 = class {
+};
+KeepMe3.x = "x";
+KeepMe3.y = "y";
+KeepMe3.z = "z";
+new KeepMe3();
+
+================================================================================
+TestTreeShakingLoweredClassStaticFieldMinified
+---------- /out/entry.js ----------
+// entry.js
+var KeepMe1 = class {
+};
+__publicField(KeepMe1, "x", "x"), __publicField(KeepMe1, "y", sideEffects()), __publicField(KeepMe1, "z", "z");
+var KeepMe2 = class {
+};
+__publicField(KeepMe2, "x", "x"), __publicField(KeepMe2, "y", "y"), __publicField(KeepMe2, "z", "z");
+new KeepMe2();
 
 ================================================================================
 TestTreeShakingNoBundleCJS

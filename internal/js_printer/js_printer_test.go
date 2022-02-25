@@ -39,8 +39,8 @@ func expectPrintedCommon(t *testing.T, name string, contents string, expected st
 		r := renamer.NewNoOpRenamer(symbols)
 		js := Print(tree, symbols, r, Options{
 			ASCIIOnly:           options.ASCIIOnly,
-			MangleSyntax:        options.MangleSyntax,
-			RemoveWhitespace:    options.RemoveWhitespace,
+			MinifySyntax:        options.MinifySyntax,
+			MinifyWhitespace:    options.MinifyWhitespace,
 			UnsupportedFeatures: options.UnsupportedJSFeatures,
 		}).JS
 		test.AssertEqualWithDiff(t, string(js), expected)
@@ -55,22 +55,22 @@ func expectPrinted(t *testing.T, contents string, expected string) {
 func expectPrintedMinify(t *testing.T, contents string, expected string) {
 	t.Helper()
 	expectPrintedCommon(t, contents+" [minified]", contents, expected, config.Options{
-		RemoveWhitespace: true,
+		MinifyWhitespace: true,
 	})
 }
 
 func expectPrintedMangle(t *testing.T, contents string, expected string) {
 	t.Helper()
 	expectPrintedCommon(t, contents+" [mangled]", contents, expected, config.Options{
-		MangleSyntax: true,
+		MinifySyntax: true,
 	})
 }
 
 func expectPrintedMangleMinify(t *testing.T, contents string, expected string) {
 	t.Helper()
 	expectPrintedCommon(t, contents+" [mangled, minified]", contents, expected, config.Options{
-		MangleSyntax:     true,
-		RemoveWhitespace: true,
+		MinifySyntax:     true,
+		MinifyWhitespace: true,
 	})
 }
 
@@ -84,7 +84,7 @@ func expectPrintedASCII(t *testing.T, contents string, expected string) {
 func expectPrintedMinifyASCII(t *testing.T, contents string, expected string) {
 	t.Helper()
 	expectPrintedCommon(t, contents+" [ascii]", contents, expected, config.Options{
-		RemoveWhitespace: true,
+		MinifyWhitespace: true,
 		ASCIIOnly:        true,
 	})
 }
@@ -104,7 +104,7 @@ func expectPrintedTargetMinify(t *testing.T, esVersion int, contents string, exp
 		UnsupportedJSFeatures: compat.UnsupportedJSFeatures(map[compat.Engine][]int{
 			compat.ES: {esVersion},
 		}),
-		RemoveWhitespace: true,
+		MinifyWhitespace: true,
 	})
 }
 
@@ -114,7 +114,7 @@ func expectPrintedTargetMangle(t *testing.T, esVersion int, contents string, exp
 		UnsupportedJSFeatures: compat.UnsupportedJSFeatures(map[compat.Engine][]int{
 			compat.ES: {esVersion},
 		}),
-		MangleSyntax: true,
+		MinifySyntax: true,
 	})
 }
 
@@ -156,7 +156,7 @@ func expectPrintedJSXMinify(t *testing.T, contents string, expected string) {
 			Parse:    true,
 			Preserve: true,
 		},
-		RemoveWhitespace: true,
+		MinifyWhitespace: true,
 	})
 }
 
@@ -391,6 +391,8 @@ func TestString(t *testing.T) {
 	expectPrinted(t, "let x = '\\01'", "let x = \"\x01\";\n")
 	expectPrinted(t, "let x = '\x10'", "let x = \"\x10\";\n")
 	expectPrinted(t, "let x = '\\x10'", "let x = \"\x10\";\n")
+	expectPrinted(t, "let x = '\x1B'", "let x = \"\\x1B\";\n")
+	expectPrinted(t, "let x = '\\x1B'", "let x = \"\\x1B\";\n")
 	expectPrinted(t, "let x = '\uABCD'", "let x = \"\uABCD\";\n")
 	expectPrinted(t, "let x = '\\uABCD'", "let x = \"\uABCD\";\n")
 	expectPrinted(t, "let x = '\U000123AB'", "let x = \"\U000123AB\";\n")
@@ -980,8 +982,6 @@ func TestInfinity(t *testing.T) {
 	expectPrintedMangle(t, "x = (-Infinity).toString", "x = (-1 / 0).toString;\n")
 	expectPrintedMangle(t, "x = Infinity ** 2", "x = (1 / 0) ** 2;\n")
 	expectPrintedMangle(t, "x = (-Infinity) ** 2", "x = (-1 / 0) ** 2;\n")
-	expectPrintedMangle(t, "x = ~Infinity", "x = ~(1 / 0);\n")
-	expectPrintedMangle(t, "x = ~-Infinity", "x = ~(-1 / 0);\n")
 	expectPrintedMangle(t, "x = Infinity * y", "x = 1 / 0 * y;\n")
 	expectPrintedMangle(t, "x = Infinity / y", "x = 1 / 0 / y;\n")
 	expectPrintedMangle(t, "x = y * Infinity", "x = y * (1 / 0);\n")
@@ -994,8 +994,6 @@ func TestInfinity(t *testing.T) {
 	expectPrintedMangleMinify(t, "x = (-Infinity).toString", "x=(-1/0).toString;")
 	expectPrintedMangleMinify(t, "x = Infinity ** 2", "x=(1/0)**2;")
 	expectPrintedMangleMinify(t, "x = (-Infinity) ** 2", "x=(-1/0)**2;")
-	expectPrintedMangleMinify(t, "x = ~Infinity", "x=~(1/0);")
-	expectPrintedMangleMinify(t, "x = ~-Infinity", "x=~(-1/0);")
 	expectPrintedMangleMinify(t, "x = Infinity * y", "x=1/0*y;")
 	expectPrintedMangleMinify(t, "x = Infinity / y", "x=1/0/y;")
 	expectPrintedMangleMinify(t, "x = y * Infinity", "x=y*(1/0);")

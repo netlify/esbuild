@@ -826,9 +826,9 @@ var knownGlobals = [][]string{
 }
 
 type DefineArgs struct {
-	Loc             logger.Loc
 	FindSymbol      func(logger.Loc, string) js_ast.Ref
 	SymbolForDefine func(int) js_ast.Ref
+	Loc             logger.Loc
 }
 
 type DefineFunc func(DefineArgs) js_ast.E
@@ -845,6 +845,12 @@ type DefineData struct {
 	// example, a bare call to "Object()" can be removed because it does not
 	// have any observable side effects.
 	CallCanBeUnwrappedIfUnused bool
+
+	// If true, the user has indicated that every direct calls to a property on
+	// this object and all of that call's arguments are to be removed from the
+	// output, even when the arguments have side effects. This is used to
+	// implement the "--drop:console" flag.
+	MethodCallsMustBeReplacedWithUndefined bool
 }
 
 func mergeDefineData(old DefineData, new DefineData) DefineData {
@@ -858,8 +864,8 @@ func mergeDefineData(old DefineData, new DefineData) DefineData {
 }
 
 type DotDefine struct {
-	Parts []string
 	Data  DefineData
+	Parts []string
 }
 
 type ProcessedDefines struct {

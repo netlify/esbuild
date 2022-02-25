@@ -12,7 +12,7 @@ const nodeTarget = 'node10'; // See: https://nodejs.org/en/about/releases/
 const umdBrowserTarget = 'es2015'; // Transpiles "async"
 const esmBrowserTarget = 'es2017'; // Preserves "async"
 
-exports.buildNativeLib = (esbuildPath) => {
+const buildNeutralLib = (esbuildPath) => {
   const libDir = path.join(npmDir, 'lib')
   const binDir = path.join(npmDir, 'bin')
   fs.mkdirSync(libDir, { recursive: true })
@@ -59,18 +59,18 @@ exports.buildNativeLib = (esbuildPath) => {
   fs.writeFileSync(path.join(libDir, 'main.d.ts'), types_ts)
 
   // Get supported platforms
-  const platforms = {}
-  new Function('exports', 'require', childProcess.execFileSync(esbuildPath, [
+  const platforms = { exports: {} }
+  new Function('module', 'exports', 'require', childProcess.execFileSync(esbuildPath, [
     path.join(repoDir, 'lib', 'npm', 'node-platform.ts'),
     '--bundle',
     '--target=' + nodeTarget,
     '--external:esbuild',
     '--platform=node',
     '--log-level=warning',
-  ], { cwd: repoDir }))(platforms, require)
+  ], { cwd: repoDir }))(platforms, platforms.exports, require)
   const optionalDependencies = Object.fromEntries(Object.values({
-    ...platforms.knownWindowsPackages,
-    ...platforms.knownUnixlikePackages,
+    ...platforms.exports.knownWindowsPackages,
+    ...platforms.exports.knownUnixlikePackages,
   }).sort().map(x => [x, version]))
 
   // Update "npm/esbuild/package.json"
@@ -99,12 +99,13 @@ exports.buildWasmLib = async (esbuildPath) => {
   fs.mkdirSync(esmDir, { recursive: true })
 
   // Generate "npm/esbuild-wasm/wasm_exec.js"
-  const toReplace = 'global.fs = fs;';
   const GOROOT = childProcess.execFileSync('go', ['env', 'GOROOT']).toString().trim();
   let wasm_exec_js = fs.readFileSync(path.join(GOROOT, 'misc', 'wasm', 'wasm_exec.js'), 'utf8');
-  let index = wasm_exec_js.indexOf(toReplace);
-  if (index === -1) throw new Error(`Failed to find ${JSON.stringify(toReplace)} in Go JS shim code`);
-  wasm_exec_js = wasm_exec_js.replace(toReplace, `
+  const replace = (toReplace, replacement) => {
+    if (wasm_exec_js.indexOf(toReplace) === -1) throw new Error(`Failed to find ${JSON.stringify(toReplace)} in Go JS shim code`);
+    wasm_exec_js = wasm_exec_js.replace(toReplace, replacement);
+  }
+  replace('global.fs = fs;', `
     global.fs = Object.assign({}, fs, {
       // Hack around a Unicode bug in node: https://github.com/nodejs/node/issues/24550
       write(fd, buf, offset, length, position, callback) {
@@ -129,6 +130,10 @@ exports.buildWasmLib = async (esbuildPath) => {
         fs.write(fd, buf, offset, length, position, callback);
       },
     });
+  `);
+  replace('// End of polyfills for common API.', `
+    // Make sure Go sees the shadowed "fs" global
+    const { fs } = global;
   `);
   fs.writeFileSync(path.join(npmWasmDir, 'wasm_exec.js'), wasm_exec_js);
 
@@ -180,8 +185,8 @@ exports.buildWasmLib = async (esbuildPath) => {
     }
 
     // Generate "npm/esbuild-wasm/lib/browser.*"
-    const umdPrefix = `(exports=>{`
-    const umdSuffix = `})(typeof exports==="object"?exports:(typeof self!=="undefined"?self:this).esbuild={});`
+    const umdPrefix = `(module=>{`
+    const umdSuffix = `})(typeof module==="object"?module:{set exports(x){(typeof self!=="undefined"?self:this).esbuild=x}});`
     const browserCJS = childProcess.execFileSync(esbuildPath, [
       path.join(repoDir, 'lib', 'npm', 'browser.ts'),
       '--bundle',
@@ -231,13 +236,13 @@ module.exports = ${JSON.stringify(exit0Map, null, 2)};
   await goBuildPromise;
 }
 
-exports.buildDenoLib = (esbuildPath) => {
+const buildDenoLib = (esbuildPath) => {
   // Generate "deno/esbuild/mod.js"
   childProcess.execFileSync(esbuildPath, [
     path.join(repoDir, 'lib', 'deno', 'mod.ts'),
     '--bundle',
     '--outfile=' + path.join(denoDir, 'mod.js'),
-    '--target=es2020',
+    '--target=esnext',
     '--define:ESBUILD_VERSION=' + JSON.stringify(version),
     '--platform=neutral',
     '--log-level=warning',
@@ -291,10 +296,19 @@ exports.removeRecursiveSync = path => {
   }
 }
 
+const updateVersionPackageJSON = pathToPackageJSON => {
+  const version = fs.readFileSync(path.join(path.dirname(__dirname), 'version.txt'), 'utf8').trim()
+  const json = JSON.parse(fs.readFileSync(pathToPackageJSON, 'utf8'))
+  if (json.version !== version) {
+    json.version = version
+    fs.writeFileSync(pathToPackageJSON, JSON.stringify(json, null, 2) + '\n')
+  }
+}
+
 exports.installForTests = () => {
   // Build the "esbuild" binary and library
   const esbuildPath = exports.buildBinary()
-  exports.buildNativeLib(esbuildPath)
+  buildNeutralLib(esbuildPath)
 
   // Install the "esbuild" package to a temporary directory. On Windows, it's
   // sometimes randomly impossible to delete this installation directory. My
@@ -314,8 +328,19 @@ exports.installForTests = () => {
   // Evaluate the code
   const ESBUILD_PACKAGE_PATH = path.join(installDir, 'node_modules', '@netlify', 'esbuild')
   const mod = require(ESBUILD_PACKAGE_PATH)
-  mod.ESBUILD_PACKAGE_PATH = ESBUILD_PACKAGE_PATH
+  Object.defineProperty(mod, 'ESBUILD_PACKAGE_PATH', { value: ESBUILD_PACKAGE_PATH })
   return mod
+}
+
+const updateVersionGo = () => {
+  const version_txt = fs.readFileSync(path.join(repoDir, 'version.txt'), 'utf8').trim()
+  const version_go = `package main\n\nconst esbuildVersion = "${version_txt}"\n`
+  const version_go_path = path.join(repoDir, 'cmd', 'esbuild', 'version.go')
+
+  // Update this atomically to avoid issues with this being overwritten during use
+  const temp_path = version_go_path + Math.random().toString(36).slice(1)
+  fs.writeFileSync(temp_path, version_go)
+  fs.renameSync(temp_path, version_go_path)
 }
 
 // This is helpful for ES6 modules which don't have access to __dirname
@@ -324,6 +349,9 @@ exports.dirname = __dirname
 // The main Makefile invokes this script before publishing
 if (require.main === module) {
   if (process.argv.indexOf('--wasm') >= 0) exports.buildWasmLib(process.argv[2])
-  else if (process.argv.indexOf('--deno') >= 0) exports.buildDenoLib(process.argv[2])
-  else exports.buildNativeLib(process.argv[2])
+  else if (process.argv.indexOf('--deno') >= 0) buildDenoLib(process.argv[2])
+  else if (process.argv.indexOf('--version') >= 0) updateVersionPackageJSON(process.argv[2])
+  else if (process.argv.indexOf('--neutral') >= 0) buildNeutralLib(process.argv[2])
+  else if (process.argv.indexOf('--update-version-go') >= 0) updateVersionGo()
+  else throw new Error('Expected a flag')
 }

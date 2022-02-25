@@ -10,27 +10,35 @@ esbuild: cmd/esbuild/version.go cmd/esbuild/*.go pkg/*/*.go internal/*/*.go go.m
 	CGO_ENABLED=0 go build $(GO_FLAGS) ./cmd/esbuild
 
 test:
-	make -j6 test-common
+	@$(MAKE) --no-print-directory -j6 test-common
 
 # These tests are for development
 test-common: test-go vet-go no-filepath verify-source-map end-to-end-tests js-api-tests plugin-tests register-test node-unref-tests
 
 # These tests are for release (the extra tests are not included in "test" because they are pretty slow)
 test-all:
-	make -j6 test-common test-deno ts-type-tests test-wasm-node test-wasm-browser lib-typecheck
-
-# This includes tests of some 3rd-party libraries, which can be very slow
-test-prepublish: check-go-version test-all test-preact-splitting test-sucrase bench-rome-esbuild bench-readmin-esbuild test-esprima test-rollup
+	@$(MAKE) --no-print-directory -j6 test-common test-deno ts-type-tests test-wasm-node test-wasm-browser lib-typecheck
 
 check-go-version:
-	@go version | grep ' go1\.17\.2 ' || (echo 'Please install Go version 1.17.2' && false)
+	@go version | grep ' go1\.17\.7 ' || (echo 'Please install Go version 1.17.7' && false)
 
-# This "ESBUILD_RACE" variable exists at the request of a user on GitHub who
-# wants to run "make test" on an unsupported version of macOS (version 10.9).
-# Go's race detector does not run correctly on that version. With this flag
-# you can run "ESBUILD_RACE= make test" to disable the race detector.
-ESBUILD_RACE ?= -race
-
+# Note: Don't add "-race" here by default. The Go race detector is currently
+# only supported on the following configurations:
+#
+#   darwin/amd64
+#   darwin/arm64
+#   freebsd/amd64,
+#   linux/amd64
+#   linux/arm64
+#   linux/ppc64le
+#   netbsd/amd64
+#   windows/amd64
+#
+# Also, it isn't necessarily supported on older OS versions even if the OS/CPU
+# combination is supported, such as on macOS 10.9. If you want to test using
+# the race detector, you can manually add it using the ESBUILD_RACE environment
+# variable like this: "ESBUILD_RACE=-race make test". Or you can permanently
+# enable it by adding "export ESBUILD_RACE=-race" to your shell profile.
 test-go:
 	go test $(ESBUILD_RACE) ./internal/...
 
@@ -60,19 +68,19 @@ test-deno: esbuild platform-deno
 	ESBUILD_BINARY_PATH="$(shell pwd)/esbuild" deno test --allow-run --allow-env --allow-net --allow-read --allow-write --no-check scripts/deno-tests.js
 
 register-test: cmd/esbuild/version.go | scripts/node_modules
-	cd npm/esbuild && npm version "$(ESBUILD_VERSION)" --allow-same-version
+	node scripts/esbuild.js npm/esbuild/package.json --version
 	node scripts/register-test.js
 
 verify-source-map: cmd/esbuild/version.go | scripts/node_modules
-	cd npm/esbuild && npm version "$(ESBUILD_VERSION)" --allow-same-version
+	node scripts/esbuild.js npm/esbuild/package.json --version
 	node scripts/verify-source-map.js
 
 end-to-end-tests: cmd/esbuild/version.go | scripts/node_modules
-	cd npm/esbuild && npm version "$(ESBUILD_VERSION)" --allow-same-version
+	node scripts/esbuild.js npm/esbuild/package.json --version
 	node scripts/end-to-end-tests.js
 
 js-api-tests: cmd/esbuild/version.go | scripts/node_modules
-	cd npm/esbuild && npm version "$(ESBUILD_VERSION)" --allow-same-version
+	node scripts/esbuild.js npm/esbuild/package.json --version
 	node scripts/js-api-tests.js
 
 plugin-tests: cmd/esbuild/version.go | scripts/node_modules
@@ -85,7 +93,8 @@ node-unref-tests: | scripts/node_modules
 	node scripts/node-unref-tests.js
 
 lib-typecheck: | lib/node_modules
-	cd lib && node_modules/.bin/tsc -noEmit -p .
+	cd lib && node_modules/.bin/tsc -noEmit -p tsconfig.json
+	cd lib && node_modules/.bin/tsc -noEmit -p tsconfig-deno.json
 
 # End-to-end tests
 test-e2e: test-e2e-npm test-e2e-pnpm test-e2e-yarn-berry
@@ -193,9 +202,7 @@ test-e2e-yarn-berry:
 	rm -fr e2e-yb
 
 cmd/esbuild/version.go: version.txt
-	# Update this atomically to avoid issues with this being overwritten during use
-	node -e 'console.log(`package main\n\nconst esbuildVersion = "$(ESBUILD_VERSION)"`)' > cmd/esbuild/version.go.txt
-	mv cmd/esbuild/version.go.txt cmd/esbuild/version.go
+	node scripts/esbuild.js --update-version-go
 
 wasm-napi-exit0-darwin:
 	node -e 'console.log(`#include <unistd.h>\nvoid* napi_register_module_v1(void* a, void* b) { _exit(0); }`)' \
@@ -217,150 +224,172 @@ wasm-napi-exit0-windows:
 	main.bat
 	rm -f main.*
 
-platform-all: cmd/esbuild/version.go
-	make -j4 \
-		platform-windows \
-		platform-windows-32 \
-		platform-windows-arm64 \
+platform-all:
+	@$(MAKE) --no-print-directory -j4 \
 		platform-android-arm64 \
 		platform-darwin \
 		platform-darwin-arm64 \
+		platform-deno \
 		platform-freebsd \
 		platform-freebsd-arm64 \
-		platform-netbsd \
-		platform-openbsd \
 		platform-linux \
 		platform-linux-32 \
 		platform-linux-arm \
 		platform-linux-arm64 \
 		platform-linux-mips64le \
 		platform-linux-ppc64le \
+		platform-linux-riscv64 \
+		platform-linux-s390x \
+		platform-netbsd \
+		platform-neutral \
+		platform-openbsd \
 		platform-sunos \
 		platform-wasm \
-		platform-neutral \
-		platform-deno
+		platform-windows \
+		platform-windows-32 \
+		platform-windows-arm64
 
-platform-windows:
-	cd npm/esbuild-windows-64 && npm version "$(ESBUILD_VERSION)" --allow-same-version
+platform-windows: cmd/esbuild/version.go
+	node scripts/esbuild.js npm/esbuild-windows-64/package.json --version
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(GO_FLAGS) -o npm/esbuild-windows-64/esbuild.exe ./cmd/esbuild
 
-platform-windows-32:
-	cd npm/esbuild-windows-32 && npm version "$(ESBUILD_VERSION)" --allow-same-version
+platform-windows-32: cmd/esbuild/version.go
+	node scripts/esbuild.js npm/esbuild-windows-32/package.json --version
 	CGO_ENABLED=0 GOOS=windows GOARCH=386 go build $(GO_FLAGS) -o npm/esbuild-windows-32/esbuild.exe ./cmd/esbuild
 
-platform-windows-arm64:
-	cd npm/esbuild-windows-arm64 && npm version "$(ESBUILD_VERSION)" --allow-same-version
+platform-windows-arm64: cmd/esbuild/version.go
+	node scripts/esbuild.js npm/esbuild-windows-arm64/package.json --version
 	CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build $(GO_FLAGS) -o npm/esbuild-windows-arm64/esbuild.exe ./cmd/esbuild
 
-platform-unixlike:
-	test -n "$(GOOS)" && test -n "$(GOARCH)" && test -n "$(NPMDIR)"
-	mkdir -p "$(NPMDIR)/bin"
-	cd "$(NPMDIR)" && npm version "$(ESBUILD_VERSION)" --allow-same-version
+platform-unixlike: cmd/esbuild/version.go
+	@test -n "$(GOOS)" || (echo "The environment variable GOOS must be provided" && false)
+	@test -n "$(GOARCH)" || (echo "The environment variable GOARCH must be provided" && false)
+	@test -n "$(NPMDIR)" || (echo "The environment variable NPMDIR must be provided" && false)
+	node scripts/esbuild.js "$(NPMDIR)/package.json" --version
 	CGO_ENABLED=0 GOOS="$(GOOS)" GOARCH="$(GOARCH)" go build $(GO_FLAGS) -o "$(NPMDIR)/bin/esbuild" ./cmd/esbuild
 
 platform-android-arm64:
-	make GOOS=android GOARCH=arm64 NPMDIR=npm/esbuild-android-arm64 platform-unixlike
+	@$(MAKE) --no-print-directory GOOS=android GOARCH=arm64 NPMDIR=npm/esbuild-android-arm64 platform-unixlike
 
 platform-darwin:
-	make GOOS=darwin GOARCH=amd64 NPMDIR=npm/esbuild-darwin-64 platform-unixlike
+	@$(MAKE) --no-print-directory GOOS=darwin GOARCH=amd64 NPMDIR=npm/esbuild-darwin-64 platform-unixlike
 
 platform-darwin-arm64:
-	make GOOS=darwin GOARCH=arm64 NPMDIR=npm/esbuild-darwin-arm64 platform-unixlike
+	@$(MAKE) --no-print-directory GOOS=darwin GOARCH=arm64 NPMDIR=npm/esbuild-darwin-arm64 platform-unixlike
 
 platform-freebsd:
-	make GOOS=freebsd GOARCH=amd64 NPMDIR=npm/esbuild-freebsd-64 platform-unixlike
+	@$(MAKE) --no-print-directory GOOS=freebsd GOARCH=amd64 NPMDIR=npm/esbuild-freebsd-64 platform-unixlike
 
 platform-freebsd-arm64:
-	make GOOS=freebsd GOARCH=arm64 NPMDIR=npm/esbuild-freebsd-arm64 platform-unixlike
+	@$(MAKE) --no-print-directory GOOS=freebsd GOARCH=arm64 NPMDIR=npm/esbuild-freebsd-arm64 platform-unixlike
 
 platform-netbsd:
-	make GOOS=netbsd GOARCH=amd64 NPMDIR=npm/esbuild-netbsd-64 platform-unixlike
+	@$(MAKE) --no-print-directory GOOS=netbsd GOARCH=amd64 NPMDIR=npm/esbuild-netbsd-64 platform-unixlike
 
 platform-openbsd:
-	make GOOS=openbsd GOARCH=amd64 NPMDIR=npm/esbuild-openbsd-64 platform-unixlike
+	@$(MAKE) --no-print-directory GOOS=openbsd GOARCH=amd64 NPMDIR=npm/esbuild-openbsd-64 platform-unixlike
 
 platform-linux:
-	make GOOS=linux GOARCH=amd64 NPMDIR=npm/esbuild-linux-64 platform-unixlike
+	@$(MAKE) --no-print-directory GOOS=linux GOARCH=amd64 NPMDIR=npm/esbuild-linux-64 platform-unixlike
 
 platform-linux-32:
-	make GOOS=linux GOARCH=386 NPMDIR=npm/esbuild-linux-32 platform-unixlike
+	@$(MAKE) --no-print-directory GOOS=linux GOARCH=386 NPMDIR=npm/esbuild-linux-32 platform-unixlike
 
 platform-linux-arm:
-	make GOOS=linux GOARCH=arm NPMDIR=npm/esbuild-linux-arm platform-unixlike
+	@$(MAKE) --no-print-directory GOOS=linux GOARCH=arm NPMDIR=npm/esbuild-linux-arm platform-unixlike
 
 platform-linux-arm64:
-	make GOOS=linux GOARCH=arm64 NPMDIR=npm/esbuild-linux-arm64 platform-unixlike
+	@$(MAKE) --no-print-directory GOOS=linux GOARCH=arm64 NPMDIR=npm/esbuild-linux-arm64 platform-unixlike
 
 platform-linux-mips64le:
-	make GOOS=linux GOARCH=mips64le NPMDIR=npm/esbuild-linux-mips64le platform-unixlike
+	@$(MAKE) --no-print-directory GOOS=linux GOARCH=mips64le NPMDIR=npm/esbuild-linux-mips64le platform-unixlike
 
 platform-linux-ppc64le:
-	make GOOS=linux GOARCH=ppc64le NPMDIR=npm/esbuild-linux-ppc64le platform-unixlike
+	@$(MAKE) --no-print-directory GOOS=linux GOARCH=ppc64le NPMDIR=npm/esbuild-linux-ppc64le platform-unixlike
+
+platform-linux-riscv64:
+	@$(MAKE) --no-print-directory GOOS=linux GOARCH=riscv64 NPMDIR=npm/esbuild-linux-riscv64 platform-unixlike
+
+platform-linux-s390x:
+	@$(MAKE) --no-print-directory GOOS=linux GOARCH=s390x NPMDIR=npm/esbuild-linux-s390x platform-unixlike
 
 platform-sunos:
-	make GOOS=illumos GOARCH=amd64 NPMDIR=npm/esbuild-sunos-64 platform-unixlike
+	@$(MAKE) --no-print-directory GOOS=illumos GOARCH=amd64 NPMDIR=npm/esbuild-sunos-64 platform-unixlike
 
-platform-wasm: esbuild | scripts/node_modules
-	cd npm/esbuild-wasm && npm version "$(ESBUILD_VERSION)" --allow-same-version
+platform-wasm: esbuild
+	node scripts/esbuild.js npm/esbuild-wasm/package.json --version
 	node scripts/esbuild.js ./esbuild --wasm
 
-platform-neutral: esbuild lib-typecheck | scripts/node_modules
-	cd npm/esbuild && npm version "$(ESBUILD_VERSION)" --allow-same-version
-	node scripts/esbuild.js ./esbuild
+platform-neutral: esbuild
+	node scripts/esbuild.js npm/esbuild/package.json --version
+	node scripts/esbuild.js ./esbuild --neutral
 
-platform-deno: esbuild lib-typecheck | scripts/node_modules
+platform-deno: esbuild
 	node scripts/esbuild.js ./esbuild --deno
 
-test-otp:
-	test -n "$(OTP)" && echo publish --otp="$(OTP)"
-
-publish-all: cmd/esbuild/version.go test-prepublish
-	@test netlify = "`git rev-parse --abbrev-ref HEAD`" || (echo "Refusing to publish from non-master branch `git rev-parse --abbrev-ref HEAD`" && false)
+publish-all: check-go-version
+	@npm --version > /dev/null || (echo "The 'npm' command must be in your path to publish" && false)
+	@echo "Checking for uncommitted/untracked changes..." && test -z "`git status --porcelain | grep -vE 'M (CHANGELOG\.md|version\.txt)'`" || \
+		(echo "Refusing to publish with these uncommitted/untracked changes:" && \
+		git status --porcelain | grep -vE 'M (CHANGELOG\.md|version\.txt)' && false)
+	@echo "Checking for master branch..." && test netlify = "`git rev-parse --abbrev-ref HEAD`" || \
+		(echo "Refusing to publish from non-master branch `git rev-parse --abbrev-ref HEAD`" && false)
 	@echo "Checking for unpushed commits..." && git fetch
 	@test "" = "`git cherry`" || (echo "Refusing to publish with unpushed commits" && false)
+
+	# Prebuild now to prime go's compile cache and avoid timing issues later
+	@$(MAKE) --no-print-directory platform-all
+
+	# Commit now before publishing so git is clean for this: https://github.com/golang/go/issues/37475
+	# Note: If this fails, then the version number was likely not incremented before running this command
+	git commit -am "publish $(ESBUILD_VERSION) to npm"
+	git tag "v$(ESBUILD_VERSION)"
+	@test -z "`git status --porcelain`" || (echo "Aborting because git is somehow unclean after a commit" && false)
+
+	# Make sure the npm directory is pristine (including .gitignored files) since it will be published
 	rm -fr npm && git checkout npm
 
 	@echo Enter one-time password:
-	@read OTP && OTP="$$OTP" make -j4 \
+	@read OTP && OTP="$$OTP" $(MAKE) --no-print-directory -j4 \
 		publish-windows \
 		publish-windows-32 \
 		publish-windows-arm64
 
 	@echo Enter one-time password:
-	@read OTP && OTP="$$OTP" make -j4 \
+	@read OTP && OTP="$$OTP" $(MAKE) --no-print-directory -j4 \
 		publish-freebsd \
 		publish-freebsd-arm64 \
 		publish-openbsd \
 		publish-netbsd
 
 	@echo Enter one-time password:
-	@read OTP && OTP="$$OTP" $(MAKE) -j4 \
-		publish-sunos \
+	@read OTP && OTP="$$OTP" $(MAKE) --no-print-directory -j4 \
+		publish-android-arm64 \
 		publish-darwin \
-		publish-darwin-arm64
+		publish-darwin-arm64 \
+		publish-sunos
 
 	@echo Enter one-time password:
-	@read OTP && OTP="$$OTP" make -j4 \
-		publish-android-arm64 \
+	@read OTP && OTP="$$OTP" $(MAKE) --no-print-directory -j4 \
 		publish-linux \
 		publish-linux-32 \
-		publish-linux-arm
+		publish-linux-arm \
+		publish-linux-riscv64
 
 	@echo Enter one-time password:
-	@read OTP && OTP="$$OTP" make -j4 \
+	@read OTP && OTP="$$OTP" $(MAKE) --no-print-directory -j4 \
 		publish-linux-arm64 \
 		publish-linux-mips64le \
-		publish-linux-ppc64le
+		publish-linux-ppc64le \
+		publish-linux-s390x
 
 	# Do these last to avoid race conditions
 	@echo Enter one-time password:
-	@read OTP && OTP="$$OTP" make -j4 \
+	@read OTP && OTP="$$OTP" $(MAKE) --no-print-directory -j4 \
 		publish-neutral \
 		publish-deno \
 		publish-wasm
 
-	git commit -am "publish $(ESBUILD_VERSION) to npm"
-	git tag "v$(ESBUILD_VERSION)"
 	git push origin master "v$(ESBUILD_VERSION)"
 
 publish-windows: platform-windows
@@ -411,6 +440,12 @@ publish-linux-mips64le: platform-linux-mips64le
 publish-linux-ppc64le: platform-linux-ppc64le
 	test -n "$(OTP)" && cd npm/esbuild-linux-ppc64le && npm publish --access=public --otp="$(OTP)"
 
+publish-linux-riscv64: platform-linux-riscv64
+	test -n "$(OTP)" && cd npm/esbuild-linux-riscv64 && npm publish --otp="$(OTP)"
+
+publish-linux-s390x: platform-linux-s390x
+	test -n "$(OTP)" && cd npm/esbuild-linux-s390x && npm publish --otp="$(OTP)"
+
 publish-sunos: platform-sunos
 	test -n "$(OTP)" && cd npm/esbuild-sunos-64 && npm publish --access=public --otp="$(OTP)"
 
@@ -423,7 +458,7 @@ publish-neutral: platform-neutral
 publish-deno:
 	test -d deno/.git || (rm -fr deno && git clone git@github.com:esbuild/deno-esbuild.git deno)
 	cd deno && git fetch && git checkout main && git reset --hard origin/main
-	make platform-deno
+	@$(MAKE) --no-print-directory platform-deno
 	cd deno && git commit -am "publish $(ESBUILD_VERSION) to deno"
 	cd deno && git tag "v$(ESBUILD_VERSION)"
 	cd deno && git push origin main "v$(ESBUILD_VERSION)"
@@ -438,14 +473,16 @@ clean:
 	rm -rf npm/esbuild-darwin-arm64/bin
 	rm -rf npm/esbuild-freebsd-64/bin
 	rm -rf npm/esbuild-freebsd-amd64/bin
-	rm -rf npm/esbuild-netbsd-64/bin
-	rm -rf npm/esbuild-openbsd-64/bin
 	rm -rf npm/esbuild-linux-32/bin
 	rm -rf npm/esbuild-linux-64/bin
 	rm -rf npm/esbuild-linux-arm/bin
 	rm -rf npm/esbuild-linux-arm64/bin
 	rm -rf npm/esbuild-linux-mips64le/bin
 	rm -rf npm/esbuild-linux-ppc64le/bin
+	rm -rf npm/esbuild-linux-riscv64/bin
+	rm -rf npm/esbuild-linux-s390x/bin
+	rm -rf npm/esbuild-netbsd-64/bin
+	rm -rf npm/esbuild-openbsd-64/bin
 	rm -rf npm/esbuild-sunos-64/bin
 	rm -f npm/esbuild-wasm/esbuild.wasm npm/esbuild-wasm/wasm_exec.js
 	rm -rf npm/esbuild/lib
@@ -535,7 +572,7 @@ test262: esbuild | demo/test262
 github/uglify:
 	mkdir -p github/uglify
 	cd github/uglify && git init && git remote add origin https://github.com/mishoo/uglifyjs.git
-	cd github/uglify && git fetch --depth 1 origin 83a3cbf1514e81292b749655f2f712e82a5a2ba8 && git checkout FETCH_HEAD
+	cd github/uglify && git fetch --depth 1 origin 860aa9531b2ce660ace8379c335bb092034b6e82 && git checkout FETCH_HEAD
 
 demo/uglify: | github/uglify
 	mkdir -p demo
@@ -563,7 +600,7 @@ TEST_ROLLUP_FLAGS += src/node-entry.ts
 
 github/rollup:
 	mkdir -p github
-	git clone --depth 1 --branch v2.58.0 https://github.com/rollup/rollup.git github/rollup
+	git clone --depth 1 --branch v2.60.2 https://github.com/rollup/rollup.git github/rollup
 
 demo/rollup: | github/rollup
 	mkdir -p demo
@@ -575,8 +612,9 @@ demo/rollup: | github/rollup
 	mv demo/rollup/tsconfig2.json demo/rollup/tsconfig.json
 
 test-rollup: esbuild | demo/rollup
-	cd demo/rollup && ../../esbuild $(TEST_ROLLUP_FLAGS) && npm run test:only
-	cd demo/rollup && ../../esbuild $(TEST_ROLLUP_FLAGS) --minify && npm run test:only
+	# Skip watch tests to avoid flakes
+	cd demo/rollup && ../../esbuild $(TEST_ROLLUP_FLAGS) && npm run test:only -- --fgrep watch --invert
+	cd demo/rollup && ../../esbuild $(TEST_ROLLUP_FLAGS) --minify && npm run test:only -- --fgrep watch --invert
 
 ################################################################################
 # This builds Preact using esbuild with splitting enabled, which had a bug at one point
