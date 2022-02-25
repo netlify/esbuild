@@ -11,6 +11,36 @@ var require_test = __commonJS({
 console.log(require_test());
 
 ================================================================================
+TestEntryNamesChunkNamesExtPlaceholder
+---------- /out/main/js/entry1-L7KI5G7A.js ----------
+import "../../common/js/chunk-XHGYOYUR.js";
+
+// src/entries/entry1.js
+console.log("entry1");
+
+---------- /out/main/js/entry2-KTHKWVT2.js ----------
+import "../../common/js/chunk-XHGYOYUR.js";
+
+// src/entries/entry2.js
+console.log("entry2");
+
+---------- /out/common/js/chunk-XHGYOYUR.js ----------
+// src/lib/shared.js
+console.log("shared");
+
+---------- /out/main/css/entry1-3JZGIUSL.css ----------
+/* src/entries/entry1.css */
+a:after {
+  content: "entry1";
+}
+
+---------- /out/main/css/entry2-NXZBPPIA.css ----------
+/* src/entries/entry2.css */
+a:after {
+  content: "entry2";
+}
+
+================================================================================
 TestJSXPreserveCapitalLetter
 ---------- /out.js ----------
 // foo.js
@@ -115,6 +145,22 @@ var y_default = "./y-YE5AYNFB.txt";
 // entry.js
 var x_url = require_x();
 console.log(x_url, y_default);
+
+================================================================================
+TestLoaderFileExtPathAssetNamesJS
+---------- /out/png/image-LSAMBFUD.png ----------
+x
+---------- /out/txt/file-YE5AYNFB.txt ----------
+y
+---------- /out/entries/entry.js ----------
+// src/images/image.png
+var image_default = "../png/image-LSAMBFUD.png";
+
+// src/uploads/file.txt
+var file_default = "../txt/file-YE5AYNFB.txt";
+
+// src/entries/entry.js
+console.log(image_default, file_default);
 
 ================================================================================
 TestLoaderFileMultipleNoCollision
@@ -381,6 +427,412 @@ var x_txt = require_x();
 console.log(x_txt, y_default);
 
 ================================================================================
+TestMangleProps
+---------- /out/entry1.js ----------
+export function shouldMangle() {
+  let foo = {
+    a: 0,
+    b() {
+    }
+  };
+  let { a: bar_ } = foo;
+  ({ a: bar_ } = foo);
+  class foo_ {
+    a = 0;
+    b() {
+    }
+    static a = 0;
+    static b() {
+    }
+  }
+  return { a: bar_, c: foo_ };
+}
+export function shouldNotMangle() {
+  let foo = {
+    "bar_": 0,
+    "baz_"() {
+    }
+  };
+  let { "bar_": bar_ } = foo;
+  ({ "bar_": bar_ } = foo);
+  class foo_ {
+    "bar_" = 0;
+    "baz_"() {
+    }
+    static "bar_" = 0;
+    static "baz_"() {
+    }
+  }
+  return { "bar_": bar_, "foo_": foo_ };
+}
+
+---------- /out/entry2.js ----------
+export default {
+  a: 0,
+  "baz_": 1
+};
+
+================================================================================
+TestManglePropsAvoidCollisions
+---------- /out.js ----------
+export default {
+  c: 0,
+  d: 1,
+  a: 2,
+  b: 3,
+  __proto__: {}
+};
+
+================================================================================
+TestManglePropsImportExport
+---------- /out/esm.js ----------
+export let foo_ = 123;
+import { bar_ } from "xyz";
+
+---------- /out/cjs.js ----------
+exports.a = 123;
+let bar_ = require("xyz").b;
+
+================================================================================
+TestManglePropsImportExportBundled
+---------- /out/entry-esm.js ----------
+// cjs.js
+var require_cjs = __commonJS({
+  "cjs.js"(exports) {
+    exports.a = "foo";
+  }
+});
+
+// esm.js
+var esm_exports = {};
+__export(esm_exports, {
+  esm_foo_: () => esm_foo_
+});
+var esm_foo_ = "foo";
+
+// entry-esm.js
+var import_cjs = __toESM(require_cjs());
+var cjs = __toESM(require_cjs());
+var bar_ = [
+  esm_foo_,
+  import_cjs.cjs_foo_,
+  esm_exports.b,
+  cjs.a
+];
+export {
+  bar_
+};
+
+---------- /out/entry-cjs.js ----------
+// esm.js
+var esm_exports = {};
+__export(esm_exports, {
+  esm_foo_: () => esm_foo_
+});
+var esm_foo_;
+var init_esm = __esm({
+  "esm.js"() {
+    esm_foo_ = "foo";
+  }
+});
+
+// cjs.js
+var require_cjs = __commonJS({
+  "cjs.js"(exports) {
+    exports.a = "foo";
+  }
+});
+
+// entry-cjs.js
+var require_entry_cjs = __commonJS({
+  "entry-cjs.js"(exports) {
+    var { b: esm_foo_2 } = (init_esm(), __toCommonJS(esm_exports));
+    var { a: cjs_foo_ } = require_cjs();
+    exports.c = [
+      esm_foo_2,
+      cjs_foo_
+    ];
+  }
+});
+export default require_entry_cjs();
+
+================================================================================
+TestManglePropsJSXPreserve
+---------- /out.jsx ----------
+let Foo = {
+  a(props) {
+    return <>{props.b}</>;
+  },
+  c: "hello, world"
+};
+export default <Foo.a b={Foo.c} />;
+
+================================================================================
+TestManglePropsJSXTransform
+---------- /out.js ----------
+let Foo = {
+  b(props) {
+    return /* @__PURE__ */ Foo.a(Foo.d, null, props.c);
+  },
+  e: "hello, world",
+  a(...args) {
+    console.log("createElement", ...args);
+  },
+  d(...args) {
+    console.log("Fragment", ...args);
+  }
+};
+export default /* @__PURE__ */ Foo.a(Foo.b, {
+  c: Foo.e
+});
+
+================================================================================
+TestManglePropsJSXTransformNamespace
+---------- /out.js ----------
+export default [
+  /* @__PURE__ */ React.createElement(KEEP_THIS_, null),
+  /* @__PURE__ */ React.createElement("KEEP:THIS_", null),
+  /* @__PURE__ */ React.createElement("foo", {
+    "KEEP:THIS_": true
+  })
+];
+
+================================================================================
+TestManglePropsKeywordPropertyMinify
+---------- /out/entry.js ----------
+class Foo{static t={get s(){return 123}}}
+
+================================================================================
+TestManglePropsLoweredClassFields
+---------- /out.js ----------
+class Foo {
+  constructor() {
+    __publicField(this, "a", 123);
+  }
+}
+__publicField(Foo, "b", 234);
+Foo.b = new Foo().a;
+
+================================================================================
+TestManglePropsLoweredOptionalChain
+---------- /out.js ----------
+export default function(x) {
+  var _a;
+  x.a;
+  (_a = x.a) == null ? void 0 : _a.call(x);
+  x == null ? void 0 : x.a;
+  x == null ? void 0 : x.a();
+  x == null ? void 0 : x.a.b;
+  x == null ? void 0 : x.a.b();
+  x == null ? void 0 : x["foo_"].b;
+  x == null ? void 0 : x.a["bar_"];
+}
+
+================================================================================
+TestManglePropsMinify
+---------- /out/entry1.js ----------
+export function shouldMangle_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX() {
+  let X = {
+    X: 0,
+    Y() {
+    }
+  }, { X: Y } = X;
+  ({ X: Y } = X);
+  class t {
+    X = 0;
+    Y() {
+    }
+    static X = 0;
+    static Y() {
+    }
+  }
+  return { X: Y, t };
+}
+export function shouldNotMangle_YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY() {
+  let X = {
+    bar_: 0,
+    baz_() {
+    }
+  }, { bar_: Y } = X;
+  ({ bar_: Y } = X);
+  class t {
+    bar_ = 0;
+    baz_() {
+    }
+    static bar_ = 0;
+    static baz_() {
+    }
+  }
+  return { bar_: Y, foo_: t };
+}
+
+---------- /out/entry2.js ----------
+export default {
+  a: 0,
+  baz_: 1
+};
+
+================================================================================
+TestManglePropsNoShorthand
+---------- /out.js ----------
+export let yyyyy = ({ y }) => ({ y: y });
+
+================================================================================
+TestManglePropsOptionalChain
+---------- /out.js ----------
+export default function(x) {
+  x.a;
+  x.a?.();
+  x?.a;
+  x?.a();
+  x?.a.b;
+  x?.a.b();
+  x?.["foo_"].b;
+  x?.a["bar_"];
+}
+
+================================================================================
+TestManglePropsShorthand
+---------- /out.js ----------
+export let yyyyy = ({ y }) => ({ y });
+
+================================================================================
+TestManglePropsSuperCall
+---------- /out.js ----------
+class Foo {
+}
+class Bar extends Foo {
+  constructor() {
+    super();
+  }
+}
+
+================================================================================
+TestManglePropsTypeScriptFeatures
+---------- /out/parameter-properties.js ----------
+class Foo {
+  constructor(KEEP_FIELD, MANGLE_FIELD_) {
+    this.KEEP_FIELD = KEEP_FIELD;
+    this.a = MANGLE_FIELD_;
+  }
+}
+let foo = new Foo();
+console.log(foo.KEEP_FIELD, foo.a);
+
+---------- /out/namespace-exports.js ----------
+var ns;
+((ns2) => {
+  ns2.b = 1;
+  ns2.c = 2;
+  ns2.d = 3;
+  ({ i: { a: ns2.a } } = 4);
+  function MANGLE_FUNCTION_() {
+  }
+  ns2.g = MANGLE_FUNCTION_;
+  class MANGLE_CLASS_ {
+  }
+  ns2.h = MANGLE_CLASS_;
+  let MANGLE_NAMESPACE_;
+  ((MANGLE_NAMESPACE_2) => {
+    ;
+  })(MANGLE_NAMESPACE_ = ns2.e || (ns2.e = {}));
+  let MANGLE_ENUM_;
+  ((MANGLE_ENUM_2) => {
+  })(MANGLE_ENUM_ = ns2.f || (ns2.f = {}));
+  console.log({
+    VAR: ns2.b,
+    LET: ns2.c,
+    CONST: ns2.d,
+    DESTRUCTURING: ns2.a,
+    FUNCTION: MANGLE_FUNCTION_,
+    CLASS: MANGLE_CLASS_,
+    NAMESPACE: MANGLE_NAMESPACE_,
+    ENUM: MANGLE_ENUM_
+  });
+})(ns || (ns = {}));
+console.log({
+  VAR: ns.b,
+  LET: ns.c,
+  CONST: ns.d,
+  DESTRUCTURING: ns.a,
+  FUNCTION: ns.g,
+  CLASS: ns.h,
+  NAMESPACE: ns.e,
+  ENUM: ns.f
+});
+((ns2) => {
+  console.log({
+    VAR: ns2.b,
+    LET: ns2.c,
+    CONST: ns2.d,
+    DESTRUCTURING: ns2.a,
+    FUNCTION: ns2.g,
+    CLASS: ns2.h,
+    NAMESPACE: ns2.e,
+    ENUM: ns2.f
+  });
+})(ns || (ns = {}));
+
+---------- /out/enum-values.js ----------
+var TopLevelNumber = /* @__PURE__ */ ((TopLevelNumber2) => {
+  TopLevelNumber2[TopLevelNumber2["foo_"] = 0] = "foo_";
+  return TopLevelNumber2;
+})(TopLevelNumber || {});
+var TopLevelString = /* @__PURE__ */ ((TopLevelString2) => {
+  TopLevelString2["bar_"] = "";
+  return TopLevelString2;
+})(TopLevelString || {});
+console.log({
+  foo: TopLevelNumber.a,
+  bar: TopLevelString.b
+});
+function fn() {
+  let NestedNumber;
+  ((NestedNumber2) => {
+    NestedNumber2[NestedNumber2["foo_"] = 0] = "foo_";
+  })(NestedNumber || (NestedNumber = {}));
+  let NestedString;
+  ((NestedString2) => {
+    NestedString2["bar_"] = "";
+  })(NestedString || (NestedString = {}));
+  console.log({
+    foo: TopLevelNumber.a,
+    bar: TopLevelString.b
+  });
+}
+
+================================================================================
+TestMinifyIdentifiersImportPathFrequencyAnalysis
+---------- /out/import.js ----------
+var o=123;console.log(o,"no identifier in this file should be named W, X, Y, or Z");
+
+---------- /out/require.js ----------
+var i=r((t,e)=>{e.exports=123});var s=i();console.log(s,"no identifier in this file should be named A, B, C, or D");
+
+================================================================================
+TestNamedFunctionExpressionArgumentCollision
+---------- /out/entry.js ----------
+let x = function(foo) {
+  var foo;
+  return foo;
+};
+
+================================================================================
+TestNoWarnCommonJSExportsInESMPassThrough
+---------- /out/cjs-in-esm.js ----------
+export let foo = 1;
+exports.foo = 2;
+module.exports = 3;
+
+---------- /out/import-in-cjs.js ----------
+import { foo } from "bar";
+exports.foo = foo;
+module.exports = foo;
+
+---------- /out/no-warnings-here.js ----------
+console.log(module, exports);
+
+================================================================================
 TestRequireCustomExtensionBase64
 ---------- /out.js ----------
 // test.custom
@@ -438,3 +890,89 @@ var require_test = __commonJS({
 
 // entry.js
 console.log(require_test());
+
+================================================================================
+TestReserveProps
+---------- /out.js ----------
+export default {
+  a: 0,
+  _bar_: 1
+};
+
+================================================================================
+TestToESMWrapperOmission
+---------- /out/entry.js ----------
+var entry_exports = {};
+var import_a_nowrap = require("a_nowrap");
+var import_b_nowrap = require("b_nowrap");
+__reExport(entry_exports, require("c_nowrap"));
+var d = __toESM(require("d_WRAP"));
+var import_e_WRAP = __toESM(require("e_WRAP"));
+var import_f_WRAP = __toESM(require("f_WRAP"));
+var import_g_WRAP = __toESM(require("g_WRAP"));
+var h = __toESM(require("h_WRAP"));
+var i = __toESM(require("i_WRAP"));
+var j = __toESM(require("j_WRAP"));
+(0, import_b_nowrap.b)();
+x = d.x;
+(0, import_e_WRAP.default)();
+(0, import_f_WRAP.default)();
+(0, import_g_WRAP.__esModule)();
+x = h;
+i.x();
+j.x``;
+x = Promise.resolve().then(() => __toESM(require("k_WRAP")));
+module.exports = __toCommonJS(entry_exports);
+
+================================================================================
+TestWarnCommonJSExportsInESMBundle
+---------- /out/cjs-in-esm.js ----------
+// cjs-in-esm.js
+var cjs_in_esm_exports = {};
+__export(cjs_in_esm_exports, {
+  foo: () => foo
+});
+var foo = 1;
+exports.foo = 2;
+module.exports = 3;
+module.exports = __toCommonJS(cjs_in_esm_exports);
+
+---------- /out/import-in-cjs.js ----------
+// import-in-cjs.js
+var import_bar = require("bar");
+exports.foo = import_bar.foo;
+module.exports = import_bar.foo;
+
+---------- /out/no-warnings-here.js ----------
+// no-warnings-here.js
+console.log(module, exports);
+
+================================================================================
+TestWarnCommonJSExportsInESMConvert
+---------- /out/cjs-in-esm.js ----------
+var cjs_in_esm_exports = {};
+__export(cjs_in_esm_exports, {
+  foo: () => foo
+});
+let foo = 1;
+exports.foo = 2;
+module.exports = 3;
+module.exports = __toCommonJS(cjs_in_esm_exports);
+
+---------- /out/cjs-in-esm2.js ----------
+var cjs_in_esm2_exports = {};
+__export(cjs_in_esm2_exports, {
+  foo: () => foo
+});
+let foo = 1;
+module.exports.bar = 3;
+module.exports = __toCommonJS(cjs_in_esm2_exports);
+
+---------- /out/import-in-cjs.js ----------
+var import_bar = require("bar");
+exports.foo = import_bar.foo;
+module.exports = import_bar.foo;
+module.exports.bar = import_bar.foo;
+
+---------- /out/no-warnings-here.js ----------
+console.log(module, exports);

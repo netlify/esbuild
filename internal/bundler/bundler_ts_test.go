@@ -5,6 +5,7 @@ import (
 
 	"github.com/evanw/esbuild/internal/compat"
 	"github.com/evanw/esbuild/internal/config"
+	"github.com/evanw/esbuild/internal/js_ast"
 )
 
 var ts_suite = suite{
@@ -259,8 +260,8 @@ func TestTSImportMissingES6(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 		},
-		expectedCompileLog: `entry.ts: error: No matching export in "foo.js" for import "default"
-entry.ts: error: No matching export in "foo.js" for import "y"
+		expectedCompileLog: `entry.ts: ERROR: No matching export in "foo.js" for import "default"
+entry.ts: ERROR: No matching export in "foo.js" for import "y"
 `,
 	})
 }
@@ -319,7 +320,7 @@ func TestTSImportMissingFile(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 		},
-		expectedScanLog: `entry.ts: error: Could not resolve "./doesNotExist.ts"
+		expectedScanLog: `entry.ts: ERROR: Could not resolve "./doesNotExist.ts"
 `,
 	})
 }
@@ -399,10 +400,72 @@ func TestTSMinifyEnum(t *testing.T) {
 		},
 		entryPaths: []string{"/a.ts", "/b.ts"},
 		options: config.Options{
-			MangleSyntax:      true,
-			RemoveWhitespace:  true,
+			MinifySyntax:      true,
+			MinifyWhitespace:  true,
 			MinifyIdentifiers: true,
 			AbsOutputDir:      "/",
+		},
+	})
+}
+
+func TestTSMinifyNestedEnum(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/a.ts": `
+				function foo() { enum Foo { A, B, C = Foo } return Foo }
+			`,
+			"/b.ts": `
+				export function foo() { enum Foo { X, Y, Z = Foo } return Foo }
+			`,
+		},
+		entryPaths: []string{"/a.ts", "/b.ts"},
+		options: config.Options{
+			MinifySyntax:      true,
+			MinifyWhitespace:  true,
+			MinifyIdentifiers: true,
+			AbsOutputDir:      "/",
+		},
+	})
+}
+
+func TestTSMinifyNestedEnumNoLogicalAssignment(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/a.ts": `
+				function foo() { enum Foo { A, B, C = Foo } return Foo }
+			`,
+			"/b.ts": `
+				export function foo() { enum Foo { X, Y, Z = Foo } return Foo }
+			`,
+		},
+		entryPaths: []string{"/a.ts", "/b.ts"},
+		options: config.Options{
+			MinifySyntax:          true,
+			MinifyWhitespace:      true,
+			MinifyIdentifiers:     true,
+			AbsOutputDir:          "/",
+			UnsupportedJSFeatures: compat.LogicalAssignment,
+		},
+	})
+}
+
+func TestTSMinifyNestedEnumNoArrow(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/a.ts": `
+				function foo() { enum Foo { A, B, C = Foo } return Foo }
+			`,
+			"/b.ts": `
+				export function foo() { enum Foo { X, Y, Z = Foo } return Foo }
+			`,
+		},
+		entryPaths: []string{"/a.ts", "/b.ts"},
+		options: config.Options{
+			MinifySyntax:          true,
+			MinifyWhitespace:      true,
+			MinifyIdentifiers:     true,
+			AbsOutputDir:          "/",
+			UnsupportedJSFeatures: compat.Arrow,
 		},
 	})
 }
@@ -427,10 +490,68 @@ func TestTSMinifyNamespace(t *testing.T) {
 		},
 		entryPaths: []string{"/a.ts", "/b.ts"},
 		options: config.Options{
-			MangleSyntax:      true,
-			RemoveWhitespace:  true,
+			MinifySyntax:      true,
+			MinifyWhitespace:  true,
 			MinifyIdentifiers: true,
 			AbsOutputDir:      "/",
+		},
+	})
+}
+
+func TestTSMinifyNamespaceNoLogicalAssignment(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/a.ts": `
+				namespace Foo {
+					export namespace Bar {
+						foo(Foo, Bar)
+					}
+				}
+			`,
+			"/b.ts": `
+				export namespace Foo {
+					export namespace Bar {
+						foo(Foo, Bar)
+					}
+				}
+			`,
+		},
+		entryPaths: []string{"/a.ts", "/b.ts"},
+		options: config.Options{
+			MinifySyntax:          true,
+			MinifyWhitespace:      true,
+			MinifyIdentifiers:     true,
+			AbsOutputDir:          "/",
+			UnsupportedJSFeatures: compat.LogicalAssignment,
+		},
+	})
+}
+
+func TestTSMinifyNamespaceNoArrow(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/a.ts": `
+				namespace Foo {
+					export namespace Bar {
+						foo(Foo, Bar)
+					}
+				}
+			`,
+			"/b.ts": `
+				export namespace Foo {
+					export namespace Bar {
+						foo(Foo, Bar)
+					}
+				}
+			`,
+		},
+		entryPaths: []string{"/a.ts", "/b.ts"},
+		options: config.Options{
+			MinifySyntax:          true,
+			MinifyWhitespace:      true,
+			MinifyIdentifiers:     true,
+			AbsOutputDir:          "/",
+			UnsupportedJSFeatures: compat.Arrow,
 		},
 	})
 }
@@ -452,7 +573,7 @@ func TestTSMinifyDerivedClass(t *testing.T) {
 		},
 		entryPaths: []string{"/entry.ts"},
 		options: config.Options{
-			MangleSyntax:          true,
+			MinifySyntax:          true,
 			UnsupportedJSFeatures: es(2015),
 			AbsOutputFile:         "/out.js",
 		},
@@ -545,8 +666,8 @@ func TestTSMinifiedBundleES6(t *testing.T) {
 		entryPaths: []string{"/entry.ts"},
 		options: config.Options{
 			Mode:              config.ModeBundle,
-			MangleSyntax:      true,
-			RemoveWhitespace:  true,
+			MinifySyntax:      true,
+			MinifyWhitespace:  true,
 			MinifyIdentifiers: true,
 			AbsOutputFile:     "/out.js",
 		},
@@ -572,8 +693,8 @@ func TestTSMinifiedBundleCommonJS(t *testing.T) {
 		entryPaths: []string{"/entry.ts"},
 		options: config.Options{
 			Mode:              config.ModeBundle,
-			MangleSyntax:      true,
-			RemoveWhitespace:  true,
+			MinifySyntax:      true,
+			MinifyWhitespace:  true,
 			MinifyIdentifiers: true,
 			AbsOutputFile:     "/out.js",
 		},
@@ -930,10 +1051,10 @@ func TestTSImplicitExtensionsMissing(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 		},
-		expectedScanLog: `entry.ts: error: Could not resolve "./mjs.mjs"
-entry.ts: error: Could not resolve "./cjs.cjs"
-entry.ts: error: Could not resolve "./js.js"
-entry.ts: error: Could not resolve "./jsx.jsx"
+		expectedScanLog: `entry.ts: ERROR: Could not resolve "./mjs.mjs"
+entry.ts: ERROR: Could not resolve "./cjs.cjs"
+entry.ts: ERROR: Could not resolve "./js.js"
+entry.ts: ERROR: Could not resolve "./jsx.jsx"
 `,
 	})
 }
@@ -1329,10 +1450,447 @@ func TestTSSideEffectsFalseWarningTypeDeclarations(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 		},
-		expectedScanLog: `entry.ts: warning: Ignoring this import because "node_modules/some-js/foo.js" was marked as having no side effects
-node_modules/some-js/package.json: note: "sideEffects" is false in the enclosing "package.json" file
-entry.ts: warning: Ignoring this import because "node_modules/some-ts/foo.ts" was marked as having no side effects
-node_modules/some-ts/package.json: note: "sideEffects" is false in the enclosing "package.json" file
+		expectedScanLog: `entry.ts: WARNING: Ignoring this import because "node_modules/some-js/foo.js" was marked as having no side effects
+node_modules/some-js/package.json: NOTE: "sideEffects" is false in the enclosing "package.json" file
+entry.ts: WARNING: Ignoring this import because "node_modules/some-ts/foo.ts" was marked as having no side effects
+node_modules/some-ts/package.json: NOTE: "sideEffects" is false in the enclosing "package.json" file
 `,
+	})
+}
+
+func TestTSSiblingNamespace(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/let.ts": `
+				export namespace x { export let y = 123 }
+				export namespace x { export let z = y }
+			`,
+			"/function.ts": `
+				export namespace x { export function y() {} }
+				export namespace x { export let z = y }
+			`,
+			"/class.ts": `
+				export namespace x { export class y {} }
+				export namespace x { export let z = y }
+			`,
+			"/namespace.ts": `
+				export namespace x { export namespace y { 0 } }
+				export namespace x { export let z = y }
+			`,
+			"/enum.ts": `
+				export namespace x { export enum y {} }
+				export namespace x { export let z = y }
+			`,
+		},
+		entryPaths: []string{
+			"/let.ts",
+			"/function.ts",
+			"/class.ts",
+			"/namespace.ts",
+			"/enum.ts",
+		},
+		options: config.Options{
+			Mode:         config.ModePassThrough,
+			AbsOutputDir: "/out",
+		},
+	})
+}
+
+func TestTSSiblingEnum(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/number.ts": `
+				export enum x { y, yy = y }
+				export enum x { z = y + 1 }
+
+				declare let y: any, z: any
+				export namespace x { console.log(y, z) }
+				console.log(x.y, x.z)
+			`,
+			"/string.ts": `
+				export enum x { y = 'a', yy = y }
+				export enum x { z = y }
+
+				declare let y: any, z: any
+				export namespace x { console.log(y, z) }
+				console.log(x.y, x.z)
+			`,
+			"/propagation.ts": `
+				export enum a { b = 100 }
+				export enum x {
+					c = a.b,
+					d = c * 2,
+					e = x.d ** 2,
+					f = x['e'] / 4,
+				}
+				export enum x { g = f >> 4 }
+				console.log(a.b, a['b'], x.g, x['g'])
+			`,
+			"/nested-number.ts": `
+				export namespace foo { export enum x { y, yy = y } }
+				export namespace foo { export enum x { z = y + 1 } }
+
+				declare let y: any, z: any
+				export namespace foo.x {
+					console.log(y, z)
+					console.log(x.y, x.z)
+				}
+			`,
+			"/nested-string.ts": `
+				export namespace foo { export enum x { y = 'a', yy = y } }
+				export namespace foo { export enum x { z = y } }
+
+				declare let y: any, z: any
+				export namespace foo.x {
+					console.log(y, z)
+					console.log(x.y, x.z)
+				}
+			`,
+			"/nested-propagation.ts": `
+				export namespace n { export enum a { b = 100 } }
+				export namespace n {
+					export enum x {
+						c = n.a.b,
+						d = c * 2,
+						e = x.d ** 2,
+						f = x['e'] / 4,
+					}
+				}
+				export namespace n {
+					export enum x { g = f >> 4 }
+					console.log(a.b, n.a.b, n['a']['b'], x.g, n.x.g, n['x']['g'])
+				}
+			`,
+		},
+		entryPaths: []string{
+			"/number.ts",
+			"/string.ts",
+			"/propagation.ts",
+			"/nested-number.ts",
+			"/nested-string.ts",
+			"/nested-propagation.ts",
+		},
+		options: config.Options{
+			Mode:         config.ModePassThrough,
+			AbsOutputDir: "/out",
+		},
+	})
+}
+
+func TestTSEnumTreeShaking(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/simple-member.ts": `
+				enum x { y = 123 }
+				console.log(x.y)
+			`,
+			"/simple-enum.ts": `
+				enum x { y = 123 }
+				console.log(x)
+			`,
+			"/sibling-member.ts": `
+				enum x { y = 123 }
+				enum x { z = y * 2 }
+				console.log(x.y, x.z)
+			`,
+			"/sibling-enum-before.ts": `
+				console.log(x)
+				enum x { y = 123 }
+				enum x { z = y * 2 }
+			`,
+			"/sibling-enum-middle.ts": `
+				enum x { y = 123 }
+				console.log(x)
+				enum x { z = y * 2 }
+			`,
+			"/sibling-enum-after.ts": `
+				enum x { y = 123 }
+				enum x { z = y * 2 }
+				console.log(x)
+			`,
+			"/namespace-before.ts": `
+				namespace x { console.log(x, y) }
+				enum x { y = 123 }
+			`,
+			"/namespace-after.ts": `
+				enum x { y = 123 }
+				namespace x { console.log(x, y) }
+			`,
+		},
+		entryPaths: []string{
+			"/simple-member.ts",
+			"/simple-enum.ts",
+			"/sibling-member.ts",
+			"/sibling-enum-before.ts",
+			"/sibling-enum-middle.ts",
+			"/sibling-enum-after.ts",
+			"/namespace-before.ts",
+			"/namespace-after.ts",
+		},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+			OutputFormat: config.FormatESModule,
+		},
+	})
+}
+
+func TestTSEnumJSX(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/element.tsx": `
+				export enum Foo { Div = 'div' }
+				console.log(<Foo.Div />)
+			`,
+			"/fragment.tsx": `
+				export enum React { Fragment = 'div' }
+				console.log(<>test</>)
+			`,
+			"/nested-element.tsx": `
+				namespace x.y { export enum Foo { Div = 'div' } }
+				namespace x.y { console.log(<x.y.Foo.Div />) }
+			`,
+			"/nested-fragment.tsx": `
+				namespace x.y { export enum React { Fragment = 'div' } }
+				namespace x.y { console.log(<>test</>) }
+			`,
+		},
+		entryPaths: []string{
+			"/element.tsx",
+			"/fragment.tsx",
+			"/nested-element.tsx",
+			"/nested-fragment.tsx",
+		},
+		options: config.Options{
+			Mode:         config.ModePassThrough,
+			AbsOutputDir: "/out",
+		},
+	})
+}
+
+func TestTSEnumDefine(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				enum a { b = 123, c = d }
+			`,
+		},
+		entryPaths: []string{"/entry.ts"},
+		options: config.Options{
+			Mode:         config.ModePassThrough,
+			AbsOutputDir: "/out",
+			Defines: &config.ProcessedDefines{
+				IdentifierDefines: map[string]config.DefineData{
+					"d": {
+						DefineFunc: func(args config.DefineArgs) js_ast.E {
+							return &js_ast.EIdentifier{Ref: args.FindSymbol(args.Loc, "b")}
+						},
+					},
+				},
+			},
+		},
+	})
+}
+
+func TestTSEnumSameModuleInliningAccess(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				enum a { x = 123 }
+				enum b { x = 123 }
+				enum c { x = 123 }
+				enum d { x = 123 }
+				enum e { x = 123 }
+				console.log([
+					a.x,
+					b['x'],
+					c?.x,
+					d?.['x'],
+					e,
+				])
+			`,
+		},
+		entryPaths: []string{"/entry.ts"},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+		},
+	})
+}
+
+func TestTSEnumCrossModuleInliningAccess(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				import { a, b, c, d, e } from './enums'
+				console.log([
+					a.x,
+					b['x'],
+					c?.x,
+					d?.['x'],
+					e,
+				])
+			`,
+			"/enums.ts": `
+				export enum a { x = 123 }
+				export enum b { x = 123 }
+				export enum c { x = 123 }
+				export enum d { x = 123 }
+				export enum e { x = 123 }
+			`,
+		},
+		entryPaths: []string{"/entry.ts"},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+		},
+	})
+}
+
+func TestTSEnumCrossModuleInliningDefinitions(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				import { a } from './enums'
+				console.log([
+					a.implicit_number,
+					a.explicit_number,
+					a.explicit_string,
+					a.non_constant,
+				])
+			`,
+			"/enums.ts": `
+				export enum a {
+					implicit_number,
+					explicit_number = 123,
+					explicit_string = 'xyz',
+					non_constant = foo,
+				}
+			`,
+		},
+		entryPaths: []string{"/entry.ts"},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+		},
+	})
+}
+
+func TestTSEnumCrossModuleInliningReExport(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				import { a } from './re-export'
+				import { b } from './re-export-star'
+				import * as ns from './enums'
+				console.log([
+					a.x,
+					b.x,
+					ns.c.x,
+				])
+			`,
+			"/re-export.js": `
+				export { a } from './enums'
+			`,
+			"/re-export-star.js": `
+				export * from './enums'
+			`,
+			"/enums.ts": `
+				export enum a { x = 'a' }
+				export enum b { x = 'b' }
+				export enum c { x = 'c' }
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+		},
+	})
+}
+
+func TestTSEnumCrossModuleTreeShaking(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				import {
+					a_DROP,
+					b_DROP,
+					c_DROP,
+				} from './enums'
+
+				console.log([
+					a_DROP.x,
+					b_DROP['x'],
+					c_DROP.x,
+				])
+
+				import {
+					a_keep,
+					b_keep,
+					c_keep,
+					d_keep,
+					e_keep,
+				} from './enums'
+
+				console.log([
+					a_keep.x,
+					b_keep.x,
+					c_keep,
+					d_keep.y,
+					e_keep.x,
+				])
+			`,
+			"/enums.ts": `
+				export enum a_DROP { x = 1 }  // test a dot access
+				export enum b_DROP { x = 2 }  // test an index access
+				export enum c_DROP { x = '' } // test a string enum
+
+				export enum a_keep { x = false } // false is not inlinable
+				export enum b_keep { x = foo }   // foo has side effects
+				export enum c_keep { x = 3 }     // this enum object is captured
+				export enum d_keep { x = 4 }     // we access "y" on this object
+				export let e_keep = {}           // non-enum properties should be kept
+			`,
+		},
+		entryPaths: []string{"/entry.ts"},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+		},
+	})
+}
+
+func TestTSEnumExportClause(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				import {
+					A,
+					B,
+					C as c,
+					d as dd,
+				} from './enums'
+
+				console.log([
+					A.A,
+					B.B,
+					c.C,
+					dd.D,
+				])
+			`,
+			"/enums.ts": `
+					export enum A { A = 1 }
+					enum B { B = 2 }
+					export enum C { C = 3 }
+					enum D { D = 4 }
+					export { B, D as d }
+			`,
+		},
+		entryPaths: []string{"/entry.ts"},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+		},
 	})
 }

@@ -82,8 +82,10 @@ const engines = [
   'edge',
   'es',
   'firefox',
+  'ie',
   'ios',
   'node',
+  'opera',
   'safari',
 ]
 
@@ -153,6 +155,7 @@ mergeVersions('BigInt', { es2020: true })
 mergeVersions('ImportMeta', { es2020: true })
 mergeVersions('NullishCoalescing', { es2020: true })
 mergeVersions('OptionalChain', { es2020: true })
+mergeVersions('TypeofExoticObjectIsObject', { es2020: true }) // https://github.com/tc39/ecma262/pull/1441
 mergeVersions('LogicalAssignment', { es2021: true })
 mergeVersions('TopLevelAwait', {})
 mergeVersions('ArbitraryModuleNamespaceNames', {})
@@ -199,6 +202,18 @@ mergeVersions('DynamicImport', {
   safari11_1: true,
 })
 
+// This is a problem specific to Internet explorer. See https://github.com/tc39/ecma262/issues/1440
+mergeVersions('TypeofExoticObjectIsObject', {
+  chrome0: true,
+  edge0: true,
+  es0: true,
+  firefox0: true,
+  ios0: true,
+  node0: true,
+  opera0: true,
+  safari0: true,
+})
+
 // This is a special case. Node added support for it to both v12.20+ and v13.2+
 // so the range is inconveniently discontiguous. Sources:
 //
@@ -240,6 +255,9 @@ mergeVersions('ArbitraryModuleNamespaceNames', {
 mergeVersions('ImportAssertions', {
   // From https://www.chromestatus.com/feature/5765269513306112
   chrome91: true,
+
+  // From https://github.com/nodejs/node/blob/master/doc/changelogs/CHANGELOG_V16.md#16.14.0
+  node16_14: true,
 
   // Not yet in Firefox: https://bugzilla.mozilla.org/show_bug.cgi?id=1668330
 })
@@ -291,7 +309,7 @@ for (const feature in features) {
 }
 
 function upper(text) {
-  if (text === 'es' || text === 'ios') return text.toUpperCase()
+  if (text === 'es' || text === 'ios' || text === 'ie') return text.toUpperCase()
   return text[0].toUpperCase() + text.slice(1)
 }
 

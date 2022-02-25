@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/evanw/esbuild/internal/config"
+	"github.com/evanw/esbuild/internal/helpers"
 	"github.com/evanw/esbuild/internal/js_ast"
 	"github.com/evanw/esbuild/internal/js_lexer"
 	"github.com/evanw/esbuild/internal/js_parser"
@@ -16,9 +17,8 @@ import (
 )
 
 type packageJSON struct {
-	source     logger.Source
-	mainFields map[string]mainField
-	moduleType config.ModuleType
+	mainFields     map[string]mainField
+	moduleTypeData js_ast.ModuleTypeData
 
 	// Present if the "browser" field is present. This field is intended to be
 	// used by bundlers and lets you redirect the paths of certain 3rd-party
@@ -66,11 +66,13 @@ type packageJSON struct {
 
 	// This represents the "exports" field in this package.json file.
 	exportsMap *pjMap
+
+	source logger.Source
 }
 
 type mainField struct {
-	keyLoc  logger.Loc
 	relPath string
+	keyLoc  logger.Loc
 }
 
 type browserPathKind uint8
@@ -195,7 +197,16 @@ func (r resolverQuery) checkBrowserMap(resolveDirInfo *dirInfo, inputPath string
 				}
 			}
 			if isInSamePackage {
-				checkPath("./" + inputPath)
+				relativePathPrefix := "./"
+
+				// Use the relative path from the file containing the import path to the
+				// enclosing package.json file. This includes any subdirectories within the
+				// package if there are any.
+				if relPath, ok := r.fs.Rel(resolveDirInfo.enclosingBrowserScope.absPath, resolveDirInfo.absPath); ok && relPath != "." {
+					relativePathPrefix += strings.ReplaceAll(relPath, "\\", "/") + "/"
+				}
+
+				checkPath(relativePathPrefix + inputPath)
 			}
 		}
 	}
@@ -221,7 +232,7 @@ func (r resolverQuery) parsePackageJSON(inputPath string) *packageJSON {
 		r.debugLogs.addNote(fmt.Sprintf("Failed to read file %q: %s", packageJSONPath, originalError.Error()))
 	}
 	if err != nil {
-		r.log.AddError(nil, logger.Loc{},
+		r.log.Add(logger.Error, nil, logger.Range{},
 			fmt.Sprintf("Cannot read file %q: %s",
 				r.PrettyPath(logger.Path{Text: packageJSONPath, Namespace: "file"}), err.Error()))
 		return nil
@@ -249,19 +260,43 @@ func (r resolverQuery) parsePackageJSON(inputPath string) *packageJSON {
 	}
 
 	// Read the "type" field
-	if typeJSON, _, ok := getProperty(json, "type"); ok {
+	if typeJSON, typeKeyLoc, ok := getProperty(json, "type"); ok {
 		if typeValue, ok := getString(typeJSON); ok {
 			switch typeValue {
 			case "commonjs":
-				packageJSON.moduleType = config.ModuleCommonJS
+				packageJSON.moduleTypeData = js_ast.ModuleTypeData{
+					Type:   js_ast.ModuleCommonJS_PackageJSON,
+					Source: &packageJSON.source,
+					Range:  jsonSource.RangeOfString(typeJSON.Loc),
+				}
 			case "module":
-				packageJSON.moduleType = config.ModuleESM
+				packageJSON.moduleTypeData = js_ast.ModuleTypeData{
+					Type:   js_ast.ModuleESM_PackageJSON,
+					Source: &packageJSON.source,
+					Range:  jsonSource.RangeOfString(typeJSON.Loc),
+				}
 			default:
-				r.log.AddRangeWarning(&tracker, jsonSource.RangeOfString(typeJSON.Loc),
-					fmt.Sprintf("%q is not a valid value for the \"type\" field (must be either \"commonjs\" or \"module\")", typeValue))
+				notes := []logger.MsgData{{Text: "The \"type\" field must be set to either \"commonjs\" or \"module\"."}}
+				kind := logger.Warning
+
+				// If someone does something like "type": "./index.d.ts" then they
+				// likely meant "types" instead of "type". Customize the message
+				// for this and hide it if it's inside a published npm package.
+				if strings.HasSuffix(typeValue, ".d.ts") {
+					notes[0] = tracker.MsgData(jsonSource.RangeOfString(typeKeyLoc),
+						"TypeScript type declarations use the \"types\" field, not the \"type\" field:")
+					notes[0].Location.Suggestion = "\"types\""
+					if helpers.IsInsideNodeModules(jsonSource.KeyPath.Text) {
+						kind = logger.Debug
+					}
+				}
+
+				r.log.AddWithNotes(kind, &tracker, jsonSource.RangeOfString(typeJSON.Loc),
+					fmt.Sprintf("%q is not a valid value for the \"type\" field", typeValue),
+					notes)
 			}
 		} else {
-			r.log.AddWarning(&tracker, typeJSON.Loc,
+			r.log.Add(logger.Warning, &tracker, logger.Range{Loc: typeJSON.Loc},
 				"The value for \"type\" must be a string")
 		}
 	}
@@ -272,17 +307,17 @@ func (r resolverQuery) parsePackageJSON(inputPath string) *packageJSON {
 		mainFields = defaultMainFields[r.options.Platform]
 	}
 	for _, field := range mainFields {
-		if mainJSON, mainRange, ok := getProperty(json, field); ok {
+		if mainJSON, mainLoc, ok := getProperty(json, field); ok {
 			if main, ok := getString(mainJSON); ok && main != "" {
-				packageJSON.mainFields[field] = mainField{mainRange, main}
+				packageJSON.mainFields[field] = mainField{keyLoc: mainLoc, relPath: main}
 			}
 		}
 	}
 	for _, field := range mainFieldsForFailure {
 		if _, ok := packageJSON.mainFields[field]; !ok {
-			if mainJSON, mainRange, ok := getProperty(json, field); ok {
+			if mainJSON, mainLoc, ok := getProperty(json, field); ok {
 				if main, ok := getString(mainJSON); ok && main != "" {
-					packageJSON.mainFields[field] = mainField{mainRange, main}
+					packageJSON.mainFields[field] = mainField{keyLoc: mainLoc, relPath: main}
 				}
 			}
 		}
@@ -317,7 +352,7 @@ func (r resolverQuery) parsePackageJSON(inputPath string) *packageJSON {
 							browserMap[key] = nil
 						}
 					} else {
-						r.log.AddWarning(&tracker, prop.ValueOrNil.Loc,
+						r.log.Add(logger.Warning, &tracker, logger.Range{Loc: prop.ValueOrNil.Loc},
 							"Each \"browser\" mapping must be a string or a boolean")
 					}
 				}
@@ -354,13 +389,13 @@ func (r resolverQuery) parsePackageJSON(inputPath string) *packageJSON {
 			for _, itemJSON := range data.Items {
 				item, ok := itemJSON.Data.(*js_ast.EString)
 				if !ok || item.Value == nil {
-					r.log.AddWarning(&tracker, itemJSON.Loc,
+					r.log.Add(logger.Warning, &tracker, logger.Range{Loc: itemJSON.Loc},
 						"Expected string in array for \"sideEffects\"")
 					continue
 				}
 
 				// Reference: https://github.com/webpack/webpack/blob/ed175cd22f89eb9fecd0a70572a3fd0be028e77c/lib/optimize/SideEffectsFlagPlugin.js
-				pattern := js_lexer.UTF16ToString(item.Value)
+				pattern := helpers.UTF16ToString(item.Value)
 				if !strings.ContainsRune(pattern, '/') {
 					pattern = "**/" + pattern
 				}
@@ -378,7 +413,7 @@ func (r resolverQuery) parsePackageJSON(inputPath string) *packageJSON {
 			}
 
 		default:
-			r.log.AddWarning(&tracker, sideEffectsJSON.Loc,
+			r.log.Add(logger.Warning, &tracker, logger.Range{Loc: sideEffectsJSON.Loc},
 				"The value for \"sideEffects\" must be a boolean or an array")
 		}
 	}
@@ -387,7 +422,7 @@ func (r resolverQuery) parsePackageJSON(inputPath string) *packageJSON {
 	if importsJSON, _, ok := getProperty(json, "imports"); ok {
 		if importsMap := parseImportsExportsMap(jsonSource, r.log, importsJSON); importsMap != nil {
 			if importsMap.root.kind != pjObject {
-				r.log.AddRangeWarning(&tracker, importsMap.root.firstToken,
+				r.log.Add(logger.Warning, &tracker, importsMap.root.firstToken,
 					"The value for \"imports\" must be an object")
 			}
 			packageJSON.importsMap = importsMap
@@ -490,8 +525,8 @@ type pjEntry struct {
 
 type pjMapEntry struct {
 	key      string
-	keyRange logger.Range
 	value    pjEntry
+	keyRange logger.Range
 }
 
 // This type is just so we can use Go's native sort function
@@ -531,7 +566,7 @@ func parseImportsExportsMap(source logger.Source, log logger.Log, json js_ast.Ex
 			return pjEntry{
 				kind:       pjString,
 				firstToken: source.RangeOfString(expr.Loc),
-				strData:    js_lexer.UTF16ToString(e.Value),
+				strData:    helpers.UTF16ToString(e.Value),
 			}
 
 		case *js_ast.EArray:
@@ -553,7 +588,7 @@ func parseImportsExportsMap(source logger.Source, log logger.Log, json js_ast.Ex
 
 			for i, property := range e.Properties {
 				keyStr, _ := property.Key.Data.(*js_ast.EString)
-				key := js_lexer.UTF16ToString(keyStr.Value)
+				key := helpers.UTF16ToString(keyStr.Value)
 				keyRange := source.RangeOfString(property.Key.Loc)
 
 				// If exports is an Object with both a key starting with "." and a key
@@ -563,10 +598,10 @@ func parseImportsExportsMap(source logger.Source, log logger.Log, json js_ast.Ex
 					isConditionalSugar = curIsConditionalSugar
 				} else if isConditionalSugar != curIsConditionalSugar {
 					prevEntry := mapData[i-1]
-					log.AddRangeWarningWithNotes(&tracker, keyRange,
+					log.AddWithNotes(logger.Warning, &tracker, keyRange,
 						"This object cannot contain keys that both start with \".\" and don't start with \".\"",
-						[]logger.MsgData{logger.RangeData(&tracker, prevEntry.keyRange,
-							fmt.Sprintf("The previous key %q is incompatible with the current key %q", prevEntry.key, key))})
+						[]logger.MsgData{tracker.MsgData(prevEntry.keyRange,
+							fmt.Sprintf("The key %q is incompatible with the previous key %q:", key, prevEntry.key))})
 					return pjEntry{
 						kind:       pjInvalid,
 						firstToken: firstToken,
@@ -607,7 +642,8 @@ func parseImportsExportsMap(source logger.Source, log logger.Log, json js_ast.Ex
 			firstToken.Loc = expr.Loc
 		}
 
-		log.AddRangeWarning(&tracker, firstToken, "This value must be a string, an object, an array, or null")
+		log.Add(logger.Warning, &tracker, firstToken,
+			"This value must be a string, an object, an array, or null")
 		return pjEntry{
 			kind:       pjInvalid,
 			firstToken: firstToken,
@@ -664,12 +700,12 @@ func (status pjStatus) isUndefined() bool {
 }
 
 type pjDebug struct {
-	// This is the range of the token to use for error messages
-	token logger.Range
-
 	// If the status is "pjStatusUndefinedNoConditionsMatch", this is the set of
 	// conditions that didn't match. This information is used for error messages.
 	unmatchedConditions []string
+
+	// This is the range of the token to use for error messages
+	token logger.Range
 }
 
 func (r resolverQuery) esmHandlePostConditions(

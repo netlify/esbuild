@@ -12,6 +12,7 @@ const mkdirAsync = fs.promises.mkdir
 
 const repoDir = path.dirname(__dirname)
 const rootTestDir = path.join(repoDir, 'scripts', '.js-api-tests')
+const errorIcon = process.platform !== 'win32' ? '✘' : 'X'
 
 let buildTests = {
   async errorIfEntryPointsNotArray({ esbuild }) {
@@ -53,11 +54,26 @@ let buildTests = {
       })
       throw new Error('Expected build failure');
     } catch (e) {
-      if (!e.errors || !e.errors[0] || e.errors[0].text !== 'Could not resolve "./src/*.js" ' +
-        '(glob syntax must be expanded first before passing the paths to esbuild)') {
+      if (!e.errors || !e.errors[0] || e.errors[0].text !== 'Could not resolve "./src/*.js"' ||
+        e.errors[0].notes[0].text !== 'It looks like you are trying to use glob syntax (i.e. "*") with esbuild. ' +
+        'This syntax is typically handled by your shell, and isn\'t handled by esbuild itself. ' +
+        'You must expand glob syntax first before passing your paths to esbuild.') {
         throw e;
       }
     }
+  },
+
+  async mangleCacheBuild({ esbuild }) {
+    var result = await esbuild.build({
+      stdin: {
+        contents: `x = { x_: 0, y_: 1, z_: 2 }`,
+      },
+      mangleProps: /_/,
+      mangleCache: { x_: 'FIXED', z_: false },
+      write: false,
+    })
+    assert.strictEqual(result.outputFiles[0].text, 'x = { FIXED: 0, a: 1, z_: 2 };\n')
+    assert.deepStrictEqual(result.mangleCache, { x_: 'FIXED', y_: 'a', z_: false })
   },
 
   async windowsBackslashPathTest({ esbuild, testDir }) {
@@ -578,6 +594,77 @@ let buildTests = {
     const result = require(output)
     assert.strictEqual(result.value, './data-BYATPJRB.bin')
     assert.strictEqual(result.__esModule, true)
+  },
+
+  async fileLoaderEntryHash({ esbuild, testDir }) {
+    const input = path.join(testDir, 'index.js')
+    const data = path.join(testDir, 'data.bin')
+    const outdir = path.join(testDir, 'out')
+    await writeFileAsync(input, `export {default as value} from ${JSON.stringify(data)}`)
+    await writeFileAsync(data, `stuff`)
+    const result1 = await esbuild.build({
+      entryPoints: [input],
+      bundle: true,
+      outdir,
+      format: 'cjs',
+      loader: { '.bin': 'file' },
+      entryNames: '[name]-[hash]',
+      write: false,
+    })
+    await writeFileAsync(data, `more stuff`)
+    const result2 = await esbuild.build({
+      entryPoints: [input],
+      bundle: true,
+      outdir,
+      format: 'cjs',
+      loader: { '.bin': 'file' },
+      entryNames: '[name]-[hash]',
+      write: false,
+    })
+    assert.strictEqual(result1.outputFiles.length, 2)
+    assert.strictEqual(result2.outputFiles.length, 2)
+
+    // Make sure each path is unique. This tests for a bug where the hash in
+    // the output filename corresponding to the "index.js" entry point wasn't
+    // including the filename for the "file" loader.
+    assert.strictEqual(new Set(result1.outputFiles.concat(result2.outputFiles).map(x => x.path)).size, 4)
+  },
+
+  async fileLoaderEntryHashNoChange({ esbuild, testDir }) {
+    const input = path.join(testDir, 'index.js')
+    const data = path.join(testDir, 'data.bin')
+    const outdir = path.join(testDir, 'out')
+    await writeFileAsync(input, `export {default as value} from ${JSON.stringify(data)}`)
+    await writeFileAsync(data, `stuff`)
+    const result1 = await esbuild.build({
+      entryPoints: [input],
+      bundle: true,
+      outdir,
+      format: 'cjs',
+      loader: { '.bin': 'file' },
+      entryNames: '[name]-[hash]',
+      assetNames: '[name]',
+      write: false,
+    })
+    await writeFileAsync(data, `more stuff`)
+    const result2 = await esbuild.build({
+      entryPoints: [input],
+      bundle: true,
+      outdir,
+      format: 'cjs',
+      loader: { '.bin': 'file' },
+      entryNames: '[name]-[hash]',
+      assetNames: '[name]',
+      write: false,
+    })
+    assert.strictEqual(result1.outputFiles.length, 2)
+    assert.strictEqual(result2.outputFiles.length, 2)
+
+    // The paths should be the same. The hash augmentation from the previous
+    // test should only be checking for a file name difference, not a difference
+    // in content, because the JS output file only contains the file name for
+    // something using the "file" loader.
+    assert.strictEqual(new Set(result1.outputFiles.concat(result2.outputFiles).map(x => x.path)).size, 2)
   },
 
   async splittingPublicPath({ esbuild, testDir }) {
@@ -2414,7 +2501,7 @@ require("/assets/file.png");
   async nodeColonPrefixImport({ esbuild }) {
     const tryTargetESM = async target => {
       const result = await esbuild.build({
-        stdin: { contents: `import 'node:fs'; import('node:fs')` },
+        stdin: { contents: `import fs from 'node:fs'; import('node:fs'); fs()` },
         bundle: true,
         platform: 'node',
         target,
@@ -2425,12 +2512,12 @@ require("/assets/file.png");
       return code.slice(code.indexOf(`// <stdin>\n`))
     }
 
-    assert.strictEqual(await tryTargetESM('node14.13.1'), `// <stdin>\nimport "node:fs";\nimport("node:fs");\n`)
-    assert.strictEqual(await tryTargetESM('node14.13.0'), `// <stdin>\nimport "fs";\nimport("fs");\n`)
-    assert.strictEqual(await tryTargetESM('node13'), `// <stdin>\nimport "fs";\nPromise.resolve().then(() => __toModule(__require("fs")));\n`)
-    assert.strictEqual(await tryTargetESM('node12.99'), `// <stdin>\nimport "node:fs";\nimport("node:fs");\n`)
-    assert.strictEqual(await tryTargetESM('node12.20'), `// <stdin>\nimport "node:fs";\nimport("node:fs");\n`)
-    assert.strictEqual(await tryTargetESM('node12.19'), `// <stdin>\nimport "fs";\nPromise.resolve().then(() => __toModule(__require("fs")));\n`)
+    assert.strictEqual(await tryTargetESM('node14.13.1'), `// <stdin>\nimport fs from "node:fs";\nimport("node:fs");\nfs();\n`)
+    assert.strictEqual(await tryTargetESM('node14.13.0'), `// <stdin>\nimport fs from "fs";\nimport("fs");\nfs();\n`)
+    assert.strictEqual(await tryTargetESM('node13'), `// <stdin>\nimport fs from "fs";\nPromise.resolve().then(() => __toESM(__require("fs")));\nfs();\n`)
+    assert.strictEqual(await tryTargetESM('node12.99'), `// <stdin>\nimport fs from "node:fs";\nimport("node:fs");\nfs();\n`)
+    assert.strictEqual(await tryTargetESM('node12.20'), `// <stdin>\nimport fs from "node:fs";\nimport("node:fs");\nfs();\n`)
+    assert.strictEqual(await tryTargetESM('node12.19'), `// <stdin>\nimport fs from "fs";\nPromise.resolve().then(() => __toESM(__require("fs")));\nfs();\n`)
   },
 
   async nodeColonPrefixRequire({ esbuild }) {
@@ -2458,7 +2545,7 @@ require("/assets/file.png");
   async nodeColonPrefixImportTurnedIntoRequire({ esbuild }) {
     const tryTargetESM = async target => {
       const result = await esbuild.build({
-        stdin: { contents: `import 'node:fs'; import('node:fs')` },
+        stdin: { contents: `import fs from 'node:fs'; import('node:fs'); fs()` },
         bundle: true,
         platform: 'node',
         target,
@@ -2469,12 +2556,12 @@ require("/assets/file.png");
       return code.slice(code.indexOf(`// <stdin>\n`))
     }
 
-    assert.strictEqual(await tryTargetESM('node16'), `// <stdin>\nvar import_node_fs = __toModule(require("node:fs"));\nimport("node:fs");\n`)
-    assert.strictEqual(await tryTargetESM('node15.99'), `// <stdin>\nvar import_node_fs = __toModule(require("fs"));\nimport("fs");\n`)
-    assert.strictEqual(await tryTargetESM('node15'), `// <stdin>\nvar import_node_fs = __toModule(require("fs"));\nimport("fs");\n`)
-    assert.strictEqual(await tryTargetESM('node14.99'), `// <stdin>\nvar import_node_fs = __toModule(require("node:fs"));\nimport("node:fs");\n`)
-    assert.strictEqual(await tryTargetESM('node14.18'), `// <stdin>\nvar import_node_fs = __toModule(require("node:fs"));\nimport("node:fs");\n`)
-    assert.strictEqual(await tryTargetESM('node14.17'), `// <stdin>\nvar import_node_fs = __toModule(require("fs"));\nimport("fs");\n`)
+    assert.strictEqual(await tryTargetESM('node16'), `// <stdin>\nvar import_node_fs = __toESM(require("node:fs"));\nimport("node:fs");\n(0, import_node_fs.default)();\n`)
+    assert.strictEqual(await tryTargetESM('node15.99'), `// <stdin>\nvar import_node_fs = __toESM(require("fs"));\nimport("fs");\n(0, import_node_fs.default)();\n`)
+    assert.strictEqual(await tryTargetESM('node15'), `// <stdin>\nvar import_node_fs = __toESM(require("fs"));\nimport("fs");\n(0, import_node_fs.default)();\n`)
+    assert.strictEqual(await tryTargetESM('node14.99'), `// <stdin>\nvar import_node_fs = __toESM(require("node:fs"));\nimport("node:fs");\n(0, import_node_fs.default)();\n`)
+    assert.strictEqual(await tryTargetESM('node14.18'), `// <stdin>\nvar import_node_fs = __toESM(require("node:fs"));\nimport("node:fs");\n(0, import_node_fs.default)();\n`)
+    assert.strictEqual(await tryTargetESM('node14.17'), `// <stdin>\nvar import_node_fs = __toESM(require("fs"));\nimport("fs");\n(0, import_node_fs.default)();\n`)
   },
 }
 
@@ -3103,6 +3190,15 @@ let transformTests = {
     new Function(code)()
   },
 
+  async mangleCacheTransform({ esbuild }) {
+    var { code, mangleCache } = await esbuild.transform(`x = { x_: 0, y_: 1, z_: 2 }`, {
+      mangleProps: /_/,
+      mangleCache: { x_: 'FIXED', z_: false },
+    })
+    assert.strictEqual(code, 'x = { FIXED: 0, a: 1, z_: 2 };\n')
+    assert.deepStrictEqual(mangleCache, { x_: 'FIXED', y_: 'a', z_: false })
+  },
+
   async jsBannerTransform({ esbuild }) {
     var { code } = await esbuild.transform(`
       if (!bannerDefined) throw 'fail'
@@ -3155,7 +3251,7 @@ let transformTests = {
     assert.strictEqual(code, `export let abc=123;eval("console.log(abc)");\n`)
   },
 
-  async tsconfigRawRemoveUnusedImportsDefault({ esbuild }) {
+  async tsconfigRawImportsNotUsedAsValuesDefault({ esbuild }) {
     const { code } = await esbuild.transform(`import {T} from 'path'`, {
       tsconfigRaw: {
         compilerOptions: {},
@@ -3165,7 +3261,7 @@ let transformTests = {
     assert.strictEqual(code, ``)
   },
 
-  async tsconfigRawRemoveUnusedImports({ esbuild }) {
+  async tsconfigRawImportsNotUsedAsValuesRemove({ esbuild }) {
     const { code } = await esbuild.transform(`import {T} from 'path'`, {
       tsconfigRaw: {
         compilerOptions: {
@@ -3177,7 +3273,7 @@ let transformTests = {
     assert.strictEqual(code, ``)
   },
 
-  async tsconfigRawPreserveUnusedImports({ esbuild }) {
+  async tsconfigRawImportsNotUsedAsValuesPreserve({ esbuild }) {
     const { code } = await esbuild.transform(`import {T} from 'path'`, {
       tsconfigRaw: {
         compilerOptions: {
@@ -3186,14 +3282,82 @@ let transformTests = {
       },
       loader: 'ts',
     })
+    assert.strictEqual(code, `import "path";\n`)
+  },
+
+  async tsconfigRawImportsNotUsedAsValuesError({ esbuild }) {
+    const { code } = await esbuild.transform(`import {T} from 'path'`, {
+      tsconfigRaw: {
+        compilerOptions: {
+          importsNotUsedAsValues: 'error',
+        },
+      },
+      loader: 'ts',
+    })
+    assert.strictEqual(code, `import "path";\n`)
+  },
+
+  async tsconfigRawImportsNotUsedAsValuesRemoveJS({ esbuild }) {
+    const { code } = await esbuild.transform(`import {T} from 'path'`, {
+      tsconfigRaw: {
+        compilerOptions: {
+          importsNotUsedAsValues: 'remove',
+        },
+      },
+    })
     assert.strictEqual(code, `import { T } from "path";\n`)
   },
 
-  async tsconfigRawPreserveUnusedImportsMinifyIdentifiers({ esbuild }) {
+  async tsconfigRawImportsNotUsedAsValuesPreserveJS({ esbuild }) {
     const { code } = await esbuild.transform(`import {T} from 'path'`, {
       tsconfigRaw: {
         compilerOptions: {
           importsNotUsedAsValues: 'preserve',
+        },
+      },
+    })
+    assert.strictEqual(code, `import { T } from "path";\n`)
+  },
+
+  async tsconfigRawPreserveValueImportsDefault({ esbuild }) {
+    const { code } = await esbuild.transform(`import {T} from 'path'`, {
+      tsconfigRaw: {
+        compilerOptions: {},
+      },
+      loader: 'ts',
+    })
+    assert.strictEqual(code, ``)
+  },
+
+  async tsconfigRawPreserveValueImportsFalse({ esbuild }) {
+    const { code } = await esbuild.transform(`import {T} from 'path'`, {
+      tsconfigRaw: {
+        compilerOptions: {
+          preserveValueImports: false,
+        },
+      },
+      loader: 'ts',
+    })
+    assert.strictEqual(code, ``)
+  },
+
+  async tsconfigRawPreserveValueImportsTrue({ esbuild }) {
+    const { code } = await esbuild.transform(`import {T} from 'path'`, {
+      tsconfigRaw: {
+        compilerOptions: {
+          preserveValueImports: true,
+        },
+      },
+      loader: 'ts',
+    })
+    assert.strictEqual(code, `import { T } from "path";\n`)
+  },
+
+  async tsconfigRawPreserveValueImportsTrueMinifyIdentifiers({ esbuild }) {
+    const { code } = await esbuild.transform(`import {T} from 'path'`, {
+      tsconfigRaw: {
+        compilerOptions: {
+          preserveValueImports: true,
         },
       },
       loader: 'ts',
@@ -3202,14 +3366,15 @@ let transformTests = {
     assert.strictEqual(code, `import "path";\n`)
   },
 
-  async tsconfigRawPreserveUnusedImportsJS({ esbuild }) {
+  async tsconfigRawPreserveValueImportsTrueImportsNotUsedAsValuesRemove({ esbuild }) {
     const { code } = await esbuild.transform(`import {T} from 'path'`, {
       tsconfigRaw: {
         compilerOptions: {
-          importsNotUsedAsValues: 'preserve',
+          importsNotUsedAsValues: 'remove',
+          preserveValueImports: true,
         },
       },
-      loader: 'js',
+      loader: 'ts',
     })
     assert.strictEqual(code, `import { T } from "path";\n`)
   },
@@ -3219,7 +3384,7 @@ let transformTests = {
     const { code: code5 } = await esbuild.transform(`import {T} from 'path'`, {
       tsconfigRaw: `{
         "compilerOptions": {
-          "importsNotUsedAsValues": "preserve", // there is a trailing comment here
+          "preserveValueImports": true, // there is a trailing comment here
         },
       }`,
       loader: 'ts',
@@ -3227,7 +3392,7 @@ let transformTests = {
     assert.strictEqual(code5, `import { T } from "path";\n`)
   },
 
-  async tsconfigRawImportsNotUsedAsValues({ esbuild }) {
+  async tsconfigRawUseDefineForClassFields({ esbuild }) {
     const { code: code1 } = await esbuild.transform(`class Foo { foo }`, {
       tsconfigRaw: {
         compilerOptions: {
@@ -3244,6 +3409,19 @@ let transformTests = {
           useDefineForClassFields: true,
         },
       },
+      loader: 'ts',
+    })
+    assert.strictEqual(code2, `class Foo {\n  foo;\n}\n`)
+  },
+
+  async tsImplicitUseDefineForClassFields({ esbuild }) {
+    const { code: code1 } = await esbuild.transform(`class Foo { foo }`, {
+      loader: 'ts',
+    })
+    assert.strictEqual(code1, `class Foo {\n}\n`)
+
+    const { code: code2 } = await esbuild.transform(`class Foo { foo }`, {
+      target: 'esnext',
       loader: 'ts',
     })
     assert.strictEqual(code2, `class Foo {\n  foo;\n}\n`)
@@ -3484,23 +3662,23 @@ let transformTests = {
 
   async es6_export_to_cjs({ esbuild }) {
     const { code } = await esbuild.transform(`export {exists} from "fs"`, { format: 'cjs' })
-    const exports = {}
-    new Function('require', 'exports', code)(require, exports)
-    if (exports.exists !== fs.exists) throw 'fail'
+    const module = { exports: {} }
+    new Function('module', 'exports', 'require', code)(module, module.exports, require)
+    if (module.exports.exists !== fs.exists) throw 'fail'
   },
 
   async es6_export_star_to_cjs({ esbuild }) {
     const { code } = await esbuild.transform(`export * from "fs"`, { format: 'cjs' })
-    const exports = {}
-    new Function('require', 'exports', code)(require, exports)
-    if (exports.exists !== fs.exists) throw 'fail'
+    const module = { exports: {} }
+    new Function('module', 'exports', 'require', code)(module, module.exports, require)
+    if (module.exports.exists !== fs.exists) throw 'fail'
   },
 
   async es6_export_star_as_to_cjs({ esbuild }) {
     const { code } = await esbuild.transform(`export * as fs from "fs"`, { format: 'cjs' })
-    const exports = {}
-    new Function('require', 'exports', code)(require, exports)
-    if (exports.fs.exists !== fs.exists) throw 'fail'
+    const module = { exports: {} }
+    new Function('module', 'exports', 'require', code)(module, module.exports, require)
+    if (module.exports.fs.exists !== fs.exists) throw 'fail'
   },
 
   async es6_import_to_esm({ esbuild }) {
@@ -3594,7 +3772,7 @@ let transformTests = {
 
   async ts({ esbuild }) {
     const { code } = await esbuild.transform(`enum Foo { FOO }`, { loader: 'ts' })
-    assert.strictEqual(code, `var Foo;\n(function(Foo2) {\n  Foo2[Foo2["FOO"] = 0] = "FOO";\n})(Foo || (Foo = {}));\n`)
+    assert.strictEqual(code, `var Foo = /* @__PURE__ */ ((Foo2) => {\n  Foo2[Foo2["FOO"] = 0] = "FOO";\n  return Foo2;\n})(Foo || {});\n`)
   },
 
   async tsx({ esbuild }) {
@@ -3607,10 +3785,45 @@ let transformTests = {
     assert.strictEqual(code, `console.log("ab"+c);\n`)
   },
 
+  async keepConsole({ esbuild }) {
+    const { code } = await esbuild.transform(`console.log('foo')`, { drop: [] })
+    assert.strictEqual(code, `console.log("foo");\n`)
+  },
+
+  async dropConsole({ esbuild }) {
+    const { code } = await esbuild.transform(`
+      console('foo')
+      console.log('foo')
+      console.log(foo())
+      x = console.log(bar())
+      console.abc.xyz('foo')
+      console['log']('foo')
+      console[abc][xyz]('foo')
+      console[foo()][bar()]('foo')
+    `, { drop: ['console'] })
+    assert.strictEqual(code, `console("foo");\nx = void 0;\n`)
+  },
+
+  async keepDebugger({ esbuild }) {
+    const { code } = await esbuild.transform(`if (x) debugger`, { drop: [] })
+    assert.strictEqual(code, `if (x)\n  debugger;\n`)
+  },
+
+  async dropDebugger({ esbuild }) {
+    const { code } = await esbuild.transform(`if (x) debugger`, { drop: ['debugger'] })
+    assert.strictEqual(code, `if (x)\n  ;\n`)
+  },
+
   async define({ esbuild }) {
     const define = { 'process.env.NODE_ENV': '"production"' }
     const { code } = await esbuild.transform(`console.log(process.env.NODE_ENV)`, { define })
     assert.strictEqual(code, `console.log("production");\n`)
+  },
+
+  async defineBuiltInConstants({ esbuild }) {
+    const define = { a: 'NaN', b: 'Infinity', c: 'undefined', d: 'something' }
+    const { code } = await esbuild.transform(`console.log([typeof a, typeof b, typeof c, typeof d])`, { define })
+    assert.strictEqual(code, `console.log(["number", "number", "undefined", typeof something]);\n`)
   },
 
   async defineArray({ esbuild }) {
@@ -3970,25 +4183,25 @@ let transformTests = {
   async dynamicImportStringES6({ esbuild }) {
     const fromPromiseResolve = text => text.slice(text.indexOf('Promise.resolve'))
     const { code } = await esbuild.transform(`import('foo')`, { target: 'chrome62' })
-    assert.strictEqual(fromPromiseResolve(code), `Promise.resolve().then(() => __toModule(require("foo")));\n`)
+    assert.strictEqual(fromPromiseResolve(code), `Promise.resolve().then(() => __toESM(require("foo")));\n`)
   },
 
   async dynamicImportStringES5({ esbuild }) {
     const fromPromiseResolve = text => text.slice(text.indexOf('Promise.resolve'))
     const { code } = await esbuild.transform(`import('foo')`, { target: 'chrome48' })
-    assert.strictEqual(fromPromiseResolve(code), `Promise.resolve().then(function() {\n  return __toModule(require("foo"));\n});\n`)
+    assert.strictEqual(fromPromiseResolve(code), `Promise.resolve().then(function() {\n  return __toESM(require("foo"));\n});\n`)
   },
 
   async dynamicImportStringES5Minify({ esbuild }) {
     const fromPromiseResolve = text => text.slice(text.indexOf('Promise.resolve'))
     const { code } = await esbuild.transform(`import('foo')`, { target: 'chrome48', minifyWhitespace: true })
-    assert.strictEqual(fromPromiseResolve(code), `Promise.resolve().then(function(){return __toModule(require("foo"))});\n`)
+    assert.strictEqual(fromPromiseResolve(code), `Promise.resolve().then(function(){return __toESM(require("foo"))});\n`)
   },
 
   async dynamicImportStringNode12_19({ esbuild }) {
     const fromPromiseResolve = text => text.slice(text.indexOf('Promise.resolve'))
     const { code } = await esbuild.transform(`import('foo')`, { target: 'node12.19' })
-    assert.strictEqual(fromPromiseResolve(code), `Promise.resolve().then(() => __toModule(require("foo")));\n`)
+    assert.strictEqual(fromPromiseResolve(code), `Promise.resolve().then(() => __toESM(require("foo")));\n`)
   },
 
   async dynamicImportStringNode12_20({ esbuild }) {
@@ -3999,13 +4212,13 @@ let transformTests = {
   async dynamicImportStringNode13({ esbuild }) {
     const fromPromiseResolve = text => text.slice(text.indexOf('Promise.resolve'))
     const { code } = await esbuild.transform(`import('foo')`, { target: 'node13' })
-    assert.strictEqual(fromPromiseResolve(code), `Promise.resolve().then(() => __toModule(require("foo")));\n`)
+    assert.strictEqual(fromPromiseResolve(code), `Promise.resolve().then(() => __toESM(require("foo")));\n`)
   },
 
   async dynamicImportStringNode13_1({ esbuild }) {
     const fromPromiseResolve = text => text.slice(text.indexOf('Promise.resolve'))
     const { code } = await esbuild.transform(`import('foo')`, { target: 'node13.1' })
-    assert.strictEqual(fromPromiseResolve(code), `Promise.resolve().then(() => __toModule(require("foo")));\n`)
+    assert.strictEqual(fromPromiseResolve(code), `Promise.resolve().then(() => __toESM(require("foo")));\n`)
   },
 
   async dynamicImportStringNode13_2({ esbuild }) {
@@ -4021,19 +4234,28 @@ let transformTests = {
   async dynamicImportExpressionES6({ esbuild }) {
     const fromPromiseResolve = text => text.slice(text.indexOf('Promise.resolve'))
     const { code: code2 } = await esbuild.transform(`import(foo)`, { target: 'chrome62' })
-    assert.strictEqual(fromPromiseResolve(code2), `Promise.resolve().then(() => __toModule(require(foo)));\n`)
+    assert.strictEqual(fromPromiseResolve(code2), `Promise.resolve().then(() => __toESM(require(foo)));\n`)
   },
 
   async dynamicImportExpressionES5({ esbuild }) {
     const fromPromiseResolve = text => text.slice(text.indexOf('Promise.resolve'))
     const { code: code3 } = await esbuild.transform(`import(foo)`, { target: 'chrome48' })
-    assert.strictEqual(fromPromiseResolve(code3), `Promise.resolve().then(function() {\n  return __toModule(require(foo));\n});\n`)
+    assert.strictEqual(fromPromiseResolve(code3), `Promise.resolve().then(function() {\n  return __toESM(require(foo));\n});\n`)
   },
 
   async dynamicImportExpressionES5Minify({ esbuild }) {
     const fromPromiseResolve = text => text.slice(text.indexOf('Promise.resolve'))
     const { code: code4 } = await esbuild.transform(`import(foo)`, { target: 'chrome48', minifyWhitespace: true })
-    assert.strictEqual(fromPromiseResolve(code4), `Promise.resolve().then(function(){return __toModule(require(foo))});\n`)
+    assert.strictEqual(fromPromiseResolve(code4), `Promise.resolve().then(function(){return __toESM(require(foo))});\n`)
+  },
+
+  async typeofEqualsUndefinedTarget({ esbuild }) {
+    assert.strictEqual((await esbuild.transform(`a = typeof b !== 'undefined'`, { minify: true })).code, `a=typeof b<"u";\n`)
+    assert.strictEqual((await esbuild.transform(`a = typeof b !== 'undefined'`, { minify: true, target: 'es2020' })).code, `a=typeof b<"u";\n`)
+    assert.strictEqual((await esbuild.transform(`a = typeof b !== 'undefined'`, { minify: true, target: 'chrome11' })).code, `a=typeof b<"u";\n`)
+
+    assert.strictEqual((await esbuild.transform(`a = typeof b !== 'undefined'`, { minify: true, target: 'es2019' })).code, `a=typeof b!="undefined";\n`)
+    assert.strictEqual((await esbuild.transform(`a = typeof b !== 'undefined'`, { minify: true, target: 'ie11' })).code, `a=typeof b!="undefined";\n`)
   },
 
   async caseInsensitiveTarget({ esbuild }) {
@@ -4167,8 +4389,8 @@ let formatTests = {
       kind: 'error',
     })
     assert.strictEqual(messages.length, 2)
-    assert.strictEqual(messages[0], ` > error: This is an error\n\n`)
-    assert.strictEqual(messages[1], ` > file.js:0:0: error: Another error\n    0 │ \n      ╵ ^\n\n`)
+    assert.strictEqual(messages[0], `${errorIcon} [ERROR] This is an error\n\n`)
+    assert.strictEqual(messages[1], `${errorIcon} [ERROR] Another error\n\n    file.js:0:0:\n      0 │ \n        ╵ ^\n\n`)
   },
 }
 
@@ -4282,6 +4504,13 @@ let functionScopeCases = [
 }
 
 let syncTests = {
+  async defaultExport({ esbuild }) {
+    assert.strictEqual(typeof esbuild.version, 'string')
+    assert.strictEqual(esbuild.version, esbuild.default.version)
+    assert.strictEqual(esbuild.version, esbuild.default.default.version)
+    assert.strictEqual(esbuild.version, esbuild.default.default.default.version)
+  },
+
   async buildSync({ esbuild, testDir }) {
     const input = path.join(testDir, 'in.js')
     const output = path.join(testDir, 'out.js')
@@ -4365,7 +4594,7 @@ let syncTests = {
     } catch (error) {
       assert(error instanceof Error, 'Must be an Error object');
       assert.strictEqual(error.message, `Build failed with 1 error:
-${path.relative(process.cwd(), input).replace(/\\/g, '/')}:1:2: error: Unexpected end of file`);
+${path.relative(process.cwd(), input).replace(/\\/g, '/')}:1:2: ERROR: Unexpected end of file`);
       assert.strictEqual(error.errors.length, 1);
       assert.strictEqual(error.warnings.length, 0);
     }
@@ -4413,7 +4642,7 @@ ${path.relative(process.cwd(), input).replace(/\\/g, '/')}:1:2: error: Unexpecte
       throw new Error('Expected an error to be thrown');
     } catch (error) {
       assert(error instanceof Error, 'Must be an Error object');
-      assert.strictEqual(error.message, `Transform failed with 1 error:\n<stdin>:1:2: error: Unexpected end of file`);
+      assert.strictEqual(error.message, `Transform failed with 1 error:\n<stdin>:1:2: ERROR: Unexpected end of file`);
       assert.strictEqual(error.errors.length, 1);
       assert.strictEqual(error.warnings.length, 0);
     }
@@ -4427,8 +4656,8 @@ ${path.relative(process.cwd(), input).replace(/\\/g, '/')}:1:2: error: Unexpecte
       kind: 'error',
     })
     assert.strictEqual(messages.length, 2)
-    assert.strictEqual(messages[0], ` > error: This is an error\n\n`)
-    assert.strictEqual(messages[1], ` > file.js:0:0: error: Another error\n    0 │ \n      ╵ ^\n\n`)
+    assert.strictEqual(messages[0], `${errorIcon} [ERROR] This is an error\n\n`)
+    assert.strictEqual(messages[1], `${errorIcon} [ERROR] Another error\n\n    file.js:0:0:\n      0 │ \n        ╵ ^\n\n`)
   },
 
   async analyzeMetafileSync({ esbuild }) {

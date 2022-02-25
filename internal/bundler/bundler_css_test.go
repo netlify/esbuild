@@ -3,6 +3,7 @@ package bundler
 import (
 	"testing"
 
+	"github.com/evanw/esbuild/internal/compat"
 	"github.com/evanw/esbuild/internal/config"
 )
 
@@ -39,7 +40,7 @@ func TestCSSAtImportMissing(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.css",
 		},
-		expectedScanLog: `entry.css: error: Could not resolve "./missing.css"
+		expectedScanLog: `entry.css: ERROR: Could not resolve "./missing.css"
 `,
 	})
 }
@@ -82,14 +83,14 @@ func TestCSSAtImportExternal(t *testing.T) {
 		options: config.Options{
 			Mode:         config.ModeBundle,
 			AbsOutputDir: "/out",
-			ExternalModules: config.ExternalModules{
-				AbsPaths: map[string]bool{
+			ExternalSettings: config.ExternalSettings{
+				PostResolve: config.ExternalMatchers{Exact: map[string]bool{
 					"/external1.css": true,
 					"/external2.css": true,
 					"/external3.css": true,
 					"/external4.css": true,
 					"/external5.css": true,
-				},
+				}},
 			},
 		},
 	})
@@ -139,7 +140,7 @@ func TestCSSFromJSMissingImport(t *testing.T) {
 			Mode:         config.ModeBundle,
 			AbsOutputDir: "/out",
 		},
-		expectedCompileLog: `entry.js: error: No matching export in "a.css" for import "missing"
+		expectedCompileLog: `entry.js: ERROR: No matching export in "a.css" for import "missing"
 `,
 	})
 }
@@ -160,7 +161,8 @@ func TestCSSFromJSMissingStarImport(t *testing.T) {
 			Mode:         config.ModeBundle,
 			AbsOutputDir: "/out",
 		},
-		expectedCompileLog: `entry.js: warning: Import "missing" will always be undefined because there is no matching export
+		debugLogs: true,
+		expectedCompileLog: `entry.js: DEBUG: Import "missing" will always be undefined because there is no matching export in "a.css"
 `,
 	})
 }
@@ -210,7 +212,7 @@ func TestImportCSSFromJSWriteToStdout(t *testing.T) {
 			Mode:          config.ModeBundle,
 			WriteToStdout: true,
 		},
-		expectedScanLog: `entry.js: error: Cannot import "entry.css" into a JavaScript file without an output path configured
+		expectedScanLog: `entry.js: ERROR: Cannot import "entry.css" into a JavaScript file without an output path configured
 `,
 	})
 }
@@ -230,7 +232,7 @@ func TestImportJSFromCSS(t *testing.T) {
 			Mode:         config.ModeBundle,
 			AbsOutputDir: "/out",
 		},
-		expectedScanLog: `entry.css: error: Cannot import "entry.js" into a CSS file
+		expectedScanLog: `entry.css: ERROR: Cannot import "entry.js" into a CSS file
 `,
 	})
 }
@@ -250,7 +252,7 @@ func TestImportJSONFromCSS(t *testing.T) {
 			Mode:         config.ModeBundle,
 			AbsOutputDir: "/out",
 		},
-		expectedScanLog: `entry.css: error: Cannot import "entry.json" into a CSS file
+		expectedScanLog: `entry.css: ERROR: Cannot import "entry.json" into a CSS file
 `,
 	})
 }
@@ -268,8 +270,8 @@ func TestMissingImportURLInCSS(t *testing.T) {
 			Mode:         config.ModeBundle,
 			AbsOutputDir: "/out",
 		},
-		expectedScanLog: `src/entry.css: error: Could not resolve "./one.png"
-src/entry.css: error: Could not resolve "./two.png"
+		expectedScanLog: `src/entry.css: ERROR: Could not resolve "./one.png"
+src/entry.css: ERROR: Could not resolve "./two.png"
 `,
 	})
 }
@@ -295,10 +297,10 @@ func TestExternalImportURLInCSS(t *testing.T) {
 		options: config.Options{
 			Mode:         config.ModeBundle,
 			AbsOutputDir: "/out",
-			ExternalModules: config.ExternalModules{
-				AbsPaths: map[string]bool{
+			ExternalSettings: config.ExternalSettings{
+				PostResolve: config.ExternalMatchers{Exact: map[string]bool{
 					"/src/external.png": true,
-				},
+				}},
 			},
 		},
 	})
@@ -329,12 +331,12 @@ func TestInvalidImportURLInCSS(t *testing.T) {
 			Mode:         config.ModeBundle,
 			AbsOutputDir: "/out",
 		},
-		expectedScanLog: `entry.css: error: Cannot use "js.js" as a URL
-entry.css: error: Cannot use "jsx.jsx" as a URL
-entry.css: error: Cannot use "ts.ts" as a URL
-entry.css: error: Cannot use "tsx.tsx" as a URL
-entry.css: error: Cannot use "json.json" as a URL
-entry.css: error: Cannot use "css.css" as a URL
+		expectedScanLog: `entry.css: ERROR: Cannot use "js.js" as a URL
+entry.css: ERROR: Cannot use "jsx.jsx" as a URL
+entry.css: ERROR: Cannot use "ts.ts" as a URL
+entry.css: ERROR: Cannot use "tsx.tsx" as a URL
+entry.css: ERROR: Cannot use "json.json" as a URL
+entry.css: ERROR: Cannot use "css.css" as a URL
 `,
 	})
 }
@@ -535,7 +537,7 @@ func TestCSSAtImportExtensionOrderCollisionUnsupported(t *testing.T) {
 				".css": config.LoaderCSS,
 			},
 		},
-		expectedScanLog: `entry.css: error: No loader is configured for ".sass" files: test.sass
+		expectedScanLog: `entry.css: ERROR: No loader is configured for ".sass" files: test.sass
 `,
 	})
 }
@@ -566,6 +568,21 @@ func TestCSSAtImportConditionsBundleExternal(t *testing.T) {
 	})
 }
 
+func TestCSSAtImportConditionsBundleExternalConditionWithURL(t *testing.T) {
+	css_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.css": `
+				@import "https://example.com/foo.css" (foo: url("foo.png")) and (bar: url("bar.png"));
+			`,
+		},
+		entryPaths: []string{"/entry.css"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.css",
+		},
+	})
+}
+
 func TestCSSAtImportConditionsBundle(t *testing.T) {
 	css_suite.expectBundled(t, bundled{
 		files: map[string]string{
@@ -577,7 +594,7 @@ func TestCSSAtImportConditionsBundle(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.css",
 		},
-		expectedScanLog: `entry.css: error: Bundling with conditional "@import" rules is not currently supported
+		expectedScanLog: `entry.css: ERROR: Bundling with conditional "@import" rules is not currently supported
 `,
 	})
 }
@@ -621,5 +638,72 @@ func TestCSSAndJavaScriptCodeSplittingIssue1064(t *testing.T) {
 			CodeSplitting: true,
 			AbsOutputDir:  "/out",
 		},
+	})
+}
+
+func TestCSSExternalQueryAndHashNoMatchIssue1822(t *testing.T) {
+	css_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.css": `
+				a { background: url(foo/bar.png?baz) }
+				b { background: url(foo/bar.png#baz) }
+			`,
+		},
+		entryPaths: []string{"/entry.css"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.css",
+			ExternalSettings: config.ExternalSettings{
+				PreResolve: config.ExternalMatchers{Patterns: []config.WildcardPattern{
+					{Suffix: ".png"},
+				}},
+			},
+		},
+		expectedScanLog: `entry.css: ERROR: Could not resolve "foo/bar.png?baz"
+NOTE: You can mark the path "foo/bar.png?baz" as external to exclude it from the bundle, which will remove this error.
+entry.css: ERROR: Could not resolve "foo/bar.png#baz"
+NOTE: You can mark the path "foo/bar.png#baz" as external to exclude it from the bundle, which will remove this error.
+`,
+	})
+}
+
+func TestCSSExternalQueryAndHashMatchIssue1822(t *testing.T) {
+	css_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.css": `
+				a { background: url(foo/bar.png?baz) }
+				b { background: url(foo/bar.png#baz) }
+			`,
+		},
+		entryPaths: []string{"/entry.css"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.css",
+			ExternalSettings: config.ExternalSettings{
+				PreResolve: config.ExternalMatchers{Patterns: []config.WildcardPattern{
+					{Suffix: ".png?baz"},
+					{Suffix: ".png#baz"},
+				}},
+			},
+		},
+	})
+}
+
+func TestCSSNestingOldBrowser(t *testing.T) {
+	css_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.css": `
+				a { &:hover { color: red; } }
+			`,
+		},
+		entryPaths: []string{"/entry.css"},
+		options: config.Options{
+			Mode:                   config.ModeBundle,
+			AbsOutputFile:          "/out.css",
+			UnsupportedCSSFeatures: compat.Nesting,
+			OriginalTargetEnv:      "chrome10",
+		},
+		expectedScanLog: `entry.css: WARNING: CSS nesting syntax is not supported in the configured target environment (chrome10)
+`,
 	})
 }

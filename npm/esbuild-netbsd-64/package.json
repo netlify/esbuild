@@ -1,9 +1,12 @@
 {
   "name": "@netlify/esbuild-netbsd-64",
-  "version": "0.13.15",
+  "version": "0.14.23",
   "description": "The NetBSD AMD64 binary for esbuild, a JavaScript bundler.",
   "repository": "https://github.com/evanw/esbuild",
   "license": "MIT",
+  "engines": {
+    "node": ">=12"
+  },
   "os": [
     "netbsd"
   ],

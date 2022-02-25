@@ -83,6 +83,24 @@ export function validateInitializeOptions(options: types.InitializeOptions): typ
   };
 }
 
+type MangleCache = Record<string, string | false>
+
+function validateMangleCache(mangleCache: MangleCache | undefined): MangleCache | undefined {
+  let validated: MangleCache | undefined
+  if (mangleCache !== undefined) {
+    validated = Object.create(null) as MangleCache
+    for (let key of Object.keys(mangleCache)) {
+      let value = mangleCache[key]
+      if (typeof value === 'string' || value === false) {
+        validated[key] = value
+      } else {
+        throw new Error(`Expected ${JSON.stringify(key)} in mangle cache to map to either a string or false`)
+      }
+    }
+  }
+  return validated
+}
+
 type CommonOptions = types.BuildOptions | types.TransformOptions;
 
 function pushLogFlags(flags: string[], options: CommonOptions, keys: OptionKeys, isTTY: boolean, logLevelDefault: types.LogLevel): void {
@@ -103,10 +121,13 @@ function pushCommonFlags(flags: string[], options: CommonOptions, keys: OptionKe
   let target = getFlag(options, keys, 'target', mustBeStringOrArray);
   let format = getFlag(options, keys, 'format', mustBeString);
   let globalName = getFlag(options, keys, 'globalName', mustBeString);
+  let mangleProps = getFlag(options, keys, 'mangleProps', mustBeRegExp);
+  let reserveProps = getFlag(options, keys, 'reserveProps', mustBeRegExp);
   let minify = getFlag(options, keys, 'minify', mustBeBoolean);
   let minifySyntax = getFlag(options, keys, 'minifySyntax', mustBeBoolean);
   let minifyWhitespace = getFlag(options, keys, 'minifyWhitespace', mustBeBoolean);
   let minifyIdentifiers = getFlag(options, keys, 'minifyIdentifiers', mustBeBoolean);
+  let drop = getFlag(options, keys, 'drop', mustBeArray);
   let charset = getFlag(options, keys, 'charset', mustBeString);
   let treeShaking = getFlag(options, keys, 'treeShaking', mustBeBoolean);
   let ignoreAnnotations = getFlag(options, keys, 'ignoreAnnotations', mustBeBoolean);
@@ -134,6 +155,9 @@ function pushCommonFlags(flags: string[], options: CommonOptions, keys: OptionKe
   if (charset) flags.push(`--charset=${charset}`);
   if (treeShaking !== void 0) flags.push(`--tree-shaking=${treeShaking}`);
   if (ignoreAnnotations) flags.push(`--ignore-annotations`);
+  if (drop) for (let what of drop) flags.push(`--drop:${what}`);
+  if (mangleProps) flags.push(`--mangle-props=${mangleProps.source}`);
+  if (reserveProps) flags.push(`--reserve-props=${reserveProps.source}`);
 
   if (jsx) flags.push(`--jsx=${jsx}`);
   if (jsxFactory) flags.push(`--jsx-factory=${jsxFactory}`);
@@ -165,6 +189,7 @@ function flagsForBuildOptions(
   incremental: boolean,
   nodePaths: string[],
   watch: types.WatchMode | null,
+  mangleCache: MangleCache | undefined,
 } {
   let flags: string[] = [];
   let entries: [string, string][] = [];
@@ -206,6 +231,7 @@ function flagsForBuildOptions(
   let write = getFlag(options, keys, 'write', mustBeBoolean) ?? writeDefault; // Default to true if not specified
   let allowOverwrite = getFlag(options, keys, 'allowOverwrite', mustBeBoolean);
   let incremental = getFlag(options, keys, 'incremental', mustBeBoolean) === true;
+  let mangleCache = getFlag(options, keys, 'mangleCache', mustBeObject);
   keys.plugins = true; // "plugins" has already been read earlier
   checkForInvalidFlags(options, keys, `in ${callName}() call`);
 
@@ -333,6 +359,7 @@ function flagsForBuildOptions(
     incremental,
     nodePaths,
     watch: watchMode,
+    mangleCache: validateMangleCache(mangleCache),
   };
 }
 
@@ -341,7 +368,10 @@ function flagsForTransformOptions(
   options: types.TransformOptions,
   isTTY: boolean,
   logLevelDefault: types.LogLevel,
-): string[] {
+): {
+  flags: string[],
+  mangleCache: MangleCache | undefined,
+} {
   let flags: string[] = [];
   let keys: OptionKeys = Object.create(null);
   pushLogFlags(flags, options, keys, isTTY, logLevelDefault);
@@ -353,6 +383,7 @@ function flagsForTransformOptions(
   let loader = getFlag(options, keys, 'loader', mustBeString);
   let banner = getFlag(options, keys, 'banner', mustBeString);
   let footer = getFlag(options, keys, 'footer', mustBeString);
+  let mangleCache = getFlag(options, keys, 'mangleCache', mustBeObject);
   checkForInvalidFlags(options, keys, `in ${callName}() call`);
 
   if (sourcemap) flags.push(`--sourcemap=${sourcemap === true ? 'external' : sourcemap}`);
@@ -362,7 +393,10 @@ function flagsForTransformOptions(
   if (banner) flags.push(`--banner=${banner}`);
   if (footer) flags.push(`--footer=${footer}`);
 
-  return flags;
+  return {
+    flags,
+    mangleCache: validateMangleCache(mangleCache),
+  };
 }
 
 export interface StreamIn {
@@ -370,6 +404,7 @@ export interface StreamIn {
   readFileSync?: (path: string, encoding: 'utf8') => string;
   isSync: boolean;
   isBrowser: boolean;
+  esbuild: types.PluginBuild['esbuild'];
 }
 
 export interface StreamOut {
@@ -444,7 +479,6 @@ export function createChannel(streamIn: StreamIn): StreamOut {
   let pluginCallbacks = new Map<number, PluginCallback>();
   let watchCallbacks = new Map<number, WatchCallback>();
   let serveCallbacks = new Map<number, ServeCallbacks>();
-  let nextServeID = 0;
   let isClosed = false;
   let nextRequestID = 0;
   let nextBuildKey = 0;
@@ -539,21 +573,21 @@ export function createChannel(streamIn: StreamIn): StreamOut {
           break;
         }
 
-        case 'start': {
+        case 'on-start': {
           let callback = pluginCallbacks.get(request.key);
           if (!callback) sendResponse(id, {});
           else sendResponse(id, await callback!(request) as any);
           break;
         }
 
-        case 'resolve': {
+        case 'on-resolve': {
           let callback = pluginCallbacks.get(request.key);
           if (!callback) sendResponse(id, {});
           else sendResponse(id, await callback!(request) as any);
           break;
         }
 
-        case 'load': {
+        case 'on-load': {
           let callback = pluginCallbacks.get(request.key);
           if (!callback) sendResponse(id, {});
           else sendResponse(id, await callback!(request) as any);
@@ -568,21 +602,21 @@ export function createChannel(streamIn: StreamIn): StreamOut {
         }
 
         case 'serve-request': {
-          let callbacks = serveCallbacks.get(request.serveID);
+          let callbacks = serveCallbacks.get(request.key);
           if (callbacks && callbacks.onRequest) callbacks.onRequest(request.args);
           sendResponse(id, {});
           break;
         }
 
         case 'serve-wait': {
-          let callbacks = serveCallbacks.get(request.serveID);
+          let callbacks = serveCallbacks.get(request.key);
           if (callbacks) callbacks.onWait(request.error);
           sendResponse(id, {});
           break;
         }
 
         case 'watch-rebuild': {
-          let callback = watchCallbacks.get(request.watchID);
+          let callback = watchCallbacks.get(request.key);
           try {
             if (callback) callback(null, request.args);
           } catch (err) {
@@ -639,6 +673,7 @@ export function createChannel(streamIn: StreamIn): StreamOut {
     plugins: types.Plugin[],
     buildKey: number,
     stash: ObjectStash,
+    refs: Refs | null,
   ): Promise<
     | { ok: true, requestPlugins: protocol.BuildPlugin[], runOnEndCallbacks: RunOnEndCallbacks, pluginRefs: Refs }
     | { ok: false, error: any, pluginName: string }
@@ -685,6 +720,7 @@ export function createChannel(streamIn: StreamIn): StreamOut {
     let nextCallbackID = 0;
     let i = 0;
     let requestPlugins: protocol.BuildPlugin[] = [];
+    let isSetupDone = false;
 
     // Clone the plugin array to guard against mutation during iteration
     plugins = [...plugins];
@@ -692,7 +728,7 @@ export function createChannel(streamIn: StreamIn): StreamOut {
     for (let item of plugins) {
       let keys: OptionKeys = {};
       if (typeof item !== 'object') throw new Error(`Plugin at index ${i} must be an object`);
-      let name = getFlag(item, keys, 'name', mustBeString);
+      const name = getFlag(item, keys, 'name', mustBeString);
       if (typeof name !== 'string' || name === '') throw new Error(`Plugin at index ${i} is missing a name`);
       try {
         let setup = getFlag(item, keys, 'setup', mustBeFunction);
@@ -707,23 +743,67 @@ export function createChannel(streamIn: StreamIn): StreamOut {
         };
         i++;
 
+        let resolve = (path: string, options: types.ResolveOptions = {}): Promise<types.ResolveResult> => {
+          if (!isSetupDone) throw new Error('Cannot call "resolve" before plugin setup has completed');
+          if (typeof path !== 'string') throw new Error(`The path to resolve must be a string`);
+          let keys: OptionKeys = Object.create(null);
+          let pluginName = getFlag(options, keys, 'pluginName', mustBeString);
+          let importer = getFlag(options, keys, 'importer', mustBeString);
+          let namespace = getFlag(options, keys, 'namespace', mustBeString);
+          let resolveDir = getFlag(options, keys, 'resolveDir', mustBeString);
+          let kind = getFlag(options, keys, 'kind', mustBeString);
+          let pluginData = getFlag(options, keys, 'pluginData', canBeAnything);
+          checkForInvalidFlags(options, keys, 'in resolve() call');
+
+          return new Promise((resolve, reject) => {
+            const request: protocol.ResolveRequest = {
+              command: 'resolve',
+              path,
+              key: buildKey,
+              pluginName: name,
+            }
+            if (pluginName != null) request.pluginName = pluginName
+            if (importer != null) request.importer = importer
+            if (namespace != null) request.namespace = namespace
+            if (resolveDir != null) request.resolveDir = resolveDir
+            if (kind != null) request.kind = kind
+            if (pluginData != null) request.pluginData = stash.store(pluginData)
+
+            sendRequest<protocol.ResolveRequest, protocol.ResolveResponse>(refs, request, (error, response) => {
+              if (error !== null) reject(new Error(error))
+              else resolve({
+                errors: replaceDetailsInMessages(response!.errors, stash),
+                warnings: replaceDetailsInMessages(response!.warnings, stash),
+                path: response!.path,
+                external: response!.external,
+                sideEffects: response!.sideEffects,
+                namespace: response!.namespace,
+                suffix: response!.suffix,
+                pluginData: stash.load(response!.pluginData),
+              })
+            })
+          })
+        }
+
         let promise = setup({
           initialOptions,
 
+          resolve,
+
           onStart(callback) {
-            let registeredText = `This error came from the "onStart" callback registered here`
+            let registeredText = `This error came from the "onStart" callback registered here:`
             let registeredNote = extractCallerV8(new Error(registeredText), streamIn, 'onStart');
             onStartCallbacks.push({ name: name!, callback, note: registeredNote });
           },
 
           onEnd(callback) {
-            let registeredText = `This error came from the "onEnd" callback registered here`
+            let registeredText = `This error came from the "onEnd" callback registered here:`
             let registeredNote = extractCallerV8(new Error(registeredText), streamIn, 'onEnd');
             onEndCallbacks.push({ name: name!, callback, note: registeredNote });
           },
 
           onResolve(options, callback) {
-            let registeredText = `This error came from the "onResolve" callback registered here`
+            let registeredText = `This error came from the "onResolve" callback registered here:`
             let registeredNote = extractCallerV8(new Error(registeredText), streamIn, 'onResolve');
             let keys: OptionKeys = {};
             let filter = getFlag(options, keys, 'filter', mustBeRegExp);
@@ -736,7 +816,7 @@ export function createChannel(streamIn: StreamIn): StreamOut {
           },
 
           onLoad(options, callback) {
-            let registeredText = `This error came from the "onLoad" callback registered here`
+            let registeredText = `This error came from the "onLoad" callback registered here:`
             let registeredNote = extractCallerV8(new Error(registeredText), streamIn, 'onLoad');
             let keys: OptionKeys = {};
             let filter = getFlag(options, keys, 'filter', mustBeRegExp);
@@ -758,7 +838,9 @@ export function createChannel(streamIn: StreamIn): StreamOut {
             let id = nextCallbackID++;
             onDynamicImportCallbacks[id] = { name: name!, callback, note: registeredNote };
             plugin.onDynamicImport.push({ id, filter: filter.source, namespace: namespace || '' });
-          },          
+          },
+             
+          esbuild: streamIn.esbuild,
         });
 
         // Await a returned promise if there was one. This allows plugins to do
@@ -776,7 +858,7 @@ export function createChannel(streamIn: StreamIn): StreamOut {
 
     const callback: PluginCallback = async (request) => {
       switch (request.command) {
-        case 'start': {
+        case 'on-start': {
           let response: protocol.OnStartResponse = { errors: [], warnings: [] };
           await Promise.all(onStartCallbacks.map(async ({ name, callback, note }) => {
             try {
@@ -799,7 +881,7 @@ export function createChannel(streamIn: StreamIn): StreamOut {
           return response;
         }
 
-        case 'resolve': {
+        case 'on-resolve': {
           let response: protocol.OnResolveResponse = {}, name = '', callback, note;
           for (let id of request.ids) {
             try {
@@ -819,6 +901,7 @@ export function createChannel(streamIn: StreamIn): StreamOut {
                 let pluginName = getFlag(result, keys, 'pluginName', mustBeString);
                 let path = getFlag(result, keys, 'path', mustBeString);
                 let namespace = getFlag(result, keys, 'namespace', mustBeString);
+                let suffix = getFlag(result, keys, 'suffix', mustBeString);
                 let external = getFlag(result, keys, 'external', mustBeBoolean);
                 let sideEffects = getFlag(result, keys, 'sideEffects', mustBeBoolean);
                 let pluginData = getFlag(result, keys, 'pluginData', canBeAnything);
@@ -832,6 +915,7 @@ export function createChannel(streamIn: StreamIn): StreamOut {
                 if (pluginName != null) response.pluginName = pluginName;
                 if (path != null) response.path = path;
                 if (namespace != null) response.namespace = namespace;
+                if (suffix != null) response.suffix = suffix;
                 if (external != null) response.external = external;
                 if (sideEffects != null) response.sideEffects = sideEffects;
                 if (pluginData != null) response.pluginData = stash.store(pluginData);
@@ -848,7 +932,7 @@ export function createChannel(streamIn: StreamIn): StreamOut {
           return response;
         }
 
-        case 'load': {
+        case 'on-load': {
           let response: protocol.OnLoadResponse = {}, name = '', callback, note;
           for (let id of request.ids) {
             try {
@@ -856,6 +940,7 @@ export function createChannel(streamIn: StreamIn): StreamOut {
               let result = await callback({
                 path: request.path,
                 namespace: request.namespace,
+                suffix: request.suffix,
                 pluginData: stash.load(request.pluginData),
               });
 
@@ -957,6 +1042,7 @@ export function createChannel(streamIn: StreamIn): StreamOut {
       }
     }
 
+    isSetupDone = true;
     let refCount = 0;
     return {
       ok: true,
@@ -974,34 +1060,33 @@ export function createChannel(streamIn: StreamIn): StreamOut {
     stop: () => void
   }
 
-  let buildServeData = (refs: Refs | null, options: types.ServeOptions, request: protocol.BuildRequest): ServeData => {
+  let buildServeData = (refs: Refs | null, options: types.ServeOptions, request: protocol.BuildRequest, key: number): ServeData => {
     let keys: OptionKeys = {};
     let port = getFlag(options, keys, 'port', mustBeInteger);
     let host = getFlag(options, keys, 'host', mustBeString);
     let servedir = getFlag(options, keys, 'servedir', mustBeString);
     let onRequest = getFlag(options, keys, 'onRequest', mustBeFunction);
-    let serveID = nextServeID++;
     let onWait: ServeCallbacks['onWait'];
     let wait = new Promise<void>((resolve, reject) => {
       onWait = error => {
-        serveCallbacks.delete(serveID);
+        serveCallbacks.delete(key);
         if (error !== null) reject(new Error(error));
         else resolve();
       };
     });
-    request.serve = { serveID };
+    request.serve = {};
     checkForInvalidFlags(options, keys, `in serve() call`);
     if (port !== void 0) request.serve.port = port;
     if (host !== void 0) request.serve.host = host;
     if (servedir !== void 0) request.serve.servedir = servedir;
-    serveCallbacks.set(serveID, {
+    serveCallbacks.set(key, {
       onRequest,
       onWait: onWait!,
     });
     return {
       wait,
       stop() {
-        sendRequest<protocol.ServeStopRequest, null>(refs, { command: 'serve-stop', serveID }, () => {
+        sendRequest<protocol.ServeStopRequest, null>(refs, { command: 'serve-stop', key }, () => {
           // We don't care about the result
         });
       },
@@ -1041,7 +1126,7 @@ export function createChannel(streamIn: StreamIn): StreamOut {
       if (streamIn.isSync) return handleError(new Error('Cannot use plugins in synchronous API calls'), '');
 
       // Plugins can use async/await because they can't be run with "buildSync"
-      handlePlugins(options, plugins, key, details).then(
+      handlePlugins(options, plugins, key, details, refs).then(
         result => {
           if (!result.ok) {
             handleError(result.error, result.pluginName);
@@ -1135,6 +1220,7 @@ export function createChannel(streamIn: StreamIn): StreamOut {
       incremental,
       nodePaths,
       watch,
+      mangleCache,
     } = flagsForBuildOptions(callName, options, isTTY, buildLogLevelDefault, writeDefault);
     let request: protocol.BuildRequest = {
       command: 'build',
@@ -1149,7 +1235,8 @@ export function createChannel(streamIn: StreamIn): StreamOut {
       nodePaths,
     };
     if (requestPlugins) request.plugins = requestPlugins;
-    let serve = serveOptions && buildServeData(refs, serveOptions, request);
+    if (mangleCache) request.mangleCache = mangleCache;
+    let serve = serveOptions && buildServeData(refs, serveOptions, request, key);
 
     // Factor out response handling so it can be reused for rebuilds
     let rebuild: types.BuildResult['rebuild'] | undefined;
@@ -1157,6 +1244,7 @@ export function createChannel(streamIn: StreamIn): StreamOut {
     let copyResponseToResult = (response: protocol.BuildResponse, result: types.BuildResult) => {
       if (response.outputFiles) result.outputFiles = response!.outputFiles.map(convertOutputFiles);
       if (response.metafile) result.metafile = JSON.parse(response!.metafile);
+      if (response.mangleCache) result.mangleCache = response!.mangleCache;
       if (response.writeToStdout !== void 0) console.log(protocol.decodeUTF8(response!.writeToStdout).replace(/\n$/, ''));
     };
     let buildResponseToResult = (
@@ -1174,12 +1262,12 @@ export function createChannel(streamIn: StreamIn): StreamOut {
         }
 
         // Handle incremental rebuilds
-        if (response!.rebuildID !== void 0) {
+        if (response!.rebuild) {
           if (!rebuild) {
             let isDisposed = false;
             (rebuild as any) = () => new Promise<types.BuildResult>((resolve, reject) => {
               if (isDisposed || isClosed) throw new Error('Cannot rebuild');
-              sendRequest<protocol.RebuildRequest, protocol.BuildResponse>(refs, { command: 'rebuild', rebuildID: response!.rebuildID! },
+              sendRequest<protocol.RebuildRequest, protocol.BuildResponse>(refs, { command: 'rebuild', key },
                 (error2, response2) => {
                   if (error2) {
                     const message: types.Message = { pluginName: '', text: error2, location: null, notes: [], detail: void 0 };
@@ -1195,7 +1283,7 @@ export function createChannel(streamIn: StreamIn): StreamOut {
             rebuild!.dispose = () => {
               if (isDisposed) return;
               isDisposed = true;
-              sendRequest<protocol.RebuildDisposeRequest, null>(refs, { command: 'rebuild-dispose', rebuildID: response!.rebuildID! }, () => {
+              sendRequest<protocol.RebuildDisposeRequest, null>(refs, { command: 'rebuild-dispose', key }, () => {
                 // We don't care about the result
               });
               refs.unref() // Do this after the callback so "sendRequest" can extend the lifetime
@@ -1205,21 +1293,21 @@ export function createChannel(streamIn: StreamIn): StreamOut {
         }
 
         // Handle watch mode
-        if (response!.watchID !== void 0) {
+        if (response!.watch) {
           if (!stop) {
             let isStopped = false;
             refs.ref()
             stop = () => {
               if (isStopped) return;
               isStopped = true;
-              watchCallbacks.delete(response!.watchID!);
-              sendRequest<protocol.WatchStopRequest, null>(refs, { command: 'watch-stop', watchID: response!.watchID! }, () => {
+              watchCallbacks.delete(key);
+              sendRequest<protocol.WatchStopRequest, null>(refs, { command: 'watch-stop', key }, () => {
                 // We don't care about the result
               });
               refs.unref() // Do this after the callback so "sendRequest" can extend the lifetime
             }
             if (watch) {
-              watchCallbacks.set(response!.watchID, (serviceStopError, watchResponse) => {
+              watchCallbacks.set(key, (serviceStopError, watchResponse) => {
                 if (serviceStopError) {
                   if (watch!.onRebuild) watch!.onRebuild(serviceStopError as any, null);
                   return;
@@ -1308,19 +1396,29 @@ export function createChannel(streamIn: StreamIn): StreamOut {
     let start = (inputPath: string | null) => {
       try {
         if (typeof input !== 'string') throw new Error('The input to "transform" must be a string');
-        let flags = flagsForTransformOptions(callName, options, isTTY, transformLogLevelDefault);
+        let {
+          flags,
+          mangleCache,
+        } = flagsForTransformOptions(callName, options, isTTY, transformLogLevelDefault);
         let request: protocol.TransformRequest = {
           command: 'transform',
           flags,
           inputFS: inputPath !== null,
           input: inputPath !== null ? inputPath : input,
         };
+        if (mangleCache) request.mangleCache = mangleCache;
         sendRequest<protocol.TransformRequest, protocol.TransformResponse>(refs, request, (error, response) => {
           if (error) return callback(new Error(error), null);
           let errors = replaceDetailsInMessages(response!.errors, details);
           let warnings = replaceDetailsInMessages(response!.warnings, details);
           let outstanding = 1;
-          let next = () => --outstanding === 0 && callback(null, { warnings, code: response!.code, map: response!.map });
+          let next = () => {
+            if (--outstanding === 0) {
+              let result: types.TransformResult = { warnings, code: response!.code, map: response!.map }
+              if (response!.mangleCache) result.mangleCache = response?.mangleCache
+              callback(null, result)
+            }
+          };
           if (errors.length > 0) return callback(failureErrorWithLog('Transform failed', errors, warnings), null);
 
           // Read the JavaScript file from the file system
@@ -1546,7 +1644,7 @@ function failureErrorWithLog(text: string, errors: types.Message[], warnings: ty
       if (!e.location) return `\nerror: ${e.text}`;
       let { file, line, column } = e.location;
       let pluginText = e.pluginName ? `[plugin: ${e.pluginName}] ` : '';
-      return `\n${file}:${line}:${column}: error: ${pluginText}${e.text}`;
+      return `\n${file}:${line}:${column}: ERROR: ${pluginText}${e.text}`;
     }).join('');
   let error: any = new Error(`${text}${summary}`);
   error.errors = errors;

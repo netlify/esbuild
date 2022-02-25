@@ -419,7 +419,7 @@ func TestImportStarMangleNoBundleUnused(t *testing.T) {
 		},
 		entryPaths: []string{"/entry.js"},
 		options: config.Options{
-			MangleSyntax:  true,
+			MinifySyntax:  true,
 			AbsOutputFile: "/out.js",
 		},
 	})
@@ -436,7 +436,7 @@ func TestImportStarMangleNoBundleCapture(t *testing.T) {
 		},
 		entryPaths: []string{"/entry.js"},
 		options: config.Options{
-			MangleSyntax:  true,
+			MinifySyntax:  true,
 			AbsOutputFile: "/out.js",
 		},
 	})
@@ -453,7 +453,7 @@ func TestImportStarMangleNoBundleNoCapture(t *testing.T) {
 		},
 		entryPaths: []string{"/entry.js"},
 		options: config.Options{
-			MangleSyntax:  true,
+			MinifySyntax:  true,
 			AbsOutputFile: "/out.js",
 		},
 	})
@@ -512,9 +512,9 @@ func TestImportExportStarAmbiguousError(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 		},
-		expectedCompileLog: `entry.js: error: Ambiguous import "y" has multiple matching exports
-foo.js: note: One matching export is here
-bar.js: note: Another matching export is here
+		expectedCompileLog: `entry.js: ERROR: Ambiguous import "y" has multiple matching exports
+foo.js: NOTE: One matching export is here:
+bar.js: NOTE: Another matching export is here:
 `,
 	})
 }
@@ -544,9 +544,9 @@ func TestImportExportStarAmbiguousWarning(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 		},
-		expectedCompileLog: `entry.js: warning: Import "y" will always be undefined because there are multiple matching exports
-foo.js: note: One matching export is here
-bar.js: note: Another matching export is here
+		expectedCompileLog: `entry.js: WARNING: Import "y" will always be undefined because there are multiple matching exports
+foo.js: NOTE: One matching export is here:
+bar.js: NOTE: Another matching export is here:
 `,
 	})
 }
@@ -1065,7 +1065,8 @@ func TestNamespaceImportMissingES6(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 		},
-		expectedCompileLog: `entry.js: warning: Import "foo" will always be undefined because there is no matching export
+		debugLogs: true,
+		expectedCompileLog: `entry.js: DEBUG: Import "foo" will always be undefined because there is no matching export in "foo.js"
 `,
 	})
 }
@@ -1127,7 +1128,8 @@ func TestNamespaceImportUnusedMissingES6(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 		},
-		expectedCompileLog: `entry.js: warning: Import "foo" will always be undefined because there is no matching export
+		debugLogs: true,
+		expectedCompileLog: `entry.js: DEBUG: Import "foo" will always be undefined because there is no matching export in "foo.js"
 `,
 	})
 }
@@ -1233,8 +1235,8 @@ func TestNamespaceImportReExportMissingES6(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 		},
-		expectedCompileLog: `foo.js: error: No matching export in "bar.js" for import "foo"
-foo.js: error: No matching export in "bar.js" for import "foo"
+		expectedCompileLog: `foo.js: ERROR: No matching export in "bar.js" for import "foo"
+foo.js: ERROR: No matching export in "bar.js" for import "foo"
 `,
 	})
 }
@@ -1258,8 +1260,8 @@ func TestNamespaceImportReExportUnusedMissingES6(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 		},
-		expectedCompileLog: `foo.js: error: No matching export in "bar.js" for import "foo"
-foo.js: error: No matching export in "bar.js" for import "foo"
+		expectedCompileLog: `foo.js: ERROR: No matching export in "bar.js" for import "foo"
+foo.js: ERROR: No matching export in "bar.js" for import "foo"
 `,
 	})
 }
@@ -1283,7 +1285,8 @@ func TestNamespaceImportReExportStarMissingES6(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 		},
-		expectedCompileLog: `entry.js: warning: Import "foo" will always be undefined because there is no matching export
+		debugLogs: true,
+		expectedCompileLog: `entry.js: DEBUG: Import "foo" will always be undefined because there is no matching export in "foo.js"
 `,
 	})
 }
@@ -1307,7 +1310,8 @@ func TestNamespaceImportReExportStarUnusedMissingES6(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 		},
-		expectedCompileLog: `entry.js: warning: Import "foo" will always be undefined because there is no matching export
+		debugLogs: true,
+		expectedCompileLog: `entry.js: DEBUG: Import "foo" will always be undefined because there is no matching export in "foo.js"
 `,
 	})
 }
@@ -1370,10 +1374,10 @@ func TestReExportStarExternalIIFE(t *testing.T) {
 			OutputFormat:  config.FormatIIFE,
 			AbsOutputFile: "/out.js",
 			GlobalName:    []string{"mod"},
-			ExternalModules: config.ExternalModules{
-				NodeModules: map[string]bool{
+			ExternalSettings: config.ExternalSettings{
+				PreResolve: config.ExternalMatchers{Exact: map[string]bool{
 					"foo": true,
-				},
+				}},
 			},
 		},
 	})
@@ -1391,10 +1395,10 @@ func TestReExportStarExternalES6(t *testing.T) {
 			Mode:          config.ModeBundle,
 			OutputFormat:  config.FormatESModule,
 			AbsOutputFile: "/out.js",
-			ExternalModules: config.ExternalModules{
-				NodeModules: map[string]bool{
+			ExternalSettings: config.ExternalSettings{
+				PreResolve: config.ExternalMatchers{Exact: map[string]bool{
 					"foo": true,
-				},
+				}},
 			},
 		},
 	})
@@ -1412,10 +1416,10 @@ func TestReExportStarExternalCommonJS(t *testing.T) {
 			Mode:          config.ModeBundle,
 			OutputFormat:  config.FormatCommonJS,
 			AbsOutputFile: "/out.js",
-			ExternalModules: config.ExternalModules{
-				NodeModules: map[string]bool{
+			ExternalSettings: config.ExternalSettings{
+				PreResolve: config.ExternalMatchers{Exact: map[string]bool{
 					"foo": true,
-				},
+				}},
 			},
 		},
 	})
@@ -1483,10 +1487,10 @@ func TestReExportStarAsExternalIIFE(t *testing.T) {
 			OutputFormat:  config.FormatIIFE,
 			AbsOutputFile: "/out.js",
 			GlobalName:    []string{"mod"},
-			ExternalModules: config.ExternalModules{
-				NodeModules: map[string]bool{
+			ExternalSettings: config.ExternalSettings{
+				PreResolve: config.ExternalMatchers{Exact: map[string]bool{
 					"foo": true,
-				},
+				}},
 			},
 		},
 	})
@@ -1504,10 +1508,10 @@ func TestReExportStarAsExternalES6(t *testing.T) {
 			Mode:          config.ModeBundle,
 			OutputFormat:  config.FormatESModule,
 			AbsOutputFile: "/out.js",
-			ExternalModules: config.ExternalModules{
-				NodeModules: map[string]bool{
+			ExternalSettings: config.ExternalSettings{
+				PreResolve: config.ExternalMatchers{Exact: map[string]bool{
 					"foo": true,
-				},
+				}},
 			},
 		},
 	})
@@ -1525,10 +1529,10 @@ func TestReExportStarAsExternalCommonJS(t *testing.T) {
 			Mode:          config.ModeBundle,
 			OutputFormat:  config.FormatCommonJS,
 			AbsOutputFile: "/out.js",
-			ExternalModules: config.ExternalModules{
-				NodeModules: map[string]bool{
+			ExternalSettings: config.ExternalSettings{
+				PreResolve: config.ExternalMatchers{Exact: map[string]bool{
 					"foo": true,
-				},
+				}},
 			},
 		},
 	})
@@ -1655,14 +1659,15 @@ func TestImportDefaultNamespaceComboIssue446(t *testing.T) {
 		options: config.Options{
 			Mode:         config.ModeBundle,
 			AbsOutputDir: "/out",
-			ExternalModules: config.ExternalModules{
-				NodeModules: map[string]bool{
+			ExternalSettings: config.ExternalSettings{
+				PreResolve: config.ExternalMatchers{Exact: map[string]bool{
 					"external": true,
-				},
+				}},
 			},
 		},
-		expectedCompileLog: `internal-def.js: warning: Import "def" will always be undefined because there is no matching export
-internal-ns-def.js: warning: Import "def" will always be undefined because there is no matching export
+		debugLogs: true,
+		expectedCompileLog: `internal-def.js: DEBUG: Import "def" will always be undefined because there is no matching export in "internal.js"
+internal-ns-def.js: DEBUG: Import "def" will always be undefined because there is no matching export in "internal.js"
 `,
 	})
 }
@@ -1687,19 +1692,116 @@ func TestImportDefaultNamespaceComboNoDefault(t *testing.T) {
 		options: config.Options{
 			Mode:         config.ModeBundle,
 			AbsOutputDir: "/out",
-			ExternalModules: config.ExternalModules{
-				NodeModules: map[string]bool{
-					"external": true,
-				},
-			},
 		},
-		expectedCompileLog: `entry-default-ns-prop.js: error: No matching export in "foo.js" for import "default"
-entry-default-ns-prop.js: warning: Import "default" will always be undefined because there is no matching export
-entry-default-ns.js: error: No matching export in "foo.js" for import "default"
-entry-default-prop.js: error: No matching export in "foo.js" for import "default"
-entry-default-prop.js: warning: Import "default" will always be undefined because there is no matching export
-entry-default.js: error: No matching export in "foo.js" for import "default"
-entry-prop.js: warning: Import "default" will always be undefined because there is no matching export
+		debugLogs: true,
+		expectedCompileLog: `entry-default-ns-prop.js: ERROR: No matching export in "foo.js" for import "default"
+entry-default-ns-prop.js: DEBUG: Import "default" will always be undefined because there is no matching export in "foo.js"
+entry-default-ns.js: ERROR: No matching export in "foo.js" for import "default"
+entry-default-prop.js: ERROR: No matching export in "foo.js" for import "default"
+entry-default-prop.js: DEBUG: Import "default" will always be undefined because there is no matching export in "foo.js"
+entry-default.js: ERROR: No matching export in "foo.js" for import "default"
+entry-prop.js: DEBUG: Import "default" will always be undefined because there is no matching export in "foo.js"
+`,
+	})
+}
+
+func TestImportNamespaceUndefinedPropertyEmptyFile(t *testing.T) {
+	importstar_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry-nope.js": `
+				import * as js from './empty.js'
+				import * as mjs from './empty.mjs'
+				import * as cjs from './empty.cjs'
+				console.log(
+					js.nope,
+					mjs.nope,
+					cjs.nope,
+				)
+			`,
+
+			// Note: For CommonJS-style modules, we automatically assign the exports
+			// object to the "default" property if there is no property named "default".
+			// This is for compatibility with node. So this test intentionally behaves
+			// differently from the test above.
+			"/entry-default.js": `
+				import * as js from './empty.js'
+				import * as mjs from './empty.mjs'
+				import * as cjs from './empty.cjs'
+				console.log(
+					js.default,
+					mjs.default,
+					cjs.default,
+				)
+			`,
+
+			"/empty.js":  ``,
+			"/empty.mjs": ``,
+			"/empty.cjs": ``,
+		},
+		entryPaths: []string{
+			"/entry-nope.js",
+			"/entry-default.js",
+		},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+		},
+		debugLogs: true,
+		expectedCompileLog: `entry-default.js: DEBUG: Import "default" will always be undefined because there is no matching export in "empty.mjs"
+entry-nope.js: WARNING: Import "nope" will always be undefined because the file "empty.js" has no exports
+entry-nope.js: WARNING: Import "nope" will always be undefined because the file "empty.mjs" has no exports
+entry-nope.js: WARNING: Import "nope" will always be undefined because the file "empty.cjs" has no exports
+`,
+	})
+}
+
+func TestImportNamespaceUndefinedPropertySideEffectFreeFile(t *testing.T) {
+	importstar_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry-nope.js": `
+				import * as js from './foo/no-side-effects.js'
+				import * as mjs from './foo/no-side-effects.mjs'
+				import * as cjs from './foo/no-side-effects.cjs'
+				console.log(
+					js.nope,
+					mjs.nope,
+					cjs.nope,
+				)
+			`,
+
+			// Note: For CommonJS-style modules, we automatically assign the exports
+			// object to the "default" property if there is no property named "default".
+			// This is for compatibility with node. So this test intentionally behaves
+			// differently from the test above.
+			"/entry-default.js": `
+				import * as js from './foo/no-side-effects.js'
+				import * as mjs from './foo/no-side-effects.mjs'
+				import * as cjs from './foo/no-side-effects.cjs'
+				console.log(
+					js.default,
+					mjs.default,
+					cjs.default,
+				)
+			`,
+
+			"/foo/package.json":        `{ "sideEffects": false }`,
+			"/foo/no-side-effects.js":  `console.log('js')`,
+			"/foo/no-side-effects.mjs": `console.log('mjs')`,
+			"/foo/no-side-effects.cjs": `console.log('cjs')`,
+		},
+		entryPaths: []string{
+			"/entry-nope.js",
+			"/entry-default.js",
+		},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+		},
+		debugLogs: true,
+		expectedCompileLog: `entry-default.js: DEBUG: Import "default" will always be undefined because there is no matching export in "foo/no-side-effects.mjs"
+entry-nope.js: WARNING: Import "nope" will always be undefined because the file "foo/no-side-effects.js" has no exports
+entry-nope.js: WARNING: Import "nope" will always be undefined because the file "foo/no-side-effects.mjs" has no exports
+entry-nope.js: WARNING: Import "nope" will always be undefined because the file "foo/no-side-effects.cjs" has no exports
 `,
 	})
 }
