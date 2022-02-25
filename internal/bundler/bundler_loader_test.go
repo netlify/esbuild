@@ -304,7 +304,7 @@ func TestLoaderJSONMissingES6(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 		},
-		expectedCompileLog: `entry.js: error: No matching export in "test.json" for import "missing"
+		expectedCompileLog: `entry.js: ERROR: No matching export in "test.json" for import "missing"
 `,
 	})
 }
@@ -464,6 +464,36 @@ func TestLoaderFileRelativePathAssetNamesJS(t *testing.T) {
 			ExtensionToLoader: map[string]config.Loader{
 				".js":  config.LoaderJS,
 				".png": config.LoaderFile,
+			},
+		},
+	})
+}
+
+func TestLoaderFileExtPathAssetNamesJS(t *testing.T) {
+	loader_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/src/entries/entry.js": `
+				import x from '../images/image.png'
+				import y from '../uploads/file.txt'
+				console.log(x, y)
+			`,
+			"/src/images/image.png": "x",
+			"/src/uploads/file.txt": "y",
+		},
+		entryPaths: []string{"/src/entries/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputBase: "/src",
+			AbsOutputDir:  "/out",
+			AssetPathTemplate: []config.PathTemplate{
+				{Data: "", Placeholder: config.ExtPlaceholder},
+				{Data: "/", Placeholder: config.NamePlaceholder},
+				{Data: "-", Placeholder: config.HashPlaceholder},
+			},
+			ExtensionToLoader: map[string]config.Loader{
+				".js":  config.LoaderJS,
+				".png": config.LoaderFile,
+				".txt": config.LoaderFile,
 			},
 		},
 	})
@@ -833,7 +863,7 @@ func TestLoaderDataURLTextCSSCannotImport(t *testing.T) {
 			Mode:         config.ModeBundle,
 			AbsOutputDir: "/out",
 		},
-		expectedScanLog: `<data:text/css,@import './other.css';>: error: Could not resolve "./other.css"
+		expectedScanLog: `<data:text/css,@import './other.css';>: ERROR: Could not resolve "./other.css"
 `,
 	})
 }
@@ -871,7 +901,7 @@ func TestLoaderDataURLTextJavaScriptCannotImport(t *testing.T) {
 			Mode:         config.ModeBundle,
 			AbsOutputDir: "/out",
 		},
-		expectedScanLog: `<data:text/javascript,import './other.js'>: error: Could not resolve "./other.js"
+		expectedScanLog: `<data:text/javascript,import './other.js'>: ERROR: Could not resolve "./other.js"
 `,
 	})
 }

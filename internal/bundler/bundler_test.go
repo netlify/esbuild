@@ -56,14 +56,15 @@ type bundled struct {
 	expectedScanLog    string
 	expectedCompileLog string
 	options            config.Options
+	debugLogs          bool
 }
 
 type suite struct {
+	expectedSnapshots  map[string]string
+	generatedSnapshots map[string]string
 	name               string
 	path               string
 	mutex              sync.Mutex
-	expectedSnapshots  map[string]string
-	generatedSnapshots map[string]string
 }
 
 func (s *suite) expectBundled(t *testing.T, args bundled) {
@@ -82,7 +83,11 @@ func (s *suite) expectBundled(t *testing.T, args bundled) {
 			// Apply this default to all tests since it was not configurable when the tests were written
 			args.options.TreeShaking = true
 		}
-		log := logger.NewDeferLog(logger.DeferLogNoVerboseOrDebug)
+		logKind := logger.DeferLogNoVerboseOrDebug
+		if args.debugLogs {
+			logKind = logger.DeferLogAll
+		}
+		log := logger.NewDeferLog(logKind)
 		caches := cache.MakeCacheSet()
 		resolver := resolver.NewResolver(fs, log, caches, args.options)
 		entryPoints := make([]EntryPoint, 0, len(args.entryPaths)+len(args.entryPathsAdvanced))
@@ -99,9 +104,9 @@ func (s *suite) expectBundled(t *testing.T, args bundled) {
 			return
 		}
 
-		log = logger.NewDeferLog(logger.DeferLogNoVerboseOrDebug)
+		log = logger.NewDeferLog(logKind)
 		args.options.OmitRuntimeForTests = true
-		results, _ := bundle.Compile(log, args.options, nil)
+		results, _ := bundle.Compile(log, args.options, nil, nil)
 		msgs = log.Done()
 		assertLog(t, msgs, args.expectedCompileLog)
 

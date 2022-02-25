@@ -41,8 +41,8 @@ var helpText = func(colors logger.Colors) string {
                         bundling, otherwise default is iife when platform
                         is browser and cjs when platform is node)
   --loader:X=L          Use loader L to load file extension X, where L is
-                        one of: js | jsx | ts | tsx | css | json | text | 
-												base64 | file | dataurl | binary
+                        one of: js | jsx | ts | tsx | css | json | text |
+                        base64 | file | dataurl | binary
   --minify              Minify the output (sets all --minify-* flags)
   --outdir=...          The output directory (for multiple entry points)
   --outfile=...         The output file (for one entry point)
@@ -52,7 +52,7 @@ var helpText = func(colors logger.Colors) string {
   --sourcemap           Emit a source map
   --splitting           Enable code splitting (currently only for esm)
   --target=...          Environment target (e.g. es2017, chrome58, firefox57,
-                        safari11, edge16, node10, default esnext)
+                        safari11, edge16, node10, ie9, opera45, default esnext)
   --watch               Watch mode: rebuild on file system changes
 
 ` + colors.Bold + `Advanced options:` + colors.Reset + `
@@ -67,6 +67,7 @@ var helpText = func(colors logger.Colors) string {
   --chunk-names=...         Path template to use for code splitting chunks
                             (default "[name]-[hash]")
   --color=...               Force use of color terminal escapes (true | false)
+  --drop:...                Remove certain constructs (console | debugger)
   --entry-names=...         Path template to use for entry point output paths
                             (default "[dir]/[name]", can also use "[hash]")
   --footer:T=...            Text to be appended to each output file of type T
@@ -80,15 +81,17 @@ var helpText = func(colors logger.Colors) string {
   --jsx-fragment=...        What to use for JSX instead of React.Fragment
   --jsx=...                 Set to "preserve" to disable transforming JSX to JS
   --keep-names              Preserve "name" on functions and classes
-  --legal-comments=...      Where to place license comments (none | inline |
+  --legal-comments=...      Where to place legal comments (none | inline |
                             eof | linked | external, default eof when bundling
                             and inline otherwise)
   --log-level=...           Disable logging (verbose | debug | info | warning |
                             error | silent, default info)
-  --log-limit=...           Maximum message count or 0 to disable (default 10)
+  --log-limit=...           Maximum message count or 0 to disable (default 6)
   --main-fields=...         Override the main file order in package.json
                             (default "browser,module,main" when platform is
                             browser and "main,module" when platform is node)
+  --mangle-cache=...        Save "mangle props" decisions to a JSON file
+  --mangle-props=...        Rename all properties matching a regular expression
   --metafile=...            Write metadata about the build to a JSON file
   --minify-whitespace       Remove whitespace in output files
   --minify-identifiers      Shorten identifiers in output files
@@ -99,6 +102,7 @@ var helpText = func(colors logger.Colors) string {
   --preserve-symlinks       Disable symlink resolution for module lookup
   --public-path=...         Set the base URL for the "file" loader
   --pure:N                  Mark the name N as a pure function for tree shaking
+  --reserve-props=...       Do not mangle these properties
   --resolve-extensions=...  A comma-separated list of implicit extensions
                             (default ".tsx,.ts,.jsx,.js,.css,.json")
   --servedir=...            What to serve in addition to generated output files

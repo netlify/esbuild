@@ -9,18 +9,20 @@ import (
 
 	"github.com/evanw/esbuild/internal/compat"
 	"github.com/evanw/esbuild/internal/config"
+	"github.com/evanw/esbuild/internal/helpers"
 	"github.com/evanw/esbuild/internal/js_ast"
-	"github.com/evanw/esbuild/internal/js_lexer"
 	"github.com/evanw/esbuild/internal/logger"
 )
 
 func (p *parser) prettyPrintTargetEnvironment(feature compat.JSFeature) (where string, notes []logger.MsgData) {
 	where = "the configured target environment"
-	if tsTarget := p.options.tsTarget; tsTarget != nil && tsTarget.UnsupportedJSFeatures.Has(feature) {
+	if tsTarget := p.options.tsTarget; tsTarget != nil &&
+		p.options.targetFromAPI == config.TargetWasUnconfigured &&
+		tsTarget.UnsupportedJSFeatures.Has(feature) {
 		tracker := logger.MakeLineColumnTracker(&tsTarget.Source)
 		where = fmt.Sprintf("%s (%q)", where, tsTarget.Target)
-		notes = []logger.MsgData{logger.RangeData(&tracker, tsTarget.Range, fmt.Sprintf(
-			"The target environment was set to %q here", tsTarget.Target))}
+		notes = []logger.MsgData{tracker.MsgData(tsTarget.Range, fmt.Sprintf(
+			"The target environment was set to %q here:", tsTarget.Target))}
 	} else if p.options.originalTargetEnv != "" {
 		where = fmt.Sprintf("%s (%s)", where, p.options.originalTargetEnv)
 	}
@@ -32,7 +34,7 @@ func (p *parser) markSyntaxFeature(feature compat.JSFeature, r logger.Range) (di
 
 	if !p.options.unsupportedJSFeatures.Has(feature) {
 		if feature == compat.TopLevelAwait && !p.options.outputFormat.KeepES6ImportExportSyntax() {
-			p.log.AddRangeError(&p.tracker, r, fmt.Sprintf(
+			p.log.Add(logger.Error, &p.tracker, r, fmt.Sprintf(
 				"Top-level await is currently not supported with the %q output format", p.options.outputFormat.String()))
 			return
 		}
@@ -94,39 +96,39 @@ func (p *parser) markSyntaxFeature(feature compat.JSFeature, r logger.Range) (di
 		name = "non-identifier array rest patterns"
 
 	case compat.ImportAssertions:
-		p.log.AddRangeErrorWithNotes(&p.tracker, r, fmt.Sprintf(
+		p.log.AddWithNotes(logger.Error, &p.tracker, r, fmt.Sprintf(
 			"Using an arbitrary value as the second argument to \"import()\" is not possible in %s", where), notes)
 		return
 
 	case compat.TopLevelAwait:
-		p.log.AddRangeErrorWithNotes(&p.tracker, r, fmt.Sprintf(
+		p.log.AddWithNotes(logger.Error, &p.tracker, r, fmt.Sprintf(
 			"Top-level await is not available in %s", where), notes)
 		return
 
 	case compat.ArbitraryModuleNamespaceNames:
-		p.log.AddRangeErrorWithNotes(&p.tracker, r, fmt.Sprintf(
+		p.log.AddWithNotes(logger.Error, &p.tracker, r, fmt.Sprintf(
 			"Using a string as a module namespace identifier name is not supported in %s", where), notes)
 		return
 
 	case compat.BigInt:
 		// Transforming these will never be supported
-		p.log.AddRangeErrorWithNotes(&p.tracker, r, fmt.Sprintf(
+		p.log.AddWithNotes(logger.Error, &p.tracker, r, fmt.Sprintf(
 			"Big integer literals are not available in %s", where), notes)
 		return
 
 	case compat.ImportMeta:
 		// This can't be polyfilled
-		p.log.AddRangeWarningWithNotes(&p.tracker, r, fmt.Sprintf(
+		p.log.AddWithNotes(logger.Warning, &p.tracker, r, fmt.Sprintf(
 			"\"import.meta\" is not available in %s and will be empty", where), notes)
 		return
 
 	default:
-		p.log.AddRangeErrorWithNotes(&p.tracker, r, fmt.Sprintf(
+		p.log.AddWithNotes(logger.Error, &p.tracker, r, fmt.Sprintf(
 			"This feature is not available in %s", where), notes)
 		return
 	}
 
-	p.log.AddRangeErrorWithNotes(&p.tracker, r, fmt.Sprintf(
+	p.log.AddWithNotes(logger.Error, &p.tracker, r, fmt.Sprintf(
 		"Transforming %s to %s is not supported yet", name, where), notes)
 	return
 }
@@ -150,60 +152,68 @@ const (
 	legacyOctalLiteral
 	legacyOctalEscape
 	ifElseFunctionStmt
+	labelFunctionStmt
 )
 
 func (p *parser) markStrictModeFeature(feature strictModeFeature, r logger.Range, detail string) {
 	var text string
 	canBeTransformed := false
+
 	switch feature {
 	case withStatement:
 		text = "With statements"
+
 	case deleteBareName:
 		text = "Delete of a bare identifier"
+
 	case forInVarInit:
 		text = "Variable initializers inside for-in loops"
 		canBeTransformed = true
+
 	case evalOrArguments:
 		text = fmt.Sprintf("Declarations with the name %q", detail)
+
 	case reservedWord:
 		text = fmt.Sprintf("%q is a reserved word and", detail)
+
 	case legacyOctalLiteral:
 		text = "Legacy octal literals"
+
 	case legacyOctalEscape:
 		text = "Legacy octal escape sequences"
+
 	case ifElseFunctionStmt:
 		text = "Function declarations inside if statements"
+
+	case labelFunctionStmt:
+		text = "Function declarations inside labels"
+
 	default:
 		text = "This feature"
 	}
+
 	if p.isStrictMode() {
-		var why string
 		var notes []logger.MsgData
-		var where logger.Range
+		where := "in strict mode"
+
 		switch p.currentScope.StrictMode {
-		case js_ast.ImplicitStrictModeImport:
-			where = p.es6ImportKeyword
-		case js_ast.ImplicitStrictModeExport:
-			where = p.es6ExportKeyword
-		case js_ast.ImplicitStrictModeTopLevelAwait:
-			where = p.topLevelAwaitKeyword
 		case js_ast.ImplicitStrictModeClass:
-			why = "All code inside a class is implicitly in strict mode"
-			where = p.enclosingClassKeyword
+			notes = []logger.MsgData{p.tracker.MsgData(p.enclosingClassKeyword,
+				"All code inside a class is implicitly in strict mode")}
+
 		case js_ast.ExplicitStrictMode:
-			why = "Strict mode is triggered by the \"use strict\" directive here"
-			where = p.source.RangeOfString(p.currentScope.UseStrictLoc)
+			notes = []logger.MsgData{p.tracker.MsgData(p.source.RangeOfString(p.currentScope.UseStrictLoc),
+				"Strict mode is triggered by the \"use strict\" directive here:")}
+
+		case js_ast.ImplicitStrictModeESM:
+			notes = p.whyESModule()
+			where = "in an ECMAScript module"
 		}
-		if where.Len > 0 {
-			if why == "" {
-				why = fmt.Sprintf("This file is implicitly in strict mode because of the %q keyword here", p.source.TextForRange(where))
-			}
-			notes = []logger.MsgData{logger.RangeData(&p.tracker, where, why)}
-		}
-		p.log.AddRangeErrorWithNotes(&p.tracker, r,
-			fmt.Sprintf("%s cannot be used in strict mode", text), notes)
+
+		p.log.AddWithNotes(logger.Error, &p.tracker, r,
+			fmt.Sprintf("%s cannot be used %s", text, where), notes)
 	} else if !canBeTransformed && p.isStrictModeOutputFormat() {
-		p.log.AddRangeError(&p.tracker, r,
+		p.log.Add(logger.Error, &p.tracker, r,
 			fmt.Sprintf("%s cannot be used with the \"esm\" output format due to strict mode", text))
 	}
 }
@@ -218,7 +228,7 @@ func (p *parser) markLoweredSyntaxFeature(feature compat.JSFeature, r logger.Ran
 
 func (p *parser) privateSymbolNeedsToBeLowered(private *js_ast.EPrivateIdentifier) bool {
 	symbol := &p.symbols[private.Ref.InnerIndex]
-	return p.options.unsupportedJSFeatures.Has(symbol.Kind.Feature()) || symbol.PrivateSymbolMustBeLowered
+	return p.options.unsupportedJSFeatures.Has(symbol.Kind.Feature()) || symbol.Flags.Has(js_ast.PrivateSymbolMustBeLowered)
 }
 
 func (p *parser) captureThis() js_ast.Ref {
@@ -245,6 +255,7 @@ func (p *parser) lowerFunction(
 	preferExpr *bool,
 	hasRestArg *bool,
 	isArrow bool,
+	superHelpers *superHelpers,
 ) {
 	// Lower object rest binding patterns in function arguments
 	if p.options.unsupportedJSFeatures.Has(compat.ObjectRestSpread) {
@@ -444,65 +455,67 @@ func (p *parser) lowerFunction(
 
 		// Prepend the "super" index functions if necessary
 		var bodyStmtList []js_ast.Stmt
-		if p.fnOnlyDataVisit.superGetRef != nil {
-			keyRef := p.newSymbol(js_ast.SymbolOther, "key")
-			p.currentScope.Generated = append(p.currentScope.Generated, *p.fnOnlyDataVisit.superGetRef, keyRef)
-			superGetStmt := js_ast.Stmt{Loc: bodyLoc, Data: &js_ast.SLocal{
-				Decls: []js_ast.Decl{{
-					Binding: js_ast.Binding{Loc: bodyLoc, Data: &js_ast.BIdentifier{Ref: *p.fnOnlyDataVisit.superGetRef}},
-					ValueOrNil: js_ast.Expr{Loc: bodyLoc, Data: &js_ast.EArrow{
-						Args: []js_ast.Arg{
-							{Binding: js_ast.Binding{Loc: bodyLoc, Data: &js_ast.BIdentifier{Ref: keyRef}}},
-						},
-						Body: js_ast.FnBody{
-							Loc: bodyLoc,
-							Stmts: []js_ast.Stmt{{Loc: bodyLoc, Data: &js_ast.SReturn{
-								ValueOrNil: js_ast.Expr{Loc: bodyLoc, Data: &js_ast.EIndex{
-									Target: js_ast.Expr{Loc: bodyLoc, Data: js_ast.ESuperShared},
-									Index:  js_ast.Expr{Loc: bodyLoc, Data: &js_ast.EIdentifier{Ref: keyRef}},
-								}},
-							}}},
-						},
-						PreferExpr: true,
-					}},
-				}},
-			}}
-			p.recordUsage(keyRef)
-			bodyStmtList = append(bodyStmtList, superGetStmt)
-		}
-		if p.fnOnlyDataVisit.superSetRef != nil {
-			keyRef := p.newSymbol(js_ast.SymbolOther, "key")
-			valueRef := p.newSymbol(js_ast.SymbolOther, "value")
-			p.currentScope.Generated = append(p.currentScope.Generated, *p.fnOnlyDataVisit.superSetRef, keyRef)
-			p.currentScope.Generated = append(p.currentScope.Generated, *p.fnOnlyDataVisit.superSetRef, valueRef)
-			superSetStmt := js_ast.Stmt{Loc: bodyLoc, Data: &js_ast.SLocal{
-				Decls: []js_ast.Decl{{
-					Binding: js_ast.Binding{Loc: bodyLoc, Data: &js_ast.BIdentifier{Ref: *p.fnOnlyDataVisit.superSetRef}},
-					ValueOrNil: js_ast.Expr{Loc: bodyLoc, Data: &js_ast.EArrow{
-						Args: []js_ast.Arg{
-							{Binding: js_ast.Binding{Loc: bodyLoc, Data: &js_ast.BIdentifier{Ref: keyRef}}},
-							{Binding: js_ast.Binding{Loc: bodyLoc, Data: &js_ast.BIdentifier{Ref: valueRef}}},
-						},
-						Body: js_ast.FnBody{
-							Loc: bodyLoc,
-							Stmts: []js_ast.Stmt{{Loc: bodyLoc, Data: &js_ast.SReturn{
-								ValueOrNil: js_ast.Expr{Loc: bodyLoc, Data: &js_ast.EBinary{
-									Op: js_ast.BinOpAssign,
-									Left: js_ast.Expr{Loc: bodyLoc, Data: &js_ast.EIndex{
+		if superHelpers != nil {
+			if superHelpers.getRef != js_ast.InvalidRef {
+				keyRef := p.newSymbol(js_ast.SymbolOther, "key")
+				p.currentScope.Generated = append(p.currentScope.Generated, superHelpers.getRef, keyRef)
+				superGetStmt := js_ast.Stmt{Loc: bodyLoc, Data: &js_ast.SLocal{
+					Decls: []js_ast.Decl{{
+						Binding: js_ast.Binding{Loc: bodyLoc, Data: &js_ast.BIdentifier{Ref: superHelpers.getRef}},
+						ValueOrNil: js_ast.Expr{Loc: bodyLoc, Data: &js_ast.EArrow{
+							Args: []js_ast.Arg{
+								{Binding: js_ast.Binding{Loc: bodyLoc, Data: &js_ast.BIdentifier{Ref: keyRef}}},
+							},
+							Body: js_ast.FnBody{
+								Loc: bodyLoc,
+								Stmts: []js_ast.Stmt{{Loc: bodyLoc, Data: &js_ast.SReturn{
+									ValueOrNil: js_ast.Expr{Loc: bodyLoc, Data: &js_ast.EIndex{
 										Target: js_ast.Expr{Loc: bodyLoc, Data: js_ast.ESuperShared},
 										Index:  js_ast.Expr{Loc: bodyLoc, Data: &js_ast.EIdentifier{Ref: keyRef}},
 									}},
-									Right: js_ast.Expr{Loc: bodyLoc, Data: &js_ast.EIdentifier{Ref: valueRef}},
-								}},
-							}}},
-						},
-						PreferExpr: true,
+								}}},
+							},
+							PreferExpr: true,
+						}},
 					}},
-				}},
-			}}
-			p.recordUsage(keyRef)
-			p.recordUsage(valueRef)
-			bodyStmtList = append(bodyStmtList, superSetStmt)
+				}}
+				p.recordUsage(keyRef)
+				bodyStmtList = append(bodyStmtList, superGetStmt)
+			}
+			if superHelpers.setRef != js_ast.InvalidRef {
+				keyRef := p.newSymbol(js_ast.SymbolOther, "key")
+				valueRef := p.newSymbol(js_ast.SymbolOther, "value")
+				p.currentScope.Generated = append(p.currentScope.Generated, superHelpers.setRef, keyRef)
+				p.currentScope.Generated = append(p.currentScope.Generated, superHelpers.setRef, valueRef)
+				superSetStmt := js_ast.Stmt{Loc: bodyLoc, Data: &js_ast.SLocal{
+					Decls: []js_ast.Decl{{
+						Binding: js_ast.Binding{Loc: bodyLoc, Data: &js_ast.BIdentifier{Ref: superHelpers.setRef}},
+						ValueOrNil: js_ast.Expr{Loc: bodyLoc, Data: &js_ast.EArrow{
+							Args: []js_ast.Arg{
+								{Binding: js_ast.Binding{Loc: bodyLoc, Data: &js_ast.BIdentifier{Ref: keyRef}}},
+								{Binding: js_ast.Binding{Loc: bodyLoc, Data: &js_ast.BIdentifier{Ref: valueRef}}},
+							},
+							Body: js_ast.FnBody{
+								Loc: bodyLoc,
+								Stmts: []js_ast.Stmt{{Loc: bodyLoc, Data: &js_ast.SReturn{
+									ValueOrNil: js_ast.Expr{Loc: bodyLoc, Data: &js_ast.EBinary{
+										Op: js_ast.BinOpAssign,
+										Left: js_ast.Expr{Loc: bodyLoc, Data: &js_ast.EIndex{
+											Target: js_ast.Expr{Loc: bodyLoc, Data: js_ast.ESuperShared},
+											Index:  js_ast.Expr{Loc: bodyLoc, Data: &js_ast.EIdentifier{Ref: keyRef}},
+										}},
+										Right: js_ast.Expr{Loc: bodyLoc, Data: &js_ast.EIdentifier{Ref: valueRef}},
+									}},
+								}}},
+							},
+							PreferExpr: true,
+						}},
+					}},
+				}}
+				p.recordUsage(keyRef)
+				p.recordUsage(valueRef)
+				bodyStmtList = append(bodyStmtList, superSetStmt)
+			}
 		}
 		*bodyStmts = append(bodyStmtList, returnStmt)
 	}
@@ -569,10 +582,10 @@ flatten:
 
 	// Stop now if we can strip the whole chain as dead code. Since the chain is
 	// lazily evaluated, it's safe to just drop the code entirely.
-	if p.options.mangleSyntax {
+	if p.options.minifySyntax {
 		if isNullOrUndefined, sideEffects, ok := toNullOrUndefinedWithSideEffects(expr.Data); ok && isNullOrUndefined {
 			if sideEffects == couldHaveSideEffects {
-				return js_ast.JoinWithComma(p.simplifyUnusedExpr(expr), valueWhenUndefined), exprOut{}
+				return js_ast.JoinWithComma(js_ast.SimplifyUnusedExpr(expr, p.isUnbound), valueWhenUndefined), exprOut{}
 			}
 			return valueWhenUndefined, exprOut{}
 		}
@@ -616,7 +629,7 @@ flatten:
 				if _, ok := e.Target.Data.(*js_ast.ESuper); ok {
 					// Lower "super.prop" if necessary
 					if p.shouldLowerSuperPropertyAccess(e.Target) {
-						key := js_ast.Expr{Loc: e.NameLoc, Data: &js_ast.EString{Value: js_lexer.StringToUTF16(e.Name)}}
+						key := js_ast.Expr{Loc: e.NameLoc, Data: &js_ast.EString{Value: helpers.StringToUTF16(e.Name)}}
 						expr = p.lowerSuperPropertyGet(expr.Loc, key)
 					}
 
@@ -1194,7 +1207,7 @@ func (p *parser) extractSuperProperty(target js_ast.Expr) js_ast.Expr {
 	switch e := target.Data.(type) {
 	case *js_ast.EDot:
 		if p.shouldLowerSuperPropertyAccess(e.Target) {
-			return js_ast.Expr{Loc: e.NameLoc, Data: &js_ast.EString{Value: js_lexer.StringToUTF16(e.Name)}}
+			return js_ast.Expr{Loc: e.NameLoc, Data: &js_ast.EString{Value: helpers.StringToUTF16(e.Name)}}
 		}
 	case *js_ast.EIndex:
 		if p.shouldLowerSuperPropertyAccess(e.Target) {
@@ -1375,7 +1388,7 @@ func (p *parser) lowerSuperPropertyOrPrivateInAssign(expr js_ast.Expr) (js_ast.E
 	case *js_ast.EDot:
 		// "[super.foo] = [bar]" => "[__superWrapper(this, 'foo')._] = [bar]"
 		if p.shouldLowerSuperPropertyAccess(e.Target) {
-			key := js_ast.Expr{Loc: e.NameLoc, Data: &js_ast.EString{Value: js_lexer.StringToUTF16(e.Name)}}
+			key := js_ast.Expr{Loc: e.NameLoc, Data: &js_ast.EString{Value: helpers.StringToUTF16(e.Name)}}
 			expr = p.callSuperPropertyWrapper(expr.Loc, key, false /* includeGet */)
 			didLower = true
 		}
@@ -2005,7 +2018,7 @@ func (p *parser) lowerClass(stmt js_ast.Stmt, expr js_ast.Expr, shadowRef js_ast
 
 			// Remove unused class names when minifying. Check this after we merge in
 			// the shadowing name above since that will adjust the use count.
-			if p.options.mangleSyntax && symbol.UseCountEstimate == 0 {
+			if p.options.minifySyntax && symbol.UseCountEstimate == 0 {
 				class.Name = nil
 			}
 		}
@@ -2135,7 +2148,7 @@ func (p *parser) lowerClass(stmt js_ast.Stmt, expr js_ast.Expr, shadowRef js_ast
 			if fn, ok := prop.ValueOrNil.Data.(*js_ast.EFunction); ok {
 				isConstructor := false
 				if key, ok := prop.Key.Data.(*js_ast.EString); ok {
-					isConstructor = js_lexer.UTF16EqualsString(key.Value, "constructor")
+					isConstructor = helpers.UTF16EqualsString(key.Value, "constructor")
 				}
 				for i, arg := range fn.Fn.Args {
 					for _, decorator := range arg.TSDecorators {
@@ -2324,7 +2337,7 @@ func (p *parser) lowerClass(stmt js_ast.Stmt, expr js_ast.Expr, shadowRef js_ast
 					if key, ok := prop.Key.Data.(*js_ast.EString); ok && !prop.IsComputed {
 						target = js_ast.Expr{Loc: loc, Data: &js_ast.EDot{
 							Target:  target,
-							Name:    js_lexer.UTF16ToString(key.Value),
+							Name:    helpers.UTF16ToString(key.Value),
 							NameLoc: loc,
 						}}
 					} else {
@@ -2420,7 +2433,7 @@ func (p *parser) lowerClass(stmt js_ast.Stmt, expr js_ast.Expr, shadowRef js_ast
 					prop.ValueOrNil,
 				))
 				continue
-			} else if key, ok := prop.Key.Data.(*js_ast.EString); ok && js_lexer.UTF16EqualsString(key.Value, "constructor") {
+			} else if key, ok := prop.Key.Data.(*js_ast.EString); ok && helpers.UTF16EqualsString(key.Value, "constructor") {
 				if fn, ok := prop.ValueOrNil.Data.(*js_ast.EFunction); ok {
 					// Remember where the constructor is for later
 					ctor = fn
@@ -2431,11 +2444,11 @@ func (p *parser) lowerClass(stmt js_ast.Stmt, expr js_ast.Expr, shadowRef js_ast
 							if arg.IsTypeScriptCtorField {
 								if id, ok := arg.Binding.Data.(*js_ast.BIdentifier); ok {
 									parameterFields = append(parameterFields, js_ast.AssignStmt(
-										js_ast.Expr{Loc: arg.Binding.Loc, Data: &js_ast.EDot{
-											Target:  js_ast.Expr{Loc: arg.Binding.Loc, Data: js_ast.EThisShared},
-											Name:    p.symbols[id.Ref.InnerIndex].OriginalName,
-											NameLoc: arg.Binding.Loc,
-										}},
+										js_ast.Expr{Loc: arg.Binding.Loc, Data: p.dotOrMangledPropVisit(
+											js_ast.Expr{Loc: arg.Binding.Loc, Data: js_ast.EThisShared},
+											p.symbols[id.Ref.InnerIndex].OriginalName,
+											arg.Binding.Loc,
+										)},
 										js_ast.Expr{Loc: arg.Binding.Loc, Data: &js_ast.EIdentifier{Ref: id.Ref}},
 									))
 								}
@@ -2463,7 +2476,7 @@ func (p *parser) lowerClass(stmt js_ast.Stmt, expr js_ast.Expr, shadowRef js_ast
 			// Append it to the list to reuse existing allocation space
 			class.Properties = append(class.Properties, js_ast.Property{
 				IsMethod:   true,
-				Key:        js_ast.Expr{Loc: classLoc, Data: &js_ast.EString{Value: js_lexer.StringToUTF16("constructor")}},
+				Key:        js_ast.Expr{Loc: classLoc, Data: &js_ast.EString{Value: helpers.StringToUTF16("constructor")}},
 				ValueOrNil: js_ast.Expr{Loc: classLoc, Data: ctor},
 			})
 
@@ -2768,11 +2781,11 @@ func (p *parser) lowerTemplateLiteral(loc logger.Loc, e *js_ast.ETemplate) js_as
 		needsRaw = true
 	} else {
 		cooked = append(cooked, js_ast.Expr{Loc: e.HeadLoc, Data: &js_ast.EString{Value: e.HeadCooked}})
-		if !js_lexer.UTF16EqualsString(e.HeadCooked, e.HeadRaw) {
+		if !helpers.UTF16EqualsString(e.HeadCooked, e.HeadRaw) {
 			needsRaw = true
 		}
 	}
-	raw = append(raw, js_ast.Expr{Loc: e.HeadLoc, Data: &js_ast.EString{Value: js_lexer.StringToUTF16(e.HeadRaw)}})
+	raw = append(raw, js_ast.Expr{Loc: e.HeadLoc, Data: &js_ast.EString{Value: helpers.StringToUTF16(e.HeadRaw)}})
 
 	// Handle the tail
 	for _, part := range e.Parts {
@@ -2782,11 +2795,11 @@ func (p *parser) lowerTemplateLiteral(loc logger.Loc, e *js_ast.ETemplate) js_as
 			needsRaw = true
 		} else {
 			cooked = append(cooked, js_ast.Expr{Loc: part.TailLoc, Data: &js_ast.EString{Value: part.TailCooked}})
-			if !js_lexer.UTF16EqualsString(part.TailCooked, part.TailRaw) {
+			if !helpers.UTF16EqualsString(part.TailCooked, part.TailRaw) {
 				needsRaw = true
 			}
 		}
-		raw = append(raw, js_ast.Expr{Loc: part.TailLoc, Data: &js_ast.EString{Value: js_lexer.StringToUTF16(part.TailRaw)}})
+		raw = append(raw, js_ast.Expr{Loc: part.TailLoc, Data: &js_ast.EString{Value: helpers.StringToUTF16(part.TailRaw)}})
 	}
 
 	// Construct the template object
@@ -2819,7 +2832,7 @@ func (p *parser) lowerTemplateLiteral(loc logger.Loc, e *js_ast.ETemplate) js_as
 }
 
 func (p *parser) shouldLowerSuperPropertyAccess(expr js_ast.Expr) bool {
-	if p.fnOnlyDataVisit.shouldLowerSuper {
+	if p.fnOrArrowDataVisit.shouldLowerSuper {
 		_, isSuper := expr.Data.(*js_ast.ESuper)
 		return isSuper
 	}
@@ -2827,19 +2840,19 @@ func (p *parser) shouldLowerSuperPropertyAccess(expr js_ast.Expr) bool {
 }
 
 func (p *parser) ensureSuperGet() {
-	if p.fnOnlyDataVisit.superGetRef == nil {
-		ref := p.newSymbol(js_ast.SymbolOther, "__superGet")
-		p.fnOnlyDataVisit.superGetRef = &ref
+	ref := &p.fnOnlyDataVisit.superHelpers.getRef
+	if *ref == js_ast.InvalidRef {
+		*ref = p.newSymbol(js_ast.SymbolOther, "__superGet")
 	}
-	p.recordUsage(*p.fnOnlyDataVisit.superGetRef)
+	p.recordUsage(*ref)
 }
 
 func (p *parser) ensureSuperSet() {
-	if p.fnOnlyDataVisit.superSetRef == nil {
-		ref := p.newSymbol(js_ast.SymbolOther, "__superSet")
-		p.fnOnlyDataVisit.superSetRef = &ref
+	ref := &p.fnOnlyDataVisit.superHelpers.setRef
+	if *ref == js_ast.InvalidRef {
+		*ref = p.newSymbol(js_ast.SymbolOther, "__superSet")
 	}
-	p.recordUsage(*p.fnOnlyDataVisit.superSetRef)
+	p.recordUsage(*ref)
 }
 
 func (p *parser) callSuperPropertyWrapper(loc logger.Loc, property js_ast.Expr, includeGet bool) js_ast.Expr {
@@ -2856,12 +2869,12 @@ func (p *parser) callSuperPropertyWrapper(loc logger.Loc, property js_ast.Expr, 
 		superGet := js_ast.Expr{Loc: loc, Data: js_ast.ENullShared}
 		if includeGet {
 			p.ensureSuperGet()
-			superGet.Data = &js_ast.EIdentifier{Ref: *p.fnOnlyDataVisit.superGetRef}
+			superGet.Data = &js_ast.EIdentifier{Ref: p.fnOnlyDataVisit.superHelpers.getRef}
 		}
 
 		// All uses of the wrapper need to write
 		p.ensureSuperSet()
-		superSet := js_ast.Expr{Loc: loc, Data: &js_ast.EIdentifier{Ref: *p.fnOnlyDataVisit.superSetRef}}
+		superSet := js_ast.Expr{Loc: loc, Data: &js_ast.EIdentifier{Ref: p.fnOnlyDataVisit.superHelpers.setRef}}
 
 		result = p.callRuntime(loc, "__superWrapper", []js_ast.Expr{
 			superGet,
@@ -2886,7 +2899,7 @@ func (p *parser) lowerSuperPropertyGet(loc logger.Loc, key js_ast.Expr) js_ast.E
 	// "super[foo]" => "__superGet(foo)"
 	p.ensureSuperGet()
 	return js_ast.Expr{Loc: loc, Data: &js_ast.ECall{
-		Target: js_ast.Expr{Loc: loc, Data: &js_ast.EIdentifier{Ref: *p.fnOnlyDataVisit.superGetRef}},
+		Target: js_ast.Expr{Loc: loc, Data: &js_ast.EIdentifier{Ref: p.fnOnlyDataVisit.superHelpers.getRef}},
 		Args:   []js_ast.Expr{key},
 	}}
 }
@@ -2905,7 +2918,7 @@ func (p *parser) lowerSuperPropertySet(loc logger.Loc, key js_ast.Expr, value js
 	// "super[foo] = bar" => "__superSet(foo, bar)"
 	p.ensureSuperSet()
 	return js_ast.Expr{Loc: loc, Data: &js_ast.ECall{
-		Target: js_ast.Expr{Loc: loc, Data: &js_ast.EIdentifier{Ref: *p.fnOnlyDataVisit.superSetRef}},
+		Target: js_ast.Expr{Loc: loc, Data: &js_ast.EIdentifier{Ref: p.fnOnlyDataVisit.superHelpers.setRef}},
 		Args:   []js_ast.Expr{key, value},
 	}}
 }
@@ -2931,7 +2944,7 @@ func (p *parser) maybeLowerSuperPropertyGetInsideCall(call *js_ast.ECall) {
 		if !p.shouldLowerSuperPropertyAccess(e.Target) {
 			return
 		}
-		key = js_ast.Expr{Loc: e.NameLoc, Data: &js_ast.EString{Value: js_lexer.StringToUTF16(e.Name)}}
+		key = js_ast.Expr{Loc: e.NameLoc, Data: &js_ast.EString{Value: helpers.StringToUTF16(e.Name)}}
 
 	case *js_ast.EIndex:
 		// Lower "super[prop]" if necessary

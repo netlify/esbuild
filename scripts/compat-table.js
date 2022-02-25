@@ -82,8 +82,10 @@ const engines = [
   'edge',
   'es',
   'firefox',
+  'ie',
   'ios',
   'node',
+  'opera',
   'safari',
 ]
 
@@ -115,8 +117,8 @@ function mergeVersions(target, res) {
   const highestVersionMap = versions[target] || (versions[target] = {})
   for (const engine in lowestVersionMap) {
     const version = lowestVersionMap[engine]
-    if (!highestVersionMap[engine] || compareVersions({ version }, { version: highestVersionMap[engine] }) > 0) {
-      highestVersionMap[engine] = version
+    if (!highestVersionMap[engine] || compareVersions({ version }, { version: highestVersionMap[engine][0].start }) > 0) {
+      highestVersionMap[engine] = [{ start: version, end: null }]
     }
   }
 }
@@ -153,6 +155,7 @@ mergeVersions('BigInt', { es2020: true })
 mergeVersions('ImportMeta', { es2020: true })
 mergeVersions('NullishCoalescing', { es2020: true })
 mergeVersions('OptionalChain', { es2020: true })
+mergeVersions('TypeofExoticObjectIsObject', { es2020: true }) // https://github.com/tc39/ecma262/pull/1441
 mergeVersions('LogicalAssignment', { es2021: true })
 mergeVersions('TopLevelAwait', {})
 mergeVersions('ArbitraryModuleNamespaceNames', {})
@@ -196,9 +199,46 @@ mergeVersions('DynamicImport', {
   edge79: true,
   firefox67: true,
   ios11: true,
-  node13_2: true, // From https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/import
   safari11_1: true,
 })
+
+// This is a problem specific to Internet explorer. See https://github.com/tc39/ecma262/issues/1440
+mergeVersions('TypeofExoticObjectIsObject', {
+  chrome0: true,
+  edge0: true,
+  es0: true,
+  firefox0: true,
+  ios0: true,
+  node0: true,
+  opera0: true,
+  safari0: true,
+})
+
+// This is a special case. Node added support for it to both v12.20+ and v13.2+
+// so the range is inconveniently discontiguous. Sources:
+//
+// - https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/import
+// - https://github.com/nodejs/node/pull/35950
+// - https://github.com/nodejs/node/pull/31974
+//
+versions.DynamicImport.node = [
+  { start: [12, 20], end: [13] },
+  { start: [13, 2] },
+]
+
+// Manually copied from https://nodejs.org/api/esm.html#node-imports
+versions.NodeColonPrefixImport = {
+  node: [
+    { start: [12, 20], end: [13] },
+    { start: [14, 13, 1] },
+  ]
+}
+versions.NodeColonPrefixRequire = {
+  node: [
+    { start: [14, 18], end: [15] },
+    { start: [16] },
+  ]
+}
 
 mergeVersions('ArbitraryModuleNamespaceNames', {
   // From https://github.com/tc39/ecma262/pull/2154#issuecomment-825201030
@@ -215,6 +255,9 @@ mergeVersions('ArbitraryModuleNamespaceNames', {
 mergeVersions('ImportAssertions', {
   // From https://www.chromestatus.com/feature/5765269513306112
   chrome91: true,
+
+  // From https://github.com/nodejs/node/blob/master/doc/changelogs/CHANGELOG_V16.md#16.14.0
+  node16_14: true,
 
   // Not yet in Firefox: https://bugzilla.mozilla.org/show_bug.cgi?id=1668330
 })
@@ -266,7 +309,7 @@ for (const feature in features) {
 }
 
 function upper(text) {
-  if (text === 'es' || text === 'ios') return text.toUpperCase()
+  if (text === 'es' || text === 'ios' || text === 'ie') return text.toUpperCase()
   return text[0].toUpperCase() + text.slice(1)
 }
 
@@ -274,7 +317,13 @@ function writeInnerMap(obj) {
   const keys = Object.keys(obj).sort()
   const maxLength = keys.reduce((a, b) => Math.max(a, b.length + 1), 0)
   if (keys.length === 0) return '{}'
-  return `{\n${keys.map(x => `\t\t${(upper(x) + ':').padEnd(maxLength)} {${obj[x].join(', ')}},`).join('\n')}\n\t}`
+  return `{\n${keys.map(x => {
+    const items = obj[x].map(y => {
+      return `{start: v{${y.start.concat(0, 0).slice(0, 3).join(', ')
+        }}${y.end ? `, end: v{${y.end.concat(0, 0).slice(0, 3).join(', ')}}` : ''}}`
+    })
+    return `\t\t${(upper(x) + ':').padEnd(maxLength)} {${items.join(', ')}},`
+  }).join('\n')}\n\t}`
 }
 
 fs.writeFileSync(__dirname + '/../internal/compat/js_table.go',
@@ -305,27 +354,15 @@ func (features JSFeature) Has(feature JSFeature) bool {
 \treturn (features & feature) != 0
 }
 
-var jsTable = map[JSFeature]map[Engine][]int{
+var jsTable = map[JSFeature]map[Engine][]versionRange{
 ${Object.keys(versions).sort().map(x => `\t${x}: ${writeInnerMap(versions[x])},`).join('\n')}
-}
-
-func isVersionLessThan(a []int, b []int) bool {
-\tfor i := 0; i < len(a) && i < len(b); i++ {
-\t\tif a[i] > b[i] {
-\t\t\treturn false
-\t\t}
-\t\tif a[i] < b[i] {
-\t\t\treturn true
-\t\t}
-\t}
-\treturn len(a) < len(b)
 }
 
 // Return all features that are not available in at least one environment
 func UnsupportedJSFeatures(constraints map[Engine][]int) (unsupported JSFeature) {
 \tfor feature, engines := range jsTable {
 \t\tfor engine, version := range constraints {
-\t\t\tif minVersion, ok := engines[engine]; !ok || isVersionLessThan(version, minVersion) {
+\t\t\tif versionRanges, ok := engines[engine]; !ok || !isVersionSupported(versionRanges, version) {
 \t\t\t\tunsupported |= feature
 \t\t\t}
 \t\t}

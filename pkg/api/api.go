@@ -168,8 +168,10 @@ const (
 	EngineChrome EngineName = iota
 	EngineEdge
 	EngineFirefox
+	EngineIE
 	EngineIOS
 	EngineNode
+	EngineOpera
 	EngineSafari
 )
 
@@ -239,6 +241,13 @@ const (
 	TreeShakingTrue
 )
 
+type Drop uint8
+
+const (
+	DropConsole Drop = 1 << iota
+	DropDebugger
+)
+
 ////////////////////////////////////////////////////////////////////////////////
 // Build API
 
@@ -254,13 +263,17 @@ type BuildOptions struct {
 	Target  Target   // Documentation: https://esbuild.github.io/api/#target
 	Engines []Engine // Documentation: https://esbuild.github.io/api/#target
 
-	MinifyWhitespace  bool          // Documentation: https://esbuild.github.io/api/#minify
-	MinifyIdentifiers bool          // Documentation: https://esbuild.github.io/api/#minify
-	MinifySyntax      bool          // Documentation: https://esbuild.github.io/api/#minify
-	Charset           Charset       // Documentation: https://esbuild.github.io/api/#charset
-	TreeShaking       TreeShaking   // Documentation: https://esbuild.github.io/api/#tree-shaking
-	IgnoreAnnotations bool          // Documentation: https://esbuild.github.io/api/#ignore-annotations
-	LegalComments     LegalComments // Documentation: https://esbuild.github.io/api/#legal-comments
+	MangleProps       string                 // Documentation: https://esbuild.github.io/api/#mangle-props
+	ReserveProps      string                 // Documentation: https://esbuild.github.io/api/#mangle-props
+	MangleCache       map[string]interface{} // Documentation: https://esbuild.github.io/api/#mangle-props
+	Drop              Drop                   // Documentation: https://esbuild.github.io/api/#drop
+	MinifyWhitespace  bool                   // Documentation: https://esbuild.github.io/api/#minify
+	MinifyIdentifiers bool                   // Documentation: https://esbuild.github.io/api/#minify
+	MinifySyntax      bool                   // Documentation: https://esbuild.github.io/api/#minify
+	Charset           Charset                // Documentation: https://esbuild.github.io/api/#charset
+	TreeShaking       TreeShaking            // Documentation: https://esbuild.github.io/api/#tree-shaking
+	IgnoreAnnotations bool                   // Documentation: https://esbuild.github.io/api/#ignore-annotations
+	LegalComments     LegalComments          // Documentation: https://esbuild.github.io/api/#legal-comments
 
 	JSXMode     JSXMode // Documentation: https://esbuild.github.io/api/#jsx-mode
 	JSXFactory  string  // Documentation: https://esbuild.github.io/api/#jsx-factory
@@ -332,6 +345,7 @@ type BuildResult struct {
 
 	OutputFiles []OutputFile
 	Metafile    string
+	MangleCache map[string]interface{}
 
 	Rebuild func() BuildResult // Only when "Incremental: true"
 	Stop    func()             // Only when "Watch: true"
@@ -365,13 +379,17 @@ type TransformOptions struct {
 	Format     Format // Documentation: https://esbuild.github.io/api/#format
 	GlobalName string // Documentation: https://esbuild.github.io/api/#global-name
 
-	MinifyWhitespace  bool          // Documentation: https://esbuild.github.io/api/#minify
-	MinifyIdentifiers bool          // Documentation: https://esbuild.github.io/api/#minify
-	MinifySyntax      bool          // Documentation: https://esbuild.github.io/api/#minify
-	Charset           Charset       // Documentation: https://esbuild.github.io/api/#charset
-	TreeShaking       TreeShaking   // Documentation: https://esbuild.github.io/api/#tree-shaking
-	IgnoreAnnotations bool          // Documentation: https://esbuild.github.io/api/#ignore-annotations
-	LegalComments     LegalComments // Documentation: https://esbuild.github.io/api/#legal-comments
+	MangleProps       string                 // Documentation: https://esbuild.github.io/api/#mangle-props
+	ReserveProps      string                 // Documentation: https://esbuild.github.io/api/#mangle-props
+	MangleCache       map[string]interface{} // Documentation: https://esbuild.github.io/api/#mangle-props
+	Drop              Drop                   // Documentation: https://esbuild.github.io/api/#drop
+	MinifyWhitespace  bool                   // Documentation: https://esbuild.github.io/api/#minify
+	MinifyIdentifiers bool                   // Documentation: https://esbuild.github.io/api/#minify
+	MinifySyntax      bool                   // Documentation: https://esbuild.github.io/api/#minify
+	Charset           Charset                // Documentation: https://esbuild.github.io/api/#charset
+	TreeShaking       TreeShaking            // Documentation: https://esbuild.github.io/api/#tree-shaking
+	IgnoreAnnotations bool                   // Documentation: https://esbuild.github.io/api/#ignore-annotations
+	LegalComments     LegalComments          // Documentation: https://esbuild.github.io/api/#legal-comments
 
 	JSXMode     JSXMode // Documentation: https://esbuild.github.io/api/#jsx
 	JSXFactory  string  // Documentation: https://esbuild.github.io/api/#jsx-factory
@@ -395,6 +413,8 @@ type TransformResult struct {
 
 	Code []byte
 	Map  []byte
+
+	MangleCache map[string]interface{}
 }
 
 // Documentation: https://esbuild.github.io/api/#transform-api
@@ -451,11 +471,33 @@ type Plugin struct {
 
 type PluginBuild struct {
 	InitialOptions  *BuildOptions
+	Resolve         func(path string, options ResolveOptions) ResolveResult
 	OnStart         func(callback func() (OnStartResult, error))
 	OnEnd           func(callback func(result *BuildResult))
 	OnResolve       func(options OnResolveOptions, callback func(OnResolveArgs) (OnResolveResult, error))
 	OnLoad          func(options OnLoadOptions, callback func(OnLoadArgs) (OnLoadResult, error))
 	OnDynamicImport func(options OnDynamicImportOptions, callback func(OnDynamicImportArgs) (OnDynamicImportResult, error))
+}
+
+type ResolveOptions struct {
+	PluginName string
+	Importer   string
+	Namespace  string
+	ResolveDir string
+	Kind       ResolveKind
+	PluginData interface{}
+}
+
+type ResolveResult struct {
+	Errors   []Message
+	Warnings []Message
+
+	Path        string
+	External    bool
+	SideEffects bool
+	Namespace   string
+	Suffix      string
+	PluginData  interface{}
 }
 
 type OnStartResult struct {
@@ -487,6 +529,7 @@ type OnResolveResult struct {
 	External    bool
 	SideEffects SideEffects
 	Namespace   string
+	Suffix      string
 	PluginData  interface{}
 
 	WatchFiles []string
@@ -501,6 +544,7 @@ type OnLoadOptions struct {
 type OnLoadArgs struct {
 	Path       string
 	Namespace  string
+	Suffix     string
 	PluginData interface{}
 }
 

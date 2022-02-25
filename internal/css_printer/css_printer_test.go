@@ -21,7 +21,7 @@ func expectPrintedCommon(t *testing.T, name string, contents string, expected st
 		t.Helper()
 		log := logger.NewDeferLog(logger.DeferLogNoVerboseOrDebug)
 		tree := css_parser.Parse(log, test.SourceForTest(contents), css_parser.Options{
-			RemoveWhitespace: options.RemoveWhitespace,
+			MinifyWhitespace: options.MinifyWhitespace,
 		})
 		msgs := log.Done()
 		text := ""
@@ -44,7 +44,7 @@ func expectPrinted(t *testing.T, contents string, expected string) {
 func expectPrintedMinify(t *testing.T, contents string, expected string) {
 	t.Helper()
 	expectPrintedCommon(t, contents+" [minified]", contents, expected, Options{
-		RemoveWhitespace: true,
+		MinifyWhitespace: true,
 	})
 }
 
@@ -141,12 +141,15 @@ func TestNestedSelector(t *testing.T) {
 	expectPrintedMinify(t, "a { &b {} }", "a{&b{}}")
 	expectPrintedMinify(t, "a { & b {} }", "a{& b{}}")
 	expectPrintedMinify(t, "a { & :b {} }", "a{& :b{}}")
+	expectPrintedMinify(t, "& a & b & c {}", "& a & b & c{}")
 }
 
 func TestBadQualifiedRules(t *testing.T) {
-	expectPrinted(t, "$bad: rule;", "$bad: rule {\n}\n")
-	expectPrinted(t, "a { div.major { color: blue } color: red }", "a {\n  div.major { color: blue };\n  color: red;\n}\n")
-	expectPrinted(t, "a { div:hover { color: blue } color: red }", "a {\n  div: hover { color: blue };\n  color: red;\n}\n")
+	expectPrinted(t, ";", "; {\n}\n")
+	expectPrinted(t, "$bad: rule;", "$bad: rule; {\n}\n")
+	expectPrinted(t, "a {}; b {};", "a {\n}\n; b {\n}\n; {\n}\n")
+	expectPrinted(t, "a { div.major { color: blue } color: red }", "a {\n  div.major { color: blue } color: red;\n}\n")
+	expectPrinted(t, "a { div:hover { color: blue } color: red }", "a {\n  div: hover { color: blue } color: red;\n}\n")
 	expectPrinted(t, "a { div:hover { color: blue }; color: red }", "a {\n  div: hover { color: blue };\n  color: red;\n}\n")
 
 	expectPrinted(t, "$bad{ color: red }", "$bad {\n  color: red;\n}\n")
@@ -277,6 +280,14 @@ func TestVerbatimWhitespace(t *testing.T) {
 	expectPrintedMinify(t, "* { --x: {y}; }", "*{--x: {y}}")
 	expectPrintedMinify(t, "* { --x:{y }; }", "*{--x:{y }}")
 	expectPrintedMinify(t, "* { --x:{ y}; }", "*{--x:{ y}}")
+
+	expectPrintedMinify(t, "@supports ( --x : y , z ) { a { color: red; } }", "@supports ( --x : y , z ){a{color:red}}")
+	expectPrintedMinify(t, "@supports ( --x : ) { a { color: red; } }", "@supports ( --x : ){a{color:red}}")
+	expectPrintedMinify(t, "@supports (--x: ) { a { color: red; } }", "@supports (--x: ){a{color:red}}")
+	expectPrintedMinify(t, "@supports ( --x y , z ) { a { color: red; } }", "@supports (--x y,z){a{color:red}}")
+	expectPrintedMinify(t, "@supports ( --x ) { a { color: red; } }", "@supports (--x){a{color:red}}")
+	expectPrintedMinify(t, "@supports ( ) { a { color: red; } }", "@supports (){a{color:red}}")
+	expectPrintedMinify(t, "@supports ( . --x : y , z ) { a { color: red; } }", "@supports (. --x : y,z){a{color:red}}")
 }
 
 func TestAtRule(t *testing.T) {

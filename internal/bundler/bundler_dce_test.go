@@ -1,8 +1,10 @@
 package bundler
 
 import (
+	"regexp"
 	"testing"
 
+	"github.com/evanw/esbuild/internal/compat"
 	"github.com/evanw/esbuild/internal/config"
 )
 
@@ -183,9 +185,9 @@ func TestPackageJsonSideEffectsFalseKeepBareImportAndRequireES6(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 		},
-		expectedScanLog: `Users/user/project/src/entry.js: warning: Ignoring this import because "` +
+		expectedScanLog: `Users/user/project/src/entry.js: WARNING: Ignoring this import because "` +
 			`Users/user/project/node_modules/demo-pkg/index.js" was marked as having no side effects
-Users/user/project/node_modules/demo-pkg/package.json: note: "sideEffects" is false ` +
+Users/user/project/node_modules/demo-pkg/package.json: NOTE: "sideEffects" is false ` +
 			`in the enclosing "package.json" file
 `,
 	})
@@ -214,9 +216,9 @@ func TestPackageJsonSideEffectsFalseKeepBareImportAndRequireCommonJS(t *testing.
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 		},
-		expectedScanLog: `Users/user/project/src/entry.js: warning: Ignoring this import because "` +
+		expectedScanLog: `Users/user/project/src/entry.js: WARNING: Ignoring this import because "` +
 			`Users/user/project/node_modules/demo-pkg/index.js" was marked as having no side effects
-Users/user/project/node_modules/demo-pkg/package.json: note: "sideEffects" is false ` +
+Users/user/project/node_modules/demo-pkg/package.json: NOTE: "sideEffects" is false ` +
 			`in the enclosing "package.json" file
 `,
 	})
@@ -244,9 +246,9 @@ func TestPackageJsonSideEffectsFalseRemoveBareImportES6(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 		},
-		expectedScanLog: `Users/user/project/src/entry.js: warning: Ignoring this import because "` +
+		expectedScanLog: `Users/user/project/src/entry.js: WARNING: Ignoring this import because "` +
 			`Users/user/project/node_modules/demo-pkg/index.js" was marked as having no side effects
-Users/user/project/node_modules/demo-pkg/package.json: note: "sideEffects" is false ` +
+Users/user/project/node_modules/demo-pkg/package.json: NOTE: "sideEffects" is false ` +
 			`in the enclosing "package.json" file
 `,
 	})
@@ -274,9 +276,9 @@ func TestPackageJsonSideEffectsFalseRemoveBareImportCommonJS(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 		},
-		expectedScanLog: `Users/user/project/src/entry.js: warning: Ignoring this import because "` +
+		expectedScanLog: `Users/user/project/src/entry.js: WARNING: Ignoring this import because "` +
 			`Users/user/project/node_modules/demo-pkg/index.js" was marked as having no side effects
-Users/user/project/node_modules/demo-pkg/package.json: note: "sideEffects" is false ` +
+Users/user/project/node_modules/demo-pkg/package.json: NOTE: "sideEffects" is false ` +
 			`in the enclosing "package.json" file
 `,
 	})
@@ -722,9 +724,9 @@ func TestPackageJsonSideEffectsArrayGlob(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 		},
-		expectedScanLog: `Users/user/project/src/entry.js: warning: Ignoring this import because ` +
+		expectedScanLog: `Users/user/project/src/entry.js: WARNING: Ignoring this import because ` +
 			`"Users/user/project/node_modules/demo-pkg/remove/this/file.js" was marked as having no side effects
-Users/user/project/node_modules/demo-pkg/package.json: note: It was excluded from the "sideEffects" ` +
+Users/user/project/node_modules/demo-pkg/package.json: NOTE: It was excluded from the "sideEffects" ` +
 			`array in the enclosing "package.json" file
 `,
 	})
@@ -1383,7 +1385,7 @@ func TestDeadCodeFollowingJump(t *testing.T) {
 		options: config.Options{
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
-			MangleSyntax:  true,
+			MinifySyntax:  true,
 		},
 	})
 }
@@ -1426,7 +1428,7 @@ func TestRemoveTrailingReturn(t *testing.T) {
 		options: config.Options{
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
-			MangleSyntax:  true,
+			MinifySyntax:  true,
 			OutputFormat:  config.FormatESModule,
 		},
 	})
@@ -1718,7 +1720,7 @@ func TestDCETypeOfEqualsStringMangle(t *testing.T) {
 		options: config.Options{
 			Mode:          config.ModeBundle,
 			OutputFormat:  config.FormatIIFE,
-			MangleSyntax:  true,
+			MinifySyntax:  true,
 			AbsOutputFile: "/out.js",
 		},
 	})
@@ -1828,6 +1830,74 @@ func TestDCETypeOfEqualsStringGuardCondition(t *testing.T) {
 	})
 }
 
+func TestDCETypeOfCompareStringGuardCondition(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				// Everything here should be removed as dead code due to tree shaking
+				var REMOVE_1 = typeof x <= 'u' ? x : null
+				var REMOVE_1 = typeof x < 'u' ? x : null
+				var REMOVE_1 = typeof x >= 'u' ? null : x
+				var REMOVE_1 = typeof x > 'u' ? null : x
+				var REMOVE_1 = typeof x <= 'u' && x
+				var REMOVE_1 = typeof x < 'u' && x
+				var REMOVE_1 = typeof x >= 'u' || x
+				var REMOVE_1 = typeof x > 'u' || x
+				var REMOVE_1 = 'u' >= typeof x ? x : null
+				var REMOVE_1 = 'u' > typeof x ? x : null
+				var REMOVE_1 = 'u' <= typeof x ? null : x
+				var REMOVE_1 = 'u' < typeof x ? null : x
+				var REMOVE_1 = 'u' >= typeof x && x
+				var REMOVE_1 = 'u' > typeof x && x
+				var REMOVE_1 = 'u' <= typeof x || x
+				var REMOVE_1 = 'u' < typeof x || x
+
+				// Everything here should be kept as live code because it has side effects
+				var keep_1 = typeof x <= 'u' ? y : null
+				var keep_1 = typeof x < 'u' ? y : null
+				var keep_1 = typeof x >= 'u' ? null : y
+				var keep_1 = typeof x > 'u' ? null : y
+				var keep_1 = typeof x <= 'u' && y
+				var keep_1 = typeof x < 'u' && y
+				var keep_1 = typeof x >= 'u' || y
+				var keep_1 = typeof x > 'u' || y
+				var keep_1 = 'u' >= typeof x ? y : null
+				var keep_1 = 'u' > typeof x ? y : null
+				var keep_1 = 'u' <= typeof x ? null : y
+				var keep_1 = 'u' < typeof x ? null : y
+				var keep_1 = 'u' >= typeof x && y
+				var keep_1 = 'u' > typeof x && y
+				var keep_1 = 'u' <= typeof x || y
+				var keep_1 = 'u' < typeof x || y
+
+				// Everything here should be kept as live code because it has side effects
+				var keep_2 = typeof x <= 'u' ? null : x
+				var keep_2 = typeof x < 'u' ? null : x
+				var keep_2 = typeof x >= 'u' ? x : null
+				var keep_2 = typeof x > 'u' ? x : null
+				var keep_2 = typeof x <= 'u' || x
+				var keep_2 = typeof x < 'u' || x
+				var keep_2 = typeof x >= 'u' && x
+				var keep_2 = typeof x > 'u' && x
+				var keep_2 = 'u' >= typeof x ? null : x
+				var keep_2 = 'u' > typeof x ? null : x
+				var keep_2 = 'u' <= typeof x ? x : null
+				var keep_2 = 'u' < typeof x ? x : null
+				var keep_2 = 'u' >= typeof x || x
+				var keep_2 = 'u' > typeof x || x
+				var keep_2 = 'u' <= typeof x && x
+				var keep_2 = 'u' < typeof x && x
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			OutputFormat:  config.FormatIIFE,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
 // These unused imports should be removed since they aren't used, and removing
 // them makes the code shorter.
 func TestRemoveUnusedImports(t *testing.T) {
@@ -1842,7 +1912,7 @@ func TestRemoveUnusedImports(t *testing.T) {
 		entryPaths: []string{"/entry.js"},
 		options: config.Options{
 			Mode:          config.ModePassThrough,
-			MangleSyntax:  true,
+			MinifySyntax:  true,
 			AbsOutputFile: "/out.js",
 		},
 	})
@@ -1863,7 +1933,7 @@ func TestRemoveUnusedImportsEval(t *testing.T) {
 		entryPaths: []string{"/entry.js"},
 		options: config.Options{
 			Mode:          config.ModePassThrough,
-			MangleSyntax:  true,
+			MinifySyntax:  true,
 			AbsOutputFile: "/out.js",
 		},
 	})
@@ -1887,7 +1957,7 @@ func TestRemoveUnusedImportsEvalTS(t *testing.T) {
 		entryPaths: []string{"/entry.js"},
 		options: config.Options{
 			Mode:          config.ModePassThrough,
-			MangleSyntax:  true,
+			MinifySyntax:  true,
 			AbsOutputFile: "/out.js",
 		},
 	})
@@ -1958,6 +2028,991 @@ func TestDCEVarExports(t *testing.T) {
 		options: config.Options{
 			Mode:         config.ModeBundle,
 			AbsOutputDir: "/out",
+		},
+	})
+}
+
+func TestDCETemplateLiteral(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": "" +
+				"var remove;\n" +
+				"var alsoKeep;\n" +
+				"let a = `${keep}`\n" +
+				"let b = `${123}`\n" +
+				"let c = `${keep ? 1 : 2n}`\n" +
+				"let d = `${remove ? 1 : 2n}`\n" +
+				"let e = `${alsoKeep}`\n",
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+		},
+	})
+}
+
+// Calls to the runtime "__publicField" function are not considered side effects
+func TestTreeShakingLoweredClassStaticField(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				class REMOVE_ME {
+					static x = 'x'
+					static y = 'y'
+					static z = 'z'
+				}
+				function REMOVE_ME_TOO() {
+					new REMOVE_ME()
+				}
+				class KeepMe1 {
+					static x = 'x'
+					static y = sideEffects()
+					static z = 'z'
+				}
+				class KeepMe2 {
+					static x = 'x'
+					static y = 'y'
+					static z = 'z'
+				}
+				new KeepMe2()
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:                  config.ModeBundle,
+			AbsOutputDir:          "/out",
+			UnsupportedJSFeatures: compat.ClassField,
+		},
+	})
+}
+
+func TestTreeShakingLoweredClassStaticFieldMinified(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				class REMOVE_ME {
+					static x = 'x'
+					static y = 'y'
+					static z = 'z'
+				}
+				function REMOVE_ME_TOO() {
+					new REMOVE_ME()
+				}
+				class KeepMe1 {
+					static x = 'x'
+					static y = sideEffects()
+					static z = 'z'
+				}
+				class KeepMe2 {
+					static x = 'x'
+					static y = 'y'
+					static z = 'z'
+				}
+				new KeepMe2()
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:                  config.ModeBundle,
+			AbsOutputDir:          "/out",
+			UnsupportedJSFeatures: compat.ClassField,
+			MinifySyntax:          true,
+		},
+	})
+}
+
+// Assignments are considered side effects
+func TestTreeShakingLoweredClassStaticFieldAssignment(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				class KeepMe1 {
+					static x = 'x'
+					static y = 'y'
+					static z = 'z'
+				}
+				class KeepMe2 {
+					static x = 'x'
+					static y = sideEffects()
+					static z = 'z'
+				}
+				class KeepMe3 {
+					static x = 'x'
+					static y = 'y'
+					static z = 'z'
+				}
+				new KeepMe3()
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:                    config.ModeBundle,
+			AbsOutputDir:            "/out",
+			UnsupportedJSFeatures:   compat.ClassField,
+			UseDefineForClassFields: config.False,
+		},
+	})
+}
+
+func TestInlineIdentityFunctionCalls(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/identity.js": `
+				function DROP(x) { return x }
+				console.log(DROP(1))
+				DROP(foo())
+				DROP(1)
+			`,
+
+			"/identity-last.js": `
+				function DROP(x) { return [x] }
+				function DROP(x) { return x }
+				console.log(DROP(1))
+				DROP(foo())
+				DROP(1)
+			`,
+
+			"/identity-cross-module.js": `
+				import { DROP } from './identity-cross-module-def'
+				console.log(DROP(1))
+				DROP(foo())
+				DROP(1)
+			`,
+
+			"/identity-cross-module-def.js": `
+				export function DROP(x) { return x }
+			`,
+
+			"/identity-no-args.js": `
+				function keep(x) { return x }
+				console.log(keep())
+				keep()
+			`,
+
+			"/identity-two-args.js": `
+				function keep(x) { return x }
+				console.log(keep(1, 2))
+				keep(1, 2)
+			`,
+
+			"/identity-first.js": `
+				function keep(x) { return x }
+				function keep(x) { return [x] }
+				console.log(keep(1))
+				keep(foo())
+				keep(1)
+			`,
+
+			"/identity-generator.js": `
+				function* keep(x) { return x }
+				console.log(keep(1))
+				keep(foo())
+				keep(1)
+			`,
+
+			"/identity-async.js": `
+				async function keep(x) { return x }
+				console.log(keep(1))
+				keep(foo())
+				keep(1)
+			`,
+
+			"/reassign.js": `
+				function keep(x) { return x }
+				keep = reassigned
+				console.log(keep(1))
+				keep(foo())
+				keep(1)
+			`,
+
+			"/reassign-inc.js": `
+				function keep(x) { return x }
+				keep++
+				console.log(keep(1))
+				keep(foo())
+				keep(1)
+			`,
+
+			"/reassign-div.js": `
+				function keep(x) { return x }
+				keep /= reassigned
+				console.log(keep(1))
+				keep(foo())
+				keep(1)
+			`,
+
+			"/reassign-array.js": `
+				function keep(x) { return x }
+				[keep] = reassigned
+				console.log(keep(1))
+				keep(foo())
+				keep(1)
+			`,
+
+			"/reassign-object.js": `
+				function keep(x) { return x }
+				({keep} = reassigned)
+				console.log(keep(1))
+				keep(foo())
+				keep(1)
+			`,
+
+			"/not-identity-two-args.js": `
+				function keep(x, y) { return x }
+				console.log(keep(1))
+				keep(foo())
+				keep(1)
+			`,
+
+			"/not-identity-default.js": `
+				function keep(x = foo()) { return x }
+				console.log(keep(1))
+				keep(foo())
+				keep(1)
+			`,
+
+			"/not-identity-array.js": `
+				function keep([x]) { return x }
+				console.log(keep(1))
+				keep(foo())
+				keep(1)
+			`,
+
+			"/not-identity-object.js": `
+				function keep({x}) { return x }
+				console.log(keep(1))
+				keep(foo())
+				keep(1)
+			`,
+
+			"/not-identity-rest.js": `
+				function keep(...x) { return x }
+				console.log(keep(1))
+				keep(foo())
+				keep(1)
+			`,
+
+			"/not-identity-return.js": `
+				function keep(x) { return [x] }
+				console.log(keep(1))
+				keep(foo())
+				keep(1)
+			`,
+		},
+		entryPaths: []string{
+			"/identity.js",
+			"/identity-last.js",
+			"/identity-first.js",
+			"/identity-generator.js",
+			"/identity-async.js",
+			"/identity-cross-module.js",
+			"/identity-no-args.js",
+			"/identity-two-args.js",
+			"/reassign.js",
+			"/reassign-inc.js",
+			"/reassign-div.js",
+			"/reassign-array.js",
+			"/reassign-object.js",
+			"/not-identity-two-args.js",
+			"/not-identity-default.js",
+			"/not-identity-array.js",
+			"/not-identity-object.js",
+			"/not-identity-rest.js",
+			"/not-identity-return.js",
+		},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+			MinifySyntax: true,
+		},
+	})
+}
+
+func TestInlineEmptyFunctionCalls(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/empty.js": `
+				function DROP() {}
+				console.log(DROP(foo(), bar()))
+				console.log(DROP(foo(), 1))
+				console.log(DROP(1, foo()))
+				console.log(DROP(1))
+				console.log(DROP())
+				DROP(foo(), bar())
+				DROP(foo(), 1)
+				DROP(1, foo())
+				DROP(1)
+				DROP()
+			`,
+
+			"/empty-comma.js": `
+				function DROP() {}
+				console.log((DROP(), DROP(), foo()))
+				console.log((DROP(), foo(), DROP()))
+				console.log((foo(), DROP(), DROP()))
+				for (DROP(); DROP(); DROP()) DROP();
+				DROP(), DROP(), foo();
+				DROP(), foo(), DROP();
+				foo(), DROP(), DROP();
+			`,
+
+			"/empty-if-else.js": `
+				function DROP() {}
+				if (foo) { let bar = baz(); bar(); bar() } else DROP();
+			`,
+
+			"/empty-last.js": `
+				function DROP() { return x }
+				function DROP() { return }
+				console.log(DROP())
+				DROP()
+			`,
+
+			"/empty-cross-module.js": `
+				import { DROP } from './empty-cross-module-def'
+				console.log(DROP())
+				DROP()
+			`,
+
+			"/empty-cross-module-def.js": `
+				export function DROP() {}
+			`,
+
+			"/empty-first.js": `
+				function keep() { return }
+				function keep() { return x }
+				console.log(keep())
+				keep(foo())
+				keep(1)
+			`,
+
+			"/empty-generator.js": `
+				function* keep() {}
+				console.log(keep())
+				keep(foo())
+				keep(1)
+			`,
+
+			"/empty-async.js": `
+				async function keep() {}
+				console.log(keep())
+				keep(foo())
+				keep(1)
+			`,
+
+			"/reassign.js": `
+				function keep() {}
+				keep = reassigned
+				console.log(keep())
+				keep(foo())
+				keep(1)
+			`,
+
+			"/reassign-inc.js": `
+				function keep() {}
+				keep++
+				console.log(keep(1))
+				keep(foo())
+				keep(1)
+			`,
+
+			"/reassign-div.js": `
+				function keep() {}
+				keep /= reassigned
+				console.log(keep(1))
+				keep(foo())
+				keep(1)
+			`,
+
+			"/reassign-array.js": `
+				function keep() {}
+				[keep] = reassigned
+				console.log(keep(1))
+				keep(foo())
+				keep(1)
+			`,
+
+			"/reassign-object.js": `
+				function keep() {}
+				({keep} = reassigned)
+				console.log(keep(1))
+				keep(foo())
+				keep(1)
+			`,
+		},
+		entryPaths: []string{
+			"/empty.js",
+			"/empty-comma.js",
+			"/empty-if-else.js",
+			"/empty-last.js",
+			"/empty-cross-module.js",
+			"/empty-first.js",
+			"/empty-generator.js",
+			"/empty-async.js",
+			"/reassign.js",
+			"/reassign-inc.js",
+			"/reassign-div.js",
+			"/reassign-array.js",
+			"/reassign-object.js",
+		},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+			MinifySyntax: true,
+		},
+	})
+}
+
+func TestInlineFunctionCallBehaviorChanges(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				function empty() {}
+				function id(x) { return x }
+
+				export let shouldBeWrapped = [
+					id(foo.bar)(),
+					id(foo[bar])(),
+					id(foo?.bar)(),
+					id(foo?.[bar])(),
+
+					(empty(), foo.bar)(),
+					(empty(), foo[bar])(),
+					(empty(), foo?.bar)(),
+					(empty(), foo?.[bar])(),
+
+					id(eval)(),
+					id(eval)?.(),
+					(empty(), eval)(),
+					(empty(), eval)?.(),
+
+					id(foo.bar)` + "``" + `,
+					id(foo[bar])` + "``" + `,
+					id(foo?.bar)` + "``" + `,
+					id(foo?.[bar])` + "``" + `,
+
+					(empty(), foo.bar)` + "``" + `,
+					(empty(), foo[bar])` + "``" + `,
+					(empty(), foo?.bar)` + "``" + `,
+					(empty(), foo?.[bar])` + "``" + `,
+
+					delete id(foo),
+					delete id(foo.bar),
+					delete id(foo[bar]),
+					delete id(foo?.bar),
+					delete id(foo?.[bar]),
+
+					delete (empty(), foo),
+					delete (empty(), foo.bar),
+					delete (empty(), foo[bar]),
+					delete (empty(), foo?.bar),
+					delete (empty(), foo?.[bar]),
+
+					delete empty(),
+				]
+
+				export let shouldNotBeWrapped = [
+					id(foo)(),
+					(empty(), foo)(),
+
+					id(foo)` + "``" + `,
+					(empty(), foo)` + "``" + `,
+				]
+
+				export let shouldNotBeDoubleWrapped = [
+					delete (empty(), foo(), bar()),
+					delete id((foo(), bar())),
+				]
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:         config.ModePassThrough,
+			AbsOutputDir: "/out",
+			MinifySyntax: true,
+		},
+	})
+}
+
+func TestInlineFunctionCallForInitDecl(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				function empty() {}
+				function id(x) { return x }
+
+				for (var y = empty(); false; ) ;
+				for (var z = id(123); false; ) ;
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+			MinifySyntax: true,
+		},
+	})
+}
+
+func TestConstValueInliningNoBundle(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/top-level.js": `
+				// These should be kept because they are top-level and tree shaking is not enabled
+				const n_keep = null
+				const u_keep = undefined
+				const i_keep = 1234567
+				const f_keep = 123.456
+				const s_keep = ''
+
+				// Values should still be inlined
+				console.log(
+					// These are doubled to avoid the "inline const/let into next statement if used once" optimization
+					n_keep, n_keep,
+					u_keep, u_keep,
+					i_keep, i_keep,
+					f_keep, f_keep,
+					s_keep, s_keep,
+				)
+			`,
+			"/nested-block.js": `
+				{
+					const REMOVE_n = null
+					const REMOVE_u = undefined
+					const REMOVE_i = 1234567
+					const REMOVE_f = 123.456
+					const s_keep = '' // String inlining is intentionally not supported right now
+					console.log(
+						// These are doubled to avoid the "inline const/let into next statement if used once" optimization
+						REMOVE_n, REMOVE_n,
+						REMOVE_u, REMOVE_u,
+						REMOVE_i, REMOVE_i,
+						REMOVE_f, REMOVE_f,
+						s_keep, s_keep,
+					)
+				}
+			`,
+			"/nested-function.js": `
+				function nested() {
+					const REMOVE_n = null
+					const REMOVE_u = undefined
+					const REMOVE_i = 1234567
+					const REMOVE_f = 123.456
+					const s_keep = '' // String inlining is intentionally not supported right now
+					console.log(
+						// These are doubled to avoid the "inline const/let into next statement if used once" optimization
+						REMOVE_n, REMOVE_n,
+						REMOVE_u, REMOVE_u,
+						REMOVE_i, REMOVE_i,
+						REMOVE_f, REMOVE_f,
+						s_keep, s_keep,
+					)
+				}
+			`,
+			"/namespace-export.ts": `
+				namespace ns {
+					const x_REMOVE = 1
+					export const y_keep = 2
+					console.log(
+						x_REMOVE, x_REMOVE,
+						y_keep, y_keep,
+					)
+				}
+			`,
+
+			"/comment-before.js": `
+				{
+					//! comment
+					const REMOVE = 1
+					x = [REMOVE, REMOVE]
+				}
+			`,
+			"/directive-before.js": `
+				function nested() {
+					'directive'
+					const REMOVE = 1
+					x = [REMOVE, REMOVE]
+				}
+			`,
+			"/semicolon-before.js": `
+				{
+					;
+					const REMOVE = 1
+					x = [REMOVE, REMOVE]
+				}
+			`,
+			"/debugger-before.js": `
+				{
+					debugger
+					const REMOVE = 1
+					x = [REMOVE, REMOVE]
+				}
+			`,
+			"/type-before.ts": `
+				{
+					declare let x
+					const REMOVE = 1
+					x = [REMOVE, REMOVE]
+				}
+			`,
+			"/exprs-before.js": `
+				function nested() {
+					const x = [, '', {}, 0n, /./, function() {}, () => {}]
+					const y_REMOVE = 1
+					function foo() {
+						return y_REMOVE
+					}
+				}
+			`,
+
+			"/disabled-tdz.js": `
+				foo()
+				const x_keep = 1
+				function foo() {
+					return x_keep
+				}
+			`,
+			"/backwards-reference-top-level.js": `
+				const x = y
+				const y = 1
+				console.log(
+					x, x,
+					y, y,
+				)
+			`,
+			"/backwards-reference-nested-function.js": `
+				function foo() {
+					const x = y
+					const y = 1
+					console.log(
+						x, x,
+						y, y,
+					)
+				}
+			`,
+		},
+		entryPaths: []string{
+			"/top-level.js",
+			"/nested-block.js",
+			"/nested-function.js",
+			"/namespace-export.ts",
+
+			"/comment-before.js",
+			"/directive-before.js",
+			"/semicolon-before.js",
+			"/debugger-before.js",
+			"/type-before.ts",
+			"/exprs-before.js",
+
+			"/disabled-tdz.js",
+			"/backwards-reference-top-level.js",
+			"/backwards-reference-nested-function.js",
+		},
+		options: config.Options{
+			Mode:         config.ModePassThrough,
+			AbsOutputDir: "/out",
+			MinifySyntax: true,
+		},
+	})
+}
+
+func TestConstValueInliningBundle(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/exported-entry.js": `
+				const x_REMOVE = 1
+				export const y_keep = 2
+				console.log(
+					x_REMOVE,
+					y_keep,
+				)
+			`,
+
+			"/re-exported-entry.js": `
+				import { x_REMOVE, y_keep } from './re-exported-constants'
+				console.log(x_REMOVE, y_keep)
+				export { y_keep }
+			`,
+			"/re-exported-constants.js": `
+				export const x_REMOVE = 1
+				export const y_keep = 2
+			`,
+
+			"/re-exported-2-entry.js": `
+				export { y_keep } from './re-exported-2-constants'
+			`,
+			"/re-exported-2-constants.js": `
+				export const x_REMOVE = 1
+				export const y_keep = 2
+			`,
+
+			"/re-exported-star-entry.js": `
+				export * from './re-exported-star-constants'
+			`,
+			"/re-exported-star-constants.js": `
+				export const x_keep = 1
+				export const y_keep = 2
+			`,
+
+			"/cross-module-entry.js": `
+				import { x_REMOVE, y_keep } from './cross-module-constants'
+				console.log(x_REMOVE, y_keep)
+			`,
+			"/cross-module-constants.js": `
+				export const x_REMOVE = 1
+				foo()
+				export const y_keep = 1
+				export function foo() {
+					return [x_REMOVE, y_keep]
+				}
+			`,
+
+			"/print-shorthand-entry.js": `
+				import { foo, _bar } from './print-shorthand-constants'
+				// The inlined constants must still be present in the output! We don't
+				// want the printer to use the shorthand syntax here to refer to the
+				// name of the constant itself because the constant declaration is omitted.
+				console.log({ foo, _bar })
+			`,
+			"/print-shorthand-constants.js": `
+				export const foo = 123
+				export const _bar = -321
+			`,
+
+			"/circular-import-entry.js": `
+				import './circular-import-constants'
+			`,
+			"/circular-import-constants.js": `
+				export const foo = 123 // Inlining should be prevented by the cycle
+				export function bar() {
+					return foo
+				}
+				import './circular-import-cycle'
+			`,
+			"/circular-import-cycle.js": `
+				import { bar } from './circular-import-constants'
+				console.log(bar()) // This accesses "foo" before it's initialized
+			`,
+
+			"/circular-re-export-entry.js": `
+				import { baz } from './circular-re-export-constants'
+				console.log(baz)
+			`,
+			"/circular-re-export-constants.js": `
+				export const foo = 123 // Inlining should be prevented by the cycle
+				export function bar() {
+					return foo
+				}
+				export { baz } from './circular-re-export-cycle'
+			`,
+			"/circular-re-export-cycle.js": `
+				export const baz = 0
+				import { bar } from './circular-re-export-constants'
+				console.log(bar()) // This accesses "foo" before it's initialized
+			`,
+
+			"/circular-re-export-star-entry.js": `
+				import './circular-re-export-star-constants'
+			`,
+			"/circular-re-export-star-constants.js": `
+				export const foo = 123 // Inlining should be prevented by the cycle
+				export function bar() {
+					return foo
+				}
+				export * from './circular-re-export-star-cycle'
+			`,
+			"/circular-re-export-star-cycle.js": `
+				import { bar } from './circular-re-export-star-constants'
+				console.log(bar()) // This accesses "foo" before it's initialized
+			`,
+
+			"/non-circular-export-entry.js": `
+				import { foo, bar } from './non-circular-export-constants'
+				console.log(foo, bar())
+			`,
+			"/non-circular-export-constants.js": `
+				const foo = 123 // Inlining should be prevented by the cycle
+				function bar() {
+					return foo
+				}
+				export { foo, bar }
+			`,
+		},
+		entryPaths: []string{
+			"/exported-entry.js",
+			"/re-exported-entry.js",
+			"/re-exported-2-entry.js",
+			"/re-exported-star-entry.js",
+			"/cross-module-entry.js",
+			"/print-shorthand-entry.js",
+			"/circular-import-entry.js",
+			"/circular-re-export-entry.js",
+			"/circular-re-export-star-entry.js",
+			"/non-circular-export-entry.js",
+		},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			OutputFormat: config.FormatESModule,
+			AbsOutputDir: "/out",
+			MinifySyntax: true,
+			MangleProps:  regexp.MustCompile("^_"),
+		},
+	})
+}
+
+// Assignment to an inlined constant is not allowed since that would cause a
+// syntax error in the output. We don't just keep the reference there because
+// the declaration may actually have been completely removed already by the
+// time we discover the assignment. I think making these cases an error is
+// fine because it's bad code anyway.
+func TestConstValueInliningAssign(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/const-assign.js": `
+				const x = 1
+				x = 2
+			`,
+			"/const-update.js": `
+				const x = 1
+				x += 2
+			`,
+		},
+		entryPaths: []string{
+			"/const-assign.js",
+			"/const-update.js",
+		},
+		options: config.Options{
+			Mode:         config.ModePassThrough,
+			AbsOutputDir: "/out",
+			MinifySyntax: true,
+		},
+		expectedScanLog: `const-assign.js: ERROR: Cannot assign to "x" because it is a constant
+const-assign.js: NOTE: The symbol "x" was declared a constant here:
+const-update.js: ERROR: Cannot assign to "x" because it is a constant
+const-update.js: NOTE: The symbol "x" was declared a constant here:
+`,
+	})
+}
+
+func TestCrossModuleConstantFolding(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/enum-constants.ts": `
+				export enum x {
+					a = 3,
+					b = 6,
+				}
+			`,
+			"/enum-entry.ts": `
+				import { x } from './enum-constants'
+				console.log([
+					+x.b,
+					-x.b,
+					~x.b,
+					!x.b,
+					typeof x.b,
+				], [
+					x.a + x.b,
+					x.a - x.b,
+					x.a * x.b,
+					x.a / x.b,
+					x.a % x.b,
+					x.a ** x.b,
+				], [
+					x.a < x.b,
+					x.a > x.b,
+					x.a <= x.b,
+					x.a >= x.b,
+					x.a == x.b,
+					x.a != x.b,
+					x.a === x.b,
+					x.a !== x.b,
+				], [
+					x.b << 1,
+					x.b >> 1,
+					x.b >>> 1,
+				], [
+					x.a & x.b,
+					x.a | x.b,
+					x.a ^ x.b,
+				], [
+					x.a && x.b,
+					x.a || x.b,
+					x.a ?? x.b,
+				])
+			`,
+
+			"/const-constants.js": `
+				export const a = 3
+				export const b = 6
+			`,
+			"/const-entry.js": `
+				import { a, b } from './const-constants'
+				console.log([
+					+b,
+					-b,
+					~b,
+					!b,
+					typeof b,
+				], [
+					a + b,
+					a - b,
+					a * b,
+					a / b,
+					a % b,
+					a ** b,
+				], [
+					a < b,
+					a > b,
+					a <= b,
+					a >= b,
+					a == b,
+					a != b,
+					a === b,
+					a !== b,
+				], [
+					b << 1,
+					b >> 1,
+					b >>> 1,
+				], [
+					a & b,
+					a | b,
+					a ^ b,
+				], [
+					a && b,
+					a || b,
+					a ?? b,
+				])
+			`,
+
+			"/nested-constants.ts": `
+				export const a = 2
+				export const b = 4
+				export const c = 8
+				export enum x {
+					a = 16,
+					b = 32,
+					c = 64,
+				}
+			`,
+			"/nested-entry.ts": `
+				import { a, b, c, x } from './nested-constants'
+				console.log({
+					'should be 4': ~(~a & ~b) & (b | c),
+					'should be 32': ~(~x.a & ~x.b) & (x.b | x.c),
+				})
+			`,
+		},
+		entryPaths: []string{
+			"/enum-entry.ts",
+			"/const-entry.js",
+			"/nested-entry.ts",
+		},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+			MinifySyntax: true,
 		},
 	})
 }

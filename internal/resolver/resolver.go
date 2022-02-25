@@ -11,11 +11,11 @@ import (
 
 	"github.com/evanw/esbuild/internal/ast"
 	"github.com/evanw/esbuild/internal/cache"
+	"github.com/evanw/esbuild/internal/compat"
 	"github.com/evanw/esbuild/internal/config"
 	"github.com/evanw/esbuild/internal/fs"
 	"github.com/evanw/esbuild/internal/helpers"
 	"github.com/evanw/esbuild/internal/js_ast"
-	"github.com/evanw/esbuild/internal/js_lexer"
 	"github.com/evanw/esbuild/internal/js_printer"
 	"github.com/evanw/esbuild/internal/logger"
 )
@@ -85,10 +85,11 @@ func (pp *PathPair) HasSecondary() bool {
 
 type SideEffectsData struct {
 	Source *logger.Source
-	Range  logger.Range
 
 	// If non-empty, this false value came from a plugin
 	PluginName string
+
+	Range logger.Range
 
 	// If true, "sideEffects" was an array. If false, "sideEffects" was false.
 	IsSideEffectsArrayInJSON bool
@@ -112,39 +113,37 @@ type ResolveResult struct {
 
 	TSTarget *config.TSTarget
 
+	// This is the "type" field from "package.json"
+	ModuleTypeData js_ast.ModuleTypeData
+
 	IsExternal bool
 
 	// If true, the class field transform should use Object.defineProperty().
 	UseDefineForClassFieldsTS config.MaybeBool
 
-	// If true, unused imports are retained in TypeScript code. This matches the
-	// behavior of the "importsNotUsedAsValues" field in "tsconfig.json" when the
-	// value is not "remove".
-	PreserveUnusedImportsTS bool
-
-	// This is the "type" field from "package.json"
-	ModuleType config.ModuleType
+	// This is the "importsNotUsedAsValues" and "preserveValueImports" fields from "package.json"
+	UnusedImportsTS config.UnusedImportsTS
 }
 
 type DebugMeta struct {
-	notes             []logger.MsgData
 	suggestionText    string
 	suggestionMessage string
+	notes             []logger.MsgData
 }
 
-func (dm DebugMeta) LogErrorMsg(log logger.Log, source *logger.Source, r logger.Range, text string) {
+func (dm DebugMeta) LogErrorMsg(log logger.Log, source *logger.Source, r logger.Range, text string, notes []logger.MsgData) {
 	tracker := logger.MakeLineColumnTracker(source)
+
+	if source != nil && dm.suggestionMessage != "" {
+		data := tracker.MsgData(r, dm.suggestionMessage)
+		data.Location.Suggestion = dm.suggestionText
+		dm.notes = append(dm.notes, data)
+	}
 
 	msg := logger.Msg{
 		Kind:  logger.Error,
-		Data:  logger.RangeData(&tracker, r, text),
-		Notes: dm.notes,
-	}
-
-	if source != nil && dm.suggestionMessage != "" {
-		data := logger.RangeData(&tracker, r, dm.suggestionMessage)
-		data.Location.Suggestion = dm.suggestionText
-		msg.Notes = append(msg.Notes, data)
+		Data:  tracker.MsgData(r, text),
+		Notes: append(dm.notes, notes...),
 	}
 
 	log.AddMsg(msg)
@@ -161,10 +160,9 @@ type Resolver interface {
 }
 
 type resolver struct {
-	fs      fs.FS
-	log     logger.Log
-	caches  *cache.CacheSet
-	options config.Options
+	fs     fs.FS
+	log    logger.Log
+	caches *cache.CacheSet
 
 	// These are sets that represent various conditions for the "exports" field
 	// in package.json.
@@ -196,6 +194,12 @@ type resolver struct {
 	// picture but it's better than some alternatives and probably pretty good.
 	atImportExtensionOrder []string
 
+	// This cache maps a directory path to information about that directory and
+	// all parent directories
+	dirCache map[string]*dirInfo
+
+	options config.Options
+
 	// This mutex serves two purposes. First of all, it guards access to "dirCache"
 	// which is potentially mutated during path resolution. But this mutex is also
 	// necessary for performance. The "React admin" benchmark mysteriously runs
@@ -205,10 +209,6 @@ type resolver struct {
 	// faster. I'm not sure why this is but please don't change this unless you
 	// do a lot of testing with various benchmarks and there aren't any regressions.
 	mutex sync.Mutex
-
-	// This cache maps a directory path to information about that directory and
-	// all parent directories
-	dirCache map[string]*dirInfo
 }
 
 type resolverQuery struct {
@@ -273,10 +273,10 @@ func (rr *resolver) Resolve(sourceDir string, importPath string, kind ast.Import
 	}
 
 	// Certain types of URLs default to being external for convenience
-	if r.isExternalPattern(importPath) ||
+	if isExplicitlyExternal := r.isExternal(r.options.ExternalSettings.PreResolve, importPath); isExplicitlyExternal ||
 
 		// "fill: url(#filter);"
-		(kind.IsFromCSS() && strings.HasPrefix(importPath, "#")) ||
+		(kind == ast.ImportURL && strings.HasPrefix(importPath, "#")) ||
 
 		// "background: url(http://example.com/images/image.png);"
 		strings.HasPrefix(importPath, "http://") ||
@@ -285,20 +285,81 @@ func (rr *resolver) Resolve(sourceDir string, importPath string, kind ast.Import
 		strings.HasPrefix(importPath, "https://") ||
 
 		// "background: url(//example.com/images/image.png);"
-		strings.HasPrefix(importPath, "//") ||
-
-		// "import fs from 'fs'"
-		// "import fs from 'node:fs'"
-		(r.options.Platform == config.PlatformNode && (BuiltInNodeModules[importPath] || strings.HasPrefix(importPath, "node:"))) {
+		strings.HasPrefix(importPath, "//") {
 
 		if r.debugLogs != nil {
-			r.debugLogs.addNote("Marking this path as implicitly external")
+			if isExplicitlyExternal {
+				r.debugLogs.addNote(fmt.Sprintf("The path %q was marked as external by the user", importPath))
+			} else {
+				r.debugLogs.addNote("Marking this path as implicitly external")
+			}
 		}
 
 		r.flushDebugLogs(flushDueToSuccess)
 		return &ResolveResult{
 			PathPair:   PathPair{Primary: logger.Path{Text: importPath}},
 			IsExternal: true,
+		}, debugMeta
+	}
+
+	// "import fs from 'fs'"
+	if r.options.Platform == config.PlatformNode && BuiltInNodeModules[importPath] {
+		if r.debugLogs != nil {
+			r.debugLogs.addNote("Marking this path as implicitly external due to it being a node built-in")
+		}
+
+		r.flushDebugLogs(flushDueToSuccess)
+		return &ResolveResult{
+			PathPair:               PathPair{Primary: logger.Path{Text: importPath}},
+			IsExternal:             true,
+			PrimarySideEffectsData: &SideEffectsData{}, // Mark this with "sideEffects: false"
+		}, debugMeta
+	}
+
+	// "import fs from 'node:fs'"
+	// "require('node:fs')"
+	if r.options.Platform == config.PlatformNode && strings.HasPrefix(importPath, "node:") {
+		if r.debugLogs != nil {
+			r.debugLogs.addNote("Marking this path as implicitly external due to the \"node:\" prefix")
+		}
+
+		// If this is a known node built-in module, mark it with "sideEffects: false"
+		var sideEffects *SideEffectsData
+		if BuiltInNodeModules[strings.TrimPrefix(importPath, "node:")] {
+			sideEffects = &SideEffectsData{}
+		}
+
+		// Check whether the path will end up as "import" or "require"
+		convertImportToRequire := !r.options.OutputFormat.KeepES6ImportExportSyntax()
+		isImport := !convertImportToRequire && (kind == ast.ImportStmt || kind == ast.ImportDynamic)
+		isRequire := kind == ast.ImportRequire || kind == ast.ImportRequireResolve ||
+			(convertImportToRequire && (kind == ast.ImportStmt || kind == ast.ImportDynamic))
+
+		// Check for support with "import"
+		if isImport && r.options.UnsupportedJSFeatures.Has(compat.NodeColonPrefixImport) {
+			if r.debugLogs != nil {
+				r.debugLogs.addNote("Removing the \"node:\" prefix because the target environment doesn't support it with \"import\" statements")
+			}
+
+			// Automatically strip the prefix if it's not supported
+			importPath = importPath[5:]
+		}
+
+		// Check for support with "require"
+		if isRequire && r.options.UnsupportedJSFeatures.Has(compat.NodeColonPrefixRequire) {
+			if r.debugLogs != nil {
+				r.debugLogs.addNote("Removing the \"node:\" prefix because the target environment doesn't support it with \"require\" calls")
+			}
+
+			// Automatically strip the prefix if it's not supported
+			importPath = importPath[5:]
+		}
+
+		r.flushDebugLogs(flushDueToSuccess)
+		return &ResolveResult{
+			PathPair:               PathPair{Primary: logger.Path{Text: importPath}},
+			IsExternal:             true,
+			PrimarySideEffectsData: sideEffects,
 		}, debugMeta
 	}
 
@@ -368,8 +429,14 @@ func (rr *resolver) Resolve(sourceDir string, importPath string, kind ast.Import
 	return result, debugMeta
 }
 
-func (r resolverQuery) isExternalPattern(path string) bool {
-	for _, pattern := range r.options.ExternalModules.Patterns {
+func (r resolverQuery) isExternal(matchers config.ExternalMatchers, path string) bool {
+	if _, ok := matchers.Exact[path]; ok {
+		return true
+	}
+	for _, pattern := range matchers.Patterns {
+		if r.debugLogs != nil {
+			r.debugLogs.addNote(fmt.Sprintf("Checking %q against the external pattern %q", path, pattern.Prefix+"*"+pattern.Suffix))
+		}
 		if len(path) >= len(pattern.Prefix)+len(pattern.Suffix) &&
 			strings.HasPrefix(path, pattern.Prefix) &&
 			strings.HasSuffix(path, pattern.Suffix) {
@@ -425,7 +492,7 @@ func (d *debugLogs) addNote(text string) {
 	if d.indent != "" {
 		text = d.indent + text
 	}
-	d.notes = append(d.notes, logger.RangeData(nil, logger.Range{}, text))
+	d.notes = append(d.notes, logger.MsgData{Text: text, DisableMaximumWidth: true})
 }
 
 func (d *debugLogs) increaseIndent() {
@@ -446,14 +513,22 @@ const (
 func (r resolverQuery) flushDebugLogs(mode flushMode) {
 	if r.debugLogs != nil {
 		if mode == flushDueToFailure {
-			r.log.AddDebugWithNotes(nil, logger.Loc{}, r.debugLogs.what, r.debugLogs.notes)
+			r.log.AddWithNotes(logger.Debug, nil, logger.Range{}, r.debugLogs.what, r.debugLogs.notes)
 		} else if r.log.Level <= logger.LevelVerbose {
-			r.log.AddVerboseWithNotes(nil, logger.Loc{}, r.debugLogs.what, r.debugLogs.notes)
+			r.log.AddWithNotes(logger.Verbose, nil, logger.Range{}, r.debugLogs.what, r.debugLogs.notes)
 		}
 	}
 }
 
 func (r resolverQuery) finalizeResolve(result *ResolveResult) {
+	if !result.IsExternal && r.isExternal(r.options.ExternalSettings.PostResolve, result.PathPair.Primary.Text) {
+		if r.debugLogs != nil {
+			r.debugLogs.addNote(fmt.Sprintf("The path %q was marked as external by the user", result.PathPair.Primary.Text))
+		}
+		result.IsExternal = true
+		return
+	}
+
 	for _, path := range result.PathPair.iter() {
 		if path.Namespace == "file" {
 			if dirInfo := r.dirInfoCached(r.fs.Dir(path.Text)); dirInfo != nil {
@@ -493,7 +568,7 @@ func (r resolverQuery) finalizeResolve(result *ResolveResult) {
 					}
 
 					// Also copy over the "type" field
-					result.ModuleType = pkgJSON.moduleType
+					result.ModuleTypeData = pkgJSON.moduleTypeData
 				}
 
 				// Copy various fields from the nearest enclosing "tsconfig.json" file if present
@@ -522,7 +597,10 @@ func (r resolverQuery) finalizeResolve(result *ResolveResult) {
 						result.JSXFactory = dirInfo.enclosingTSConfigJSON.JSXFactory
 						result.JSXFragment = dirInfo.enclosingTSConfigJSON.JSXFragmentFactory
 						result.UseDefineForClassFieldsTS = dirInfo.enclosingTSConfigJSON.UseDefineForClassFields
-						result.PreserveUnusedImportsTS = dirInfo.enclosingTSConfigJSON.PreserveImportsNotUsedAsValues
+						result.UnusedImportsTS = config.UnusedImportsFromTsconfigValues(
+							dirInfo.enclosingTSConfigJSON.PreserveImportsNotUsedAsValues,
+							dirInfo.enclosingTSConfigJSON.PreserveValueImports,
+						)
 						result.TSTarget = dirInfo.enclosingTSConfigJSON.TSTarget
 
 						if r.debugLogs != nil {
@@ -598,17 +676,6 @@ func (r resolverQuery) resolveWithoutSymlinks(sourceDir string, importPath strin
 			}
 		}
 
-		if r.options.ExternalModules.AbsPaths != nil && r.options.ExternalModules.AbsPaths[importPath] {
-			// If the string literal in the source text is an absolute path and has
-			// been marked as an external module, mark it as *not* an absolute path.
-			// That way we preserve the literal text in the output and don't generate
-			// a relative path from the output directory to that path.
-			if r.debugLogs != nil {
-				r.debugLogs.addNote(fmt.Sprintf("The path %q was marked as external by the user", importPath))
-			}
-			return &ResolveResult{PathPair: PathPair{Primary: logger.Path{Text: importPath}}, IsExternal: true}
-		}
-
 		// Run node's resolution rules (e.g. adding ".js")
 		if absolute, ok, diffCase := r.loadAsFileOrDirectory(importPath); ok {
 			return &ResolveResult{PathPair: absolute, DifferentCase: diffCase}
@@ -627,7 +694,7 @@ func (r resolverQuery) resolveWithoutSymlinks(sourceDir string, importPath strin
 		absPath := r.fs.Join(sourceDir, importPath)
 
 		// Check for external packages first
-		if r.options.ExternalModules.AbsPaths != nil && r.options.ExternalModules.AbsPaths[absPath] {
+		if r.isExternal(r.options.ExternalSettings.PostResolve, absPath) {
 			if r.debugLogs != nil {
 				r.debugLogs.addNote(fmt.Sprintf("The path %q was marked as external by the user", absPath))
 			}
@@ -659,27 +726,6 @@ func (r resolverQuery) resolveWithoutSymlinks(sourceDir string, importPath strin
 	}
 
 	if checkPackage {
-		// Check for external packages first
-		if r.options.ExternalModules.NodeModules != nil {
-			query := importPath
-			for {
-				if r.options.ExternalModules.NodeModules[query] {
-					if r.debugLogs != nil {
-						r.debugLogs.addNote(fmt.Sprintf("The path %q was marked as external by the user", query))
-					}
-					return &ResolveResult{PathPair: PathPair{Primary: logger.Path{Text: importPath}}, IsExternal: true}
-				}
-
-				// If the module "foo" has been marked as external, we also want to treat
-				// paths into that module such as "foo/bar" as external too.
-				slash := strings.LastIndexByte(query, '/')
-				if slash == -1 {
-					break
-				}
-				query = query[:slash]
-			}
-		}
-
 		sourceDirInfo := r.dirInfoCached(sourceDir)
 		if sourceDirInfo == nil {
 			// Bail if the directory is missing for some reason
@@ -763,12 +809,12 @@ type dirInfo struct {
 	// All relevant information about this directory
 	absPath               string
 	entries               fs.DirEntries
-	isNodeModules         bool          // Is the base name "node_modules"?
-	hasNodeModules        bool          // Is there a "node_modules" subdirectory?
 	packageJSON           *packageJSON  // Is there a "package.json" file in this directory?
 	enclosingPackageJSON  *packageJSON  // Is there a "package.json" file in this directory or a parent directory?
 	enclosingTSConfigJSON *TSConfigJSON // Is there a "tsconfig.json" file in this directory or a parent directory?
 	absRealPath           string        // If non-empty, this is the real absolute path resolving any symlinks
+	isNodeModules         bool          // Is the base name "node_modules"?
+	hasNodeModules        bool          // Is there a "node_modules" subdirectory?
 }
 
 func (r resolverQuery) dirInfoCached(path string) *dirInfo {
@@ -856,10 +902,10 @@ func (r resolverQuery) parseTSConfig(file string, visited map[string]bool) (*TSC
 						} else if err == syscall.ENOENT {
 							continue
 						} else if err == errParseErrorImportCycle {
-							r.log.AddRangeWarning(&tracker, extendsRange,
+							r.log.Add(logger.Warning, &tracker, extendsRange,
 								fmt.Sprintf("Base config file %q forms cycle", extends))
 						} else if err != errParseErrorAlreadyLogged {
-							r.log.AddRangeError(&tracker, extendsRange,
+							r.log.Add(logger.Error, &tracker, extendsRange,
 								fmt.Sprintf("Cannot read file %q: %s",
 									r.PrettyPath(logger.Path{Text: fileToCheck, Namespace: "file"}), err.Error()))
 						}
@@ -887,10 +933,10 @@ func (r resolverQuery) parseTSConfig(file string, visited map[string]bool) (*TSC
 				} else if err == syscall.ENOENT {
 					continue
 				} else if err == errParseErrorImportCycle {
-					r.log.AddRangeWarning(&tracker, extendsRange,
+					r.log.Add(logger.Warning, &tracker, extendsRange,
 						fmt.Sprintf("Base config file %q forms cycle", extends))
 				} else if err != errParseErrorAlreadyLogged {
-					r.log.AddRangeError(&tracker, extendsRange,
+					r.log.Add(logger.Error, &tracker, extendsRange,
 						fmt.Sprintf("Cannot read file %q: %s",
 							r.PrettyPath(logger.Path{Text: fileToCheck, Namespace: "file"}), err.Error()))
 				}
@@ -900,7 +946,7 @@ func (r resolverQuery) parseTSConfig(file string, visited map[string]bool) (*TSC
 
 		// Suppress warnings about missing base config files inside "node_modules"
 		if !helpers.IsInsideNodeModules(file) {
-			r.log.AddRangeWarning(&tracker, extendsRange,
+			r.log.Add(logger.Warning, &tracker, extendsRange,
 				fmt.Sprintf("Cannot find base config file %q", extends))
 		}
 
@@ -957,7 +1003,7 @@ func (r resolverQuery) dirInfoUncached(path string) *dirInfo {
 		// list which contains such paths and treating them as missing means we just
 		// ignore them during path resolution.
 		if err != syscall.ENOENT && err != syscall.ENOTDIR {
-			r.log.AddError(nil, logger.Loc{},
+			r.log.Add(logger.Error, nil, logger.Range{},
 				fmt.Sprintf("Cannot read directory %q: %s",
 					r.PrettyPath(logger.Path{Text: path, Namespace: "file"}), err.Error()))
 		}
@@ -1033,10 +1079,10 @@ func (r resolverQuery) dirInfoUncached(path string) *dirInfo {
 			info.enclosingTSConfigJSON, err = r.parseTSConfig(tsConfigPath, make(map[string]bool))
 			if err != nil {
 				if err == syscall.ENOENT {
-					r.log.AddError(nil, logger.Loc{}, fmt.Sprintf("Cannot find tsconfig file %q",
+					r.log.Add(logger.Error, nil, logger.Range{}, fmt.Sprintf("Cannot find tsconfig file %q",
 						r.PrettyPath(logger.Path{Text: tsConfigPath, Namespace: "file"})))
 				} else if err != errParseErrorAlreadyLogged {
-					r.log.AddError(nil, logger.Loc{},
+					r.log.Add(logger.Debug, nil, logger.Range{},
 						fmt.Sprintf("Cannot read file %q: %s",
 							r.PrettyPath(logger.Path{Text: tsConfigPath, Namespace: "file"}), err.Error()))
 				}
@@ -1071,7 +1117,7 @@ func (r resolverQuery) loadAsFile(path string, extensionOrder []string) (string,
 	}
 	if err != nil {
 		if err != syscall.ENOENT {
-			r.log.AddError(nil, logger.Loc{},
+			r.log.Add(logger.Error, nil, logger.Range{},
 				fmt.Sprintf("  Cannot read directory %q: %s",
 					r.PrettyPath(logger.Path{Text: dirPath, Namespace: "file"}), err.Error()))
 		}
@@ -1194,7 +1240,7 @@ func getProperty(json js_ast.Expr, name string) (js_ast.Expr, logger.Loc, bool) 
 	if obj, ok := json.Data.(*js_ast.EObject); ok {
 		for _, prop := range obj.Properties {
 			if key, ok := prop.Key.Data.(*js_ast.EString); ok && key.Value != nil &&
-				len(key.Value) == len(name) && js_lexer.UTF16ToString(key.Value) == name {
+				len(key.Value) == len(name) && helpers.UTF16ToString(key.Value) == name {
 				return prop.ValueOrNil, prop.Key.Loc, true
 			}
 		}
@@ -1204,7 +1250,7 @@ func getProperty(json js_ast.Expr, name string) (js_ast.Expr, logger.Loc, bool) 
 
 func getString(json js_ast.Expr) (string, bool) {
 	if value, ok := json.Data.(*js_ast.EString); ok {
-		return js_lexer.UTF16ToString(value.Value), true
+		return helpers.UTF16ToString(value.Value), true
 	}
 	return "", false
 }
@@ -1393,16 +1439,16 @@ func (r resolverQuery) loadAsMainField(dirInfo *dirInfo, path string, extensionO
 				tracker := logger.MakeLineColumnTracker(&dirInfo.packageJSON.source)
 				keyRange := dirInfo.packageJSON.source.RangeOfString(main.keyLoc)
 				if len(mainFieldKeys) == 0 && r.options.Platform == config.PlatformNeutral {
-					r.debugMeta.notes = append(r.debugMeta.notes, logger.RangeData(&tracker, keyRange,
-						fmt.Sprintf("The %q field was ignored (main fields must be configured manually when using the \"neutral\" platform)",
+					r.debugMeta.notes = append(r.debugMeta.notes, tracker.MsgData(keyRange,
+						fmt.Sprintf("The %q field here was ignored. Main fields must be configured explicitly when using the \"neutral\" platform.",
 							field)))
 				} else {
 					quoted := make([]string, len(mainFieldKeys))
 					for i, key := range mainFieldKeys {
 						quoted[i] = fmt.Sprintf("%q", key)
 					}
-					r.debugMeta.notes = append(r.debugMeta.notes, logger.RangeData(&tracker, keyRange,
-						fmt.Sprintf("The %q field was ignored because the list of main fields to use is currently set to [%s]",
+					r.debugMeta.notes = append(r.debugMeta.notes, tracker.MsgData(keyRange,
+						fmt.Sprintf("The %q field here was ignored because the list of main fields to use is currently set to [%s].",
 							field, strings.Join(quoted, ", "))))
 				}
 				break
@@ -1536,6 +1582,68 @@ func (r resolverQuery) loadNodeModules(importPath string, dirInfo *dirInfo, forb
 		}
 	}
 
+	// Find the parent directory with the "package.json" file
+	dirInfoPackageJSON := dirInfo
+	for dirInfoPackageJSON != nil && dirInfoPackageJSON.packageJSON == nil {
+		dirInfoPackageJSON = dirInfoPackageJSON.parent
+	}
+
+	// Then check for the package in any enclosing "node_modules" directories
+	if dirInfoPackageJSON != nil && strings.HasPrefix(importPath, "#") && !forbidImports && dirInfoPackageJSON.packageJSON.importsMap != nil {
+		packageJSON := dirInfoPackageJSON.packageJSON
+
+		if r.debugLogs != nil {
+			r.debugLogs.addNote(fmt.Sprintf("Looking for %q in \"imports\" map in %q", importPath, packageJSON.source.KeyPath.Text))
+			r.debugLogs.increaseIndent()
+			defer r.debugLogs.decreaseIndent()
+		}
+
+		// Filter out invalid module specifiers now where we have more information for
+		// a better error message instead of later when we're inside the algorithm
+		if importPath == "#" || strings.HasPrefix(importPath, "#/") {
+			if r.debugLogs != nil {
+				r.debugLogs.addNote(fmt.Sprintf("The path %q must not equal \"#\" and must not start with \"#/\".", importPath))
+			}
+			tracker := logger.MakeLineColumnTracker(&packageJSON.source)
+			r.debugMeta.notes = append(r.debugMeta.notes, tracker.MsgData(packageJSON.importsMap.root.firstToken,
+				fmt.Sprintf("This \"imports\" map was ignored because the module specifier %q is invalid:", importPath)))
+			return PathPair{}, false, nil
+		}
+
+		// The condition set is determined by the kind of import
+		conditions := r.esmConditionsDefault
+		switch r.kind {
+		case ast.ImportStmt, ast.ImportDynamic:
+			conditions = r.esmConditionsImport
+		case ast.ImportRequire, ast.ImportRequireResolve:
+			conditions = r.esmConditionsRequire
+		}
+
+		resolvedPath, status, debug := r.esmPackageImportsResolve(importPath, packageJSON.importsMap.root, conditions)
+		resolvedPath, status, debug = r.esmHandlePostConditions(resolvedPath, status, debug)
+
+		if status == pjStatusPackageResolve {
+			// The import path was remapped via "imports" to another import path
+			// that now needs to be resolved too. Set "forbidImports" to true
+			// so we don't try to resolve "imports" again and end up in a loop.
+			absolute, ok, diffCase := r.loadNodeModules(resolvedPath, dirInfoPackageJSON, true /* forbidImports */)
+			if !ok {
+				tracker := logger.MakeLineColumnTracker(&packageJSON.source)
+				r.debugMeta.notes = append(
+					[]logger.MsgData{tracker.MsgData(debug.token,
+						fmt.Sprintf("The remapped path %q could not be resolved:", resolvedPath))},
+					r.debugMeta.notes...)
+			}
+			return absolute, ok, diffCase
+		}
+
+		return r.finalizeImportsExportsResult(
+			dirInfoPackageJSON.absPath, conditions, *packageJSON.importsMap, packageJSON,
+			resolvedPath, status, debug,
+			"", "", "",
+		)
+	}
+
 	// Then check for the package in any enclosing "node_modules" directories
 	if packageJSON := dirInfo.enclosingPackageJSON; strings.HasPrefix(importPath, "#") && !forbidImports && packageJSON != nil && packageJSON.importsMap != nil {
 		if r.debugLogs != nil {
@@ -1551,7 +1659,7 @@ func (r resolverQuery) loadNodeModules(importPath string, dirInfo *dirInfo, forb
 				r.debugLogs.addNote(fmt.Sprintf("The path %q must not equal \"#\" and must not start with \"#/\"", importPath))
 			}
 			tracker := logger.MakeLineColumnTracker(&packageJSON.source)
-			r.debugMeta.notes = append(r.debugMeta.notes, logger.RangeData(&tracker, packageJSON.importsMap.root.firstToken,
+			r.debugMeta.notes = append(r.debugMeta.notes, tracker.MsgData(packageJSON.importsMap.root.firstToken,
 				fmt.Sprintf("This \"imports\" map was ignored because the module specifier %q is invalid", importPath)))
 			return PathPair{}, false, nil
 		}
@@ -1576,7 +1684,7 @@ func (r resolverQuery) loadNodeModules(importPath string, dirInfo *dirInfo, forb
 			if !ok {
 				tracker := logger.MakeLineColumnTracker(&packageJSON.source)
 				r.debugMeta.notes = append(
-					[]logger.MsgData{logger.RangeData(&tracker, debug.token,
+					[]logger.MsgData{tracker.MsgData(debug.token,
 						fmt.Sprintf("The remapped path %q could not be resolved", resolvedPath))},
 					r.debugMeta.notes...)
 			}
@@ -1624,6 +1732,15 @@ func (r resolverQuery) loadNodeModules(importPath string, dirInfo *dirInfo, forb
 							conditions = r.esmConditionsImport
 						case ast.ImportRequire, ast.ImportRequireResolve:
 							conditions = r.esmConditionsRequire
+						case ast.ImportEntryPoint:
+							// Treat entry points as imports instead of requires for consistency with
+							// Webpack and Rollup. More information:
+							//
+							// * https://github.com/evanw/esbuild/issues/1956
+							// * https://github.com/nodejs/node/issues/41686
+							// * https://github.com/evanw/entry-point-resolve-test
+							//
+							conditions = r.esmConditionsImport
 						}
 
 						// Resolve against the path "/", then join it with the absolute
@@ -1748,26 +1865,26 @@ func (r resolverQuery) finalizeImportsExportsResult(
 	tracker := logger.MakeLineColumnTracker(&packageJSON.source)
 	switch status {
 	case pjStatusInvalidModuleSpecifier:
-		r.debugMeta.notes = []logger.MsgData{logger.RangeData(&tracker, debug.token,
-			fmt.Sprintf("The module specifier %q is invalid", resolvedPath))}
+		r.debugMeta.notes = []logger.MsgData{tracker.MsgData(debug.token,
+			fmt.Sprintf("The module specifier %q is invalid:", resolvedPath))}
 
 	case pjStatusInvalidPackageConfiguration:
-		r.debugMeta.notes = []logger.MsgData{logger.RangeData(&tracker, debug.token,
-			"The package configuration has an invalid value here")}
+		r.debugMeta.notes = []logger.MsgData{tracker.MsgData(debug.token,
+			"The package configuration has an invalid value here:")}
 
 	case pjStatusInvalidPackageTarget:
-		why := fmt.Sprintf("The package target %q is invalid", resolvedPath)
+		why := fmt.Sprintf("The package target %q is invalid:", resolvedPath)
 		if resolvedPath == "" {
 			// "PACKAGE_TARGET_RESOLVE" is specified to throw an "Invalid
 			// Package Target" error for what is actually an invalid package
 			// configuration error
-			why = "The package configuration has an invalid value here"
+			why = "The package configuration has an invalid value here:"
 		}
-		r.debugMeta.notes = []logger.MsgData{logger.RangeData(&tracker, debug.token, why)}
+		r.debugMeta.notes = []logger.MsgData{tracker.MsgData(debug.token, why)}
 
 	case pjStatusPackagePathNotExported:
-		r.debugMeta.notes = []logger.MsgData{logger.RangeData(&tracker, debug.token,
-			fmt.Sprintf("The path %q is not exported by package %q", esmPackageSubpath, esmPackageName))}
+		r.debugMeta.notes = []logger.MsgData{tracker.MsgData(debug.token,
+			fmt.Sprintf("The path %q is not exported by package %q:", esmPackageSubpath, esmPackageName))}
 
 		// If this fails, try to resolve it using the old algorithm
 		if absolute, ok, _ := r.loadAsFileOrDirectory(absImportPath); ok && absolute.Primary.Namespace == "file" {
@@ -1778,29 +1895,29 @@ func (r resolverQuery) finalizeImportsExportsResult(
 				// "exports" map for the currently-active set of conditions
 				if ok, subpath, token := r.esmPackageExportsReverseResolve(
 					query, importExportMap.root, conditions); ok {
-					r.debugMeta.notes = append(r.debugMeta.notes, logger.RangeData(&tracker, token,
-						fmt.Sprintf("The file %q is exported at path %q", query, subpath)))
+					r.debugMeta.notes = append(r.debugMeta.notes, tracker.MsgData(token,
+						fmt.Sprintf("The file %q is exported at path %q:", query, subpath)))
 
 					// Provide an inline suggestion message with the correct import path
 					actualImportPath := path.Join(esmPackageName, subpath)
 					r.debugMeta.suggestionText = string(js_printer.QuoteForJSON(actualImportPath, false))
-					r.debugMeta.suggestionMessage = fmt.Sprintf("Import from %q to get the file %q",
+					r.debugMeta.suggestionMessage = fmt.Sprintf("Import from %q to get the file %q:",
 						actualImportPath, r.PrettyPath(absolute.Primary))
 				}
 			}
 		}
 
 	case pjStatusPackageImportNotDefined:
-		r.debugMeta.notes = []logger.MsgData{logger.RangeData(&tracker, debug.token,
-			fmt.Sprintf("The package import %q is not defined in this \"imports\" map", resolvedPath))}
+		r.debugMeta.notes = []logger.MsgData{tracker.MsgData(debug.token,
+			fmt.Sprintf("The package import %q is not defined in this \"imports\" map:", resolvedPath))}
 
 	case pjStatusModuleNotFound:
-		r.debugMeta.notes = []logger.MsgData{logger.RangeData(&tracker, debug.token,
-			fmt.Sprintf("The module %q was not found on the file system", resolvedPath))}
+		r.debugMeta.notes = []logger.MsgData{tracker.MsgData(debug.token,
+			fmt.Sprintf("The module %q was not found on the file system:", resolvedPath))}
 
 	case pjStatusUnsupportedDirectoryImport:
-		r.debugMeta.notes = []logger.MsgData{logger.RangeData(&tracker, debug.token,
-			fmt.Sprintf("Importing the directory %q is not supported", resolvedPath))}
+		r.debugMeta.notes = []logger.MsgData{tracker.MsgData(debug.token,
+			fmt.Sprintf("Importing the directory %q is not supported:", resolvedPath))}
 
 	case pjStatusUndefinedNoConditionsMatch:
 		prettyPrintConditions := func(conditions []string) string {
@@ -1816,19 +1933,19 @@ func (r resolverQuery) finalizeImportsExportsResult(
 		}
 		sort.Strings(keys)
 		r.debugMeta.notes = []logger.MsgData{
-			logger.RangeData(&tracker, importExportMap.root.firstToken,
-				fmt.Sprintf("The path %q is not currently exported by package %q",
+			tracker.MsgData(importExportMap.root.firstToken,
+				fmt.Sprintf("The path %q is not currently exported by package %q:",
 					esmPackageSubpath, esmPackageName)),
-			logger.RangeData(&tracker, debug.token,
-				fmt.Sprintf("None of the conditions provided (%s) match any of the currently active conditions (%s)",
+			tracker.MsgData(debug.token,
+				fmt.Sprintf("None of the conditions provided (%s) match any of the currently active conditions (%s):",
 					prettyPrintConditions(debug.unmatchedConditions),
 					prettyPrintConditions(keys),
 				))}
 		for _, key := range debug.unmatchedConditions {
 			if key == "import" && (r.kind == ast.ImportRequire || r.kind == ast.ImportRequireResolve) {
-				r.debugMeta.suggestionMessage = "Consider using an \"import\" statement to import this file"
+				r.debugMeta.suggestionMessage = "Consider using an \"import\" statement to import this file:"
 			} else if key == "require" && (r.kind == ast.ImportStmt || r.kind == ast.ImportDynamic) {
-				r.debugMeta.suggestionMessage = "Consider using a \"require()\" call to import this file"
+				r.debugMeta.suggestionMessage = "Consider using a \"require()\" call to import this file:"
 			}
 		}
 	}
