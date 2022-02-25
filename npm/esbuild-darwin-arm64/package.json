@@ -1,6 +1,6 @@
 {
-	"name": "@netlify/esbuild-darwin-arm64",
-  "version": "0.13.13",
+  "name": "@netlify/esbuild-darwin-arm64",
+  "version": "0.13.15",
   "description": "The macOS ARM 64-bit binary for esbuild, a JavaScript bundler.",
   "repository": "https://github.com/netlify/esbuild",
   "license": "MIT",
@@ -10,8 +10,5 @@
   ],
   "cpu": [
     "arm64"
-  ],
-	"directories": {
-		"bin": "bin"
-	}
+  ]
 }

@@ -1,6 +1,6 @@
 {
-	"name": "@netlify/esbuild-linux-mips64le",
-  "version": "0.13.13",
+  "name": "@netlify/esbuild-linux-mips64le",
+  "version": "0.13.15",
   "description": "The Linux MIPS 64-bit Little Endian binary for esbuild, a JavaScript bundler.",
   "repository": "https://github.com/netlify/esbuild",
   "license": "MIT",
@@ -10,8 +10,5 @@
   ],
   "cpu": [
     "mips64el"
-  ],
-	"directories": {
-		"bin": "bin"
-	}
+  ]
 }

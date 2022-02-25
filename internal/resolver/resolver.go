@@ -11,6 +11,7 @@ import (
 
 	"github.com/evanw/esbuild/internal/ast"
 	"github.com/evanw/esbuild/internal/cache"
+	"github.com/evanw/esbuild/internal/compat"
 	"github.com/evanw/esbuild/internal/config"
 	"github.com/evanw/esbuild/internal/fs"
 	"github.com/evanw/esbuild/internal/helpers"
@@ -288,11 +289,50 @@ func (rr *resolver) Resolve(sourceDir string, importPath string, kind ast.Import
 		strings.HasPrefix(importPath, "//") ||
 
 		// "import fs from 'fs'"
-		// "import fs from 'node:fs'"
-		(r.options.Platform == config.PlatformNode && (BuiltInNodeModules[importPath] || strings.HasPrefix(importPath, "node:"))) {
+		(r.options.Platform == config.PlatformNode && BuiltInNodeModules[importPath]) {
 
 		if r.debugLogs != nil {
 			r.debugLogs.addNote("Marking this path as implicitly external")
+		}
+
+		r.flushDebugLogs(flushDueToSuccess)
+		return &ResolveResult{
+			PathPair:   PathPair{Primary: logger.Path{Text: importPath}},
+			IsExternal: true,
+		}, debugMeta
+	}
+
+	// "import fs from 'node:fs'"
+	// "require('node:fs')"
+	if r.options.Platform == config.PlatformNode && strings.HasPrefix(importPath, "node:") {
+		if r.debugLogs != nil {
+			r.debugLogs.addNote("Marking this path as implicitly external due to the \"node:\" prefix")
+		}
+
+		// Check whether the path will end up as "import" or "require"
+		convertImportToRequire := !r.options.OutputFormat.KeepES6ImportExportSyntax()
+		isImport := !convertImportToRequire && (kind == ast.ImportStmt || kind == ast.ImportDynamic)
+		isRequire := kind == ast.ImportRequire || kind == ast.ImportRequireResolve ||
+			(convertImportToRequire && (kind == ast.ImportStmt || kind == ast.ImportDynamic))
+
+		// Check for support with "import"
+		if isImport && r.options.UnsupportedJSFeatures.Has(compat.NodeColonPrefixImport) {
+			if r.debugLogs != nil {
+				r.debugLogs.addNote("Removing the \"node:\" prefix because the target environment doesn't support it with \"import\" statements")
+			}
+
+			// Automatically strip the prefix if it's not supported
+			importPath = importPath[5:]
+		}
+
+		// Check for support with "require"
+		if isRequire && r.options.UnsupportedJSFeatures.Has(compat.NodeColonPrefixRequire) {
+			if r.debugLogs != nil {
+				r.debugLogs.addNote("Removing the \"node:\" prefix because the target environment doesn't support it with \"require\" calls")
+			}
+
+			// Automatically strip the prefix if it's not supported
+			importPath = importPath[5:]
 		}
 
 		r.flushDebugLogs(flushDueToSuccess)
@@ -1534,6 +1574,60 @@ func (r resolverQuery) loadNodeModules(importPath string, dirInfo *dirInfo, forb
 				return absolute, true, diffCase
 			}
 		}
+	}
+
+	// Then check for the package in any enclosing "node_modules" directories
+	if packageJSON := dirInfo.enclosingPackageJSON; strings.HasPrefix(importPath, "#") && !forbidImports && packageJSON != nil && packageJSON.importsMap != nil {
+		if r.debugLogs != nil {
+			r.debugLogs.addNote(fmt.Sprintf("Looking for %q in \"imports\" map in %q", importPath, packageJSON.source.KeyPath.Text))
+			r.debugLogs.increaseIndent()
+			defer r.debugLogs.decreaseIndent()
+		}
+
+		// Filter out invalid module specifiers now where we have more information for
+		// a better error message instead of later when we're inside the algorithm
+		if importPath == "#" || strings.HasPrefix(importPath, "#/") {
+			if r.debugLogs != nil {
+				r.debugLogs.addNote(fmt.Sprintf("The path %q must not equal \"#\" and must not start with \"#/\"", importPath))
+			}
+			tracker := logger.MakeLineColumnTracker(&packageJSON.source)
+			r.debugMeta.notes = append(r.debugMeta.notes, logger.RangeData(&tracker, packageJSON.importsMap.root.firstToken,
+				fmt.Sprintf("This \"imports\" map was ignored because the module specifier %q is invalid", importPath)))
+			return PathPair{}, false, nil
+		}
+
+		// The condition set is determined by the kind of import
+		conditions := r.esmConditionsDefault
+		switch r.kind {
+		case ast.ImportStmt, ast.ImportDynamic:
+			conditions = r.esmConditionsImport
+		case ast.ImportRequire, ast.ImportRequireResolve:
+			conditions = r.esmConditionsRequire
+		}
+
+		resolvedPath, status, debug := r.esmPackageImportsResolve(importPath, packageJSON.importsMap.root, conditions)
+		resolvedPath, status, debug = r.esmHandlePostConditions(resolvedPath, status, debug)
+
+		if status == pjStatusPackageResolve {
+			// The import path was remapped via "imports" to another import path
+			// that now needs to be resolved too. Set "forbidImports" to true
+			// so we don't try to resolve "imports" again and end up in a loop.
+			absolute, ok, diffCase := r.loadNodeModules(resolvedPath, dirInfo, true /* forbidImports */)
+			if !ok {
+				tracker := logger.MakeLineColumnTracker(&packageJSON.source)
+				r.debugMeta.notes = append(
+					[]logger.MsgData{logger.RangeData(&tracker, debug.token,
+						fmt.Sprintf("The remapped path %q could not be resolved", resolvedPath))},
+					r.debugMeta.notes...)
+			}
+			return absolute, ok, diffCase
+		}
+
+		return r.finalizeImportsExportsResult(
+			dirInfo.absPath, conditions, *packageJSON.importsMap, packageJSON,
+			resolvedPath, status, debug,
+			"", "", "",
+		)
 	}
 
 	// Then check for the package in any enclosing "node_modules" directories

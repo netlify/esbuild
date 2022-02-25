@@ -205,12 +205,30 @@ func (t Token) DimensionUnit() string {
 	return t.Text[t.UnitOffset:]
 }
 
+func (t Token) DimensionUnitIsSafeLength() bool {
+	switch t.DimensionUnit() {
+	// These units can be reasonably expected to be supported everywhere.
+	// Information used: https://developer.mozilla.org/en-US/docs/Web/CSS/length
+	case "cm", "em", "in", "mm", "pc", "pt", "px":
+		return true
+	}
+	return false
+}
+
 func (t Token) IsZero() bool {
 	return t.Kind == css_lexer.TNumber && t.Text == "0"
 }
 
 func (t Token) IsOne() bool {
 	return t.Kind == css_lexer.TNumber && t.Text == "1"
+}
+
+func (t Token) IsAngle() bool {
+	if t.Kind == css_lexer.TDimension {
+		unit := t.DimensionUnit()
+		return unit == "deg" || unit == "grad" || unit == "rad" || unit == "turn"
+	}
+	return false
 }
 
 type Rule struct {
@@ -519,7 +537,7 @@ type NamespacedName struct {
 	// If present, this is an identifier or "*" and is followed by a "|" character
 	NamespacePrefix *NameToken
 
-	// This is an identifier or "*" or "&"
+	// This is an identifier or "*"
 	Name NameToken
 }
 
@@ -565,9 +583,9 @@ func (ss *SSClass) Hash() uint32 {
 
 type SSAttribute struct {
 	NamespacedName  NamespacedName
-	MatcherOp       string
+	MatcherOp       string // Either "" or one of: "=" "~=" "|=" "^=" "$=" "*="
 	MatcherValue    string
-	MatcherModifier byte
+	MatcherModifier byte // Either 0 or one of: 'i' 'I' 's' 'S'
 }
 
 func (a *SSAttribute) Equal(ss SS) bool {
