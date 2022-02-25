@@ -1,5 +1,5 @@
 {
-  "name": "esbuild-linux-s390x",
+  "name": "@netlify/esbuild-linux-s390x",
   "version": "0.14.23",
   "description": "The Linux IBM Z 64-bit Big Endian binary for esbuild, a JavaScript bundler.",
   "repository": "https://github.com/evanw/esbuild",
