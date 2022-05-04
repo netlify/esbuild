@@ -441,10 +441,10 @@ publish-linux-ppc64le: platform-linux-ppc64le
 	test -n "$(OTP)" && cd npm/esbuild-linux-ppc64le && npm publish --access=public --otp="$(OTP)"
 
 publish-linux-riscv64: platform-linux-riscv64
-	test -n "$(OTP)" && cd npm/esbuild-linux-riscv64 && npm publish --otp="$(OTP)"
+	test -n "$(OTP)" && cd npm/esbuild-linux-riscv64 && npm publish --access=public --otp="$(OTP)"
 
 publish-linux-s390x: platform-linux-s390x
-	test -n "$(OTP)" && cd npm/esbuild-linux-s390x && npm publish --otp="$(OTP)"
+	test -n "$(OTP)" && cd npm/esbuild-linux-s390x && npm publish --access=public --otp="$(OTP)"
 
 publish-sunos: platform-sunos
 	test -n "$(OTP)" && cd npm/esbuild-sunos-64 && npm publish --access=public --otp="$(OTP)"
