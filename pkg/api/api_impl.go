@@ -307,8 +307,11 @@ func validateFeatures(log logger.Log, target Target, engines []Engine) (config.T
 		constraints[compat.ES] = []int{2020}
 	case ES2021:
 		constraints[compat.ES] = []int{2021}
+	case ES2022:
+		constraints[compat.ES] = []int{2022}
+		targetFromAPI = config.TargetWasConfiguredAndAtLeastES2022
 	case ESNext:
-		targetFromAPI = config.TargetWasConfiguredIncludingESNext
+		targetFromAPI = config.TargetWasConfiguredAndAtLeastES2022
 	case DefaultTarget:
 	default:
 		panic("Invalid target")
@@ -923,6 +926,7 @@ func rebuildImpl(
 		MinifyIdentifiers:     buildOpts.MinifyIdentifiers,
 		MangleProps:           validateRegex(log, "mangle props", buildOpts.MangleProps),
 		ReserveProps:          validateRegex(log, "reserve props", buildOpts.ReserveProps),
+		MangleQuoted:          buildOpts.MangleQuoted == MangleQuotedTrue,
 		DropDebugger:          (buildOpts.Drop & DropDebugger) != 0,
 		AllowOverwrite:        buildOpts.AllowOverwrite,
 		ASCIIOnly:             validateASCIIOnly(buildOpts.Charset),
@@ -1424,6 +1428,7 @@ func transformImpl(input string, transformOpts TransformOptions) TransformResult
 		MinifyIdentifiers:       transformOpts.MinifyIdentifiers,
 		MangleProps:             validateRegex(log, "mangle props", transformOpts.MangleProps),
 		ReserveProps:            validateRegex(log, "reserve props", transformOpts.ReserveProps),
+		MangleQuoted:            transformOpts.MangleQuoted == MangleQuotedTrue,
 		DropDebugger:            (transformOpts.Drop & DropDebugger) != 0,
 		ASCIIOnly:               validateASCIIOnly(transformOpts.Charset),
 		IgnoreDCEAnnotations:    transformOpts.IgnoreAnnotations,
