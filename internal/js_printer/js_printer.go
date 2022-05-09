@@ -517,9 +517,9 @@ func (p *printer) printClauseAlias(alias string) {
 // anything that isn't guaranteed to be compatible with ES5, the oldest
 // JavaScript language target that we support.
 
-func CanEscapeIdentifier(name string, unsupportedJSFeatures compat.JSFeature, asciiOnly bool) bool {
+func CanEscapeIdentifier(name string, UnsupportedFeatures compat.JSFeature, asciiOnly bool) bool {
 	return js_lexer.IsIdentifierES5AndESNext(name) && (!asciiOnly ||
-		!unsupportedJSFeatures.Has(compat.UnicodeEscapes) ||
+		!UnsupportedFeatures.Has(compat.UnicodeEscapes) ||
 		!helpers.ContainsNonBMPCodePoint(name))
 }
 
@@ -879,7 +879,7 @@ func (p *printer) printFnArgs(args []js_ast.Arg, hasRestArg bool, isArrow bool) 
 func (p *printer) printFn(fn js_ast.Fn) {
 	p.printFnArgs(fn.Args, fn.HasRestArg, false /* isArrow */)
 	p.printSpace()
-	p.printBlock(fn.Body.Loc, fn.Body.Stmts)
+	p.printBlock(fn.Body.Loc, fn.Body.Block)
 }
 
 func (p *printer) printClass(class js_ast.Class) {
@@ -902,7 +902,7 @@ func (p *printer) printClass(class js_ast.Class) {
 		if item.Kind == js_ast.PropertyClassStaticBlock {
 			p.print("static")
 			p.printSpace()
-			p.printBlock(item.ClassStaticBlock.Loc, item.ClassStaticBlock.Stmts)
+			p.printBlock(item.ClassStaticBlock.Loc, item.ClassStaticBlock.Block)
 			p.printNewline()
 			continue
 		}
@@ -920,6 +920,9 @@ func (p *printer) printClass(class js_ast.Class) {
 	p.needsSemicolon = false
 	p.options.Indent--
 	p.printIndent()
+	if class.CloseBraceLoc.Start > class.BodyLoc.Start {
+		p.addSourceMapping(class.CloseBraceLoc)
+	}
 	p.print("}")
 }
 
@@ -1410,14 +1413,14 @@ func (p *printer) simplifyUnusedExpr(expr js_ast.Expr) js_ast.Expr {
 		if (symbolFlags & (js_ast.IsEmptyFunction | js_ast.CouldPotentiallyBeMutated)) == js_ast.IsEmptyFunction {
 			var replacement js_ast.Expr
 			for _, arg := range e.Args {
-				replacement = js_ast.JoinWithComma(replacement, js_ast.SimplifyUnusedExpr(p.simplifyUnusedExpr(arg), p.isUnbound))
+				replacement = js_ast.JoinWithComma(replacement, js_ast.SimplifyUnusedExpr(p.simplifyUnusedExpr(arg), p.options.UnsupportedFeatures, p.isUnbound))
 			}
 			return replacement // Don't add "undefined" here because the result isn't used
 		}
 
 		// Inline non-mutated identity functions at print time
 		if (symbolFlags&(js_ast.IsIdentityFunction|js_ast.CouldPotentiallyBeMutated)) == js_ast.IsIdentityFunction && len(e.Args) == 1 {
-			return js_ast.SimplifyUnusedExpr(p.simplifyUnusedExpr(e.Args[0]), p.isUnbound)
+			return js_ast.SimplifyUnusedExpr(p.simplifyUnusedExpr(e.Args[0]), p.options.UnsupportedFeatures, p.isUnbound)
 		}
 	}
 
@@ -1752,6 +1755,9 @@ func (p *printer) printExpr(expr js_ast.Expr, level js_ast.L, flags printExprFla
 				}
 				p.printExpr(arg, js_ast.LComma, 0)
 			}
+			if e.CloseParenLoc.Start > expr.Loc.Start {
+				p.addSourceMapping(e.CloseParenLoc)
+			}
 			p.print(")")
 		}
 
@@ -1774,7 +1780,7 @@ func (p *printer) printExpr(expr js_ast.Expr, level js_ast.L, flags printExprFla
 			if (symbolFlags & (js_ast.IsEmptyFunction | js_ast.CouldPotentiallyBeMutated)) == js_ast.IsEmptyFunction {
 				var replacement js_ast.Expr
 				for _, arg := range e.Args {
-					replacement = js_ast.JoinWithComma(replacement, js_ast.SimplifyUnusedExpr(arg, p.isUnbound))
+					replacement = js_ast.JoinWithComma(replacement, js_ast.SimplifyUnusedExpr(arg, p.options.UnsupportedFeatures, p.isUnbound))
 				}
 				if replacement.Data == nil || (flags&exprResultIsUnused) == 0 {
 					replacement = js_ast.JoinWithComma(replacement, js_ast.Expr{Loc: expr.Loc, Data: js_ast.EUndefinedShared})
@@ -1787,7 +1793,7 @@ func (p *printer) printExpr(expr js_ast.Expr, level js_ast.L, flags printExprFla
 			if (symbolFlags&(js_ast.IsIdentityFunction|js_ast.CouldPotentiallyBeMutated)) == js_ast.IsIdentityFunction && len(e.Args) == 1 {
 				arg := e.Args[0]
 				if (flags & exprResultIsUnused) != 0 {
-					arg = js_ast.SimplifyUnusedExpr(arg, p.isUnbound)
+					arg = js_ast.SimplifyUnusedExpr(arg, p.options.UnsupportedFeatures, p.isUnbound)
 				}
 				p.printExpr(p.guardAgainstBehaviorChangeDueToSubstitution(arg, flags), level, flags)
 				break
@@ -1854,6 +1860,9 @@ func (p *printer) printExpr(expr js_ast.Expr, level js_ast.L, flags printExprFla
 			}
 			p.printExpr(arg, js_ast.LComma, 0)
 		}
+		if e.CloseParenLoc.Start > expr.Loc.Start {
+			p.addSourceMapping(e.CloseParenLoc)
+		}
 		p.print(")")
 		if wrap {
 			p.print(")")
@@ -1913,11 +1922,14 @@ func (p *printer) printExpr(expr js_ast.Expr, level js_ast.L, flags printExprFla
 			p.printIndent()
 		}
 		p.printExpr(e.Expr, js_ast.LComma, 0)
-		if e.OptionsOrNil.Data != nil {
+
+		// Just omit import assertions if they aren't supported
+		if e.OptionsOrNil.Data != nil && !p.options.UnsupportedFeatures.Has(compat.ImportAssertions) {
 			p.print(",")
 			p.printSpace()
 			p.printExpr(e.OptionsOrNil, js_ast.LComma, 0)
 		}
+
 		if len(leadingInteriorComments) > 0 {
 			p.printNewline()
 			p.options.Indent--
@@ -2094,15 +2106,15 @@ func (p *printer) printExpr(expr js_ast.Expr, level js_ast.L, flags printExprFla
 		p.printSpace()
 
 		wasPrinted := false
-		if len(e.Body.Stmts) == 1 && e.PreferExpr {
-			if s, ok := e.Body.Stmts[0].Data.(*js_ast.SReturn); ok && s.ValueOrNil.Data != nil {
+		if len(e.Body.Block.Stmts) == 1 && e.PreferExpr {
+			if s, ok := e.Body.Block.Stmts[0].Data.(*js_ast.SReturn); ok && s.ValueOrNil.Data != nil {
 				p.arrowExprStart = len(p.js)
 				p.printExpr(s.ValueOrNil, js_ast.LComma, flags&forbidIn)
 				wasPrinted = true
 			}
 		}
 		if !wasPrinted {
-			p.printBlock(e.Body.Loc, e.Body.Stmts)
+			p.printBlock(e.Body.Loc, e.Body.Block)
 		}
 		if wrap {
 			p.print(")")
@@ -2140,6 +2152,8 @@ func (p *printer) printExpr(expr js_ast.Expr, level js_ast.L, flags printExprFla
 		p.printSpaceBeforeIdentifier()
 		p.print("class")
 		if e.Class.Name != nil {
+			p.print(" ")
+			p.addSourceMapping(e.Class.Name.Loc)
 			p.printSymbol(e.Class.Name.Ref)
 		}
 		p.printClass(e.Class)
@@ -2180,6 +2194,9 @@ func (p *printer) printExpr(expr js_ast.Expr, level js_ast.L, flags printExprFla
 				p.printIndent()
 			}
 		}
+		if e.CloseBracketLoc.Start > expr.Loc.Start {
+			p.addSourceMapping(e.CloseBracketLoc)
+		}
 		p.print("]")
 
 	case *js_ast.EObject:
@@ -2214,6 +2231,9 @@ func (p *printer) printExpr(expr js_ast.Expr, level js_ast.L, flags printExprFla
 			} else if len(e.Properties) > 0 {
 				p.printSpace()
 			}
+		}
+		if e.CloseBraceLoc.Start > expr.Loc.Start {
+			p.addSourceMapping(e.CloseBraceLoc)
 		}
 		p.print("}")
 		if wrap {
@@ -2791,7 +2811,7 @@ func (p *printer) printDecls(keyword string, decls []js_ast.Decl, flags printExp
 func (p *printer) printBody(body js_ast.Stmt) {
 	if block, ok := body.Data.(*js_ast.SBlock); ok {
 		p.printSpace()
-		p.printBlock(body.Loc, block.Stmts)
+		p.printBlock(body.Loc, *block)
 		p.printNewline()
 	} else {
 		p.printNewline()
@@ -2801,13 +2821,13 @@ func (p *printer) printBody(body js_ast.Stmt) {
 	}
 }
 
-func (p *printer) printBlock(loc logger.Loc, stmts []js_ast.Stmt) {
+func (p *printer) printBlock(loc logger.Loc, block js_ast.SBlock) {
 	p.addSourceMapping(loc)
 	p.print("{")
 	p.printNewline()
 
 	p.options.Indent++
-	for _, stmt := range stmts {
+	for _, stmt := range block.Stmts {
 		p.printSemicolonIfNeeded()
 		p.printStmt(stmt, canOmitStatement)
 	}
@@ -2815,6 +2835,9 @@ func (p *printer) printBlock(loc logger.Loc, stmts []js_ast.Stmt) {
 	p.needsSemicolon = false
 
 	p.printIndent()
+	if block.CloseBraceLoc.Start > loc.Start {
+		p.addSourceMapping(block.CloseBraceLoc)
+	}
 	p.print("}")
 }
 
@@ -2868,7 +2891,7 @@ func (p *printer) printIf(s *js_ast.SIf) {
 
 	if yes, ok := s.Yes.Data.(*js_ast.SBlock); ok {
 		p.printSpace()
-		p.printBlock(s.Yes.Loc, yes.Stmts)
+		p.printBlock(s.Yes.Loc, *yes)
 
 		if no.Data != nil {
 			p.printSpace()
@@ -2911,7 +2934,7 @@ func (p *printer) printIf(s *js_ast.SIf) {
 
 		if block, ok := no.Data.(*js_ast.SBlock); ok {
 			p.printSpace()
-			p.printBlock(no.Loc, block.Stmts)
+			p.printBlock(no.Loc, *block)
 			p.printNewline()
 		} else if ifStmt, ok := no.Data.(*js_ast.SIf); ok {
 			p.printIf(ifStmt)
@@ -3071,7 +3094,8 @@ func (p *printer) printStmt(stmt js_ast.Stmt, flags printStmtFlags) {
 		if s.IsExport {
 			p.print("export ")
 		}
-		p.print("class")
+		p.print("class ")
+		p.addSourceMapping(s.Class.Name.Loc)
 		p.printSymbol(s.Class.Name.Ref)
 		p.printClass(s.Class)
 		p.printNewline()
@@ -3116,6 +3140,8 @@ func (p *printer) printStmt(stmt js_ast.Stmt, flags printStmtFlags) {
 			p.printSpaceBeforeIdentifier()
 			p.print("class")
 			if s2.Class.Name != nil {
+				p.print(" ")
+				p.addSourceMapping(s2.Class.Name.Loc)
 				p.printSymbol(s2.Class.Name.Ref)
 			}
 			p.printClass(s2.Class)
@@ -3255,7 +3281,7 @@ func (p *printer) printStmt(stmt js_ast.Stmt, flags printStmtFlags) {
 		p.print("do")
 		if block, ok := s.Body.Data.(*js_ast.SBlock); ok {
 			p.printSpace()
-			p.printBlock(s.Body.Loc, block.Stmts)
+			p.printBlock(s.Body.Loc, *block)
 			p.printSpace()
 		} else {
 			p.printNewline()
@@ -3341,7 +3367,7 @@ func (p *printer) printStmt(stmt js_ast.Stmt, flags printStmtFlags) {
 		p.printSpaceBeforeIdentifier()
 		p.print("try")
 		p.printSpace()
-		p.printBlock(s.BodyLoc, s.Body)
+		p.printBlock(s.BlockLoc, s.Block)
 
 		if s.Catch != nil {
 			p.printSpace()
@@ -3353,14 +3379,14 @@ func (p *printer) printStmt(stmt js_ast.Stmt, flags printStmtFlags) {
 				p.print(")")
 			}
 			p.printSpace()
-			p.printBlock(s.Catch.Loc, s.Catch.Body)
+			p.printBlock(s.Catch.Loc, s.Catch.Block)
 		}
 
 		if s.Finally != nil {
 			p.printSpace()
 			p.print("finally")
 			p.printSpace()
-			p.printBlock(s.Finally.Loc, s.Finally.Stmts)
+			p.printBlock(s.Finally.Loc, s.Finally.Block)
 		}
 
 		p.printNewline()
@@ -3433,7 +3459,7 @@ func (p *printer) printStmt(stmt js_ast.Stmt, flags printStmtFlags) {
 			if len(c.Body) == 1 {
 				if block, ok := c.Body[0].Data.(*js_ast.SBlock); ok {
 					p.printSpace()
-					p.printBlock(c.Body[0].Loc, block.Stmts)
+					p.printBlock(c.Body[0].Loc, *block)
 					p.printNewline()
 					continue
 				}
@@ -3537,7 +3563,7 @@ func (p *printer) printStmt(stmt js_ast.Stmt, flags printStmtFlags) {
 
 	case *js_ast.SBlock:
 		p.printIndent()
-		p.printBlock(stmt.Loc, s.Stmts)
+		p.printBlock(stmt.Loc, *s)
 		p.printNewline()
 
 	case *js_ast.SDebugger:

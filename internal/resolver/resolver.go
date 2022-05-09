@@ -1459,11 +1459,17 @@ func (r resolverQuery) loadAsMainField(dirInfo *dirInfo, path string, extensionO
 	return PathPair{}, false, nil
 }
 
+func hasCaseInsensitiveSuffix(s string, suffix string) bool {
+	return len(s) >= len(suffix) && strings.EqualFold(s[len(s)-len(suffix):], suffix)
+}
+
 // This closely follows the behavior of "tryLoadModuleUsingPaths()" in the
 // official TypeScript compiler
 func (r resolverQuery) matchTSConfigPaths(tsConfigJSON *TSConfigJSON, path string) (PathPair, bool, *fs.DifferentCase) {
 	if r.debugLogs != nil {
 		r.debugLogs.addNote(fmt.Sprintf("Matching %q against \"paths\" in %q", path, tsConfigJSON.AbsPath))
+		r.debugLogs.increaseIndent()
+		defer r.debugLogs.decreaseIndent()
 	}
 
 	absBaseURL := tsConfigJSON.BaseURLForPaths
@@ -1486,6 +1492,14 @@ func (r resolverQuery) matchTSConfigPaths(tsConfigJSON *TSConfigJSON, path strin
 				r.debugLogs.addNote(fmt.Sprintf("Found an exact match for %q in \"paths\"", key))
 			}
 			for _, originalPath := range originalPaths {
+				// Ignore ".d.ts" files because this rule is obviously only here for type checking
+				if hasCaseInsensitiveSuffix(originalPath, ".d.ts") {
+					if r.debugLogs != nil {
+						r.debugLogs.addNote(fmt.Sprintf("Ignoring substitution %q because it ends in \".d.ts\"", originalPath))
+					}
+					continue
+				}
+
 				// Load the original path relative to the "baseUrl" from tsconfig.json
 				absoluteOriginalPath := originalPath
 				if !r.fs.IsAbs(originalPath) {
@@ -1542,6 +1556,14 @@ func (r resolverQuery) matchTSConfigPaths(tsConfigJSON *TSConfigJSON, path strin
 			// Swap out the "*" in the original path for whatever the "*" matched
 			matchedText := path[len(longestMatch.prefix) : len(path)-len(longestMatch.suffix)]
 			originalPath = strings.Replace(originalPath, "*", matchedText, 1)
+
+			// Ignore ".d.ts" files because this rule is obviously only here for type checking
+			if hasCaseInsensitiveSuffix(originalPath, ".d.ts") {
+				if r.debugLogs != nil {
+					r.debugLogs.addNote(fmt.Sprintf("Ignoring substitution %q because it ends in \".d.ts\"", originalPath))
+				}
+				continue
+			}
 
 			// Load the original path relative to the "baseUrl" from tsconfig.json
 			absoluteOriginalPath := originalPath
@@ -1639,60 +1661,6 @@ func (r resolverQuery) loadNodeModules(importPath string, dirInfo *dirInfo, forb
 
 		return r.finalizeImportsExportsResult(
 			dirInfoPackageJSON.absPath, conditions, *packageJSON.importsMap, packageJSON,
-			resolvedPath, status, debug,
-			"", "", "",
-		)
-	}
-
-	// Then check for the package in any enclosing "node_modules" directories
-	if packageJSON := dirInfo.enclosingPackageJSON; strings.HasPrefix(importPath, "#") && !forbidImports && packageJSON != nil && packageJSON.importsMap != nil {
-		if r.debugLogs != nil {
-			r.debugLogs.addNote(fmt.Sprintf("Looking for %q in \"imports\" map in %q", importPath, packageJSON.source.KeyPath.Text))
-			r.debugLogs.increaseIndent()
-			defer r.debugLogs.decreaseIndent()
-		}
-
-		// Filter out invalid module specifiers now where we have more information for
-		// a better error message instead of later when we're inside the algorithm
-		if importPath == "#" || strings.HasPrefix(importPath, "#/") {
-			if r.debugLogs != nil {
-				r.debugLogs.addNote(fmt.Sprintf("The path %q must not equal \"#\" and must not start with \"#/\"", importPath))
-			}
-			tracker := logger.MakeLineColumnTracker(&packageJSON.source)
-			r.debugMeta.notes = append(r.debugMeta.notes, tracker.MsgData(packageJSON.importsMap.root.firstToken,
-				fmt.Sprintf("This \"imports\" map was ignored because the module specifier %q is invalid", importPath)))
-			return PathPair{}, false, nil
-		}
-
-		// The condition set is determined by the kind of import
-		conditions := r.esmConditionsDefault
-		switch r.kind {
-		case ast.ImportStmt, ast.ImportDynamic:
-			conditions = r.esmConditionsImport
-		case ast.ImportRequire, ast.ImportRequireResolve:
-			conditions = r.esmConditionsRequire
-		}
-
-		resolvedPath, status, debug := r.esmPackageImportsResolve(importPath, packageJSON.importsMap.root, conditions)
-		resolvedPath, status, debug = r.esmHandlePostConditions(resolvedPath, status, debug)
-
-		if status == pjStatusPackageResolve {
-			// The import path was remapped via "imports" to another import path
-			// that now needs to be resolved too. Set "forbidImports" to true
-			// so we don't try to resolve "imports" again and end up in a loop.
-			absolute, ok, diffCase := r.loadNodeModules(resolvedPath, dirInfo, true /* forbidImports */)
-			if !ok {
-				tracker := logger.MakeLineColumnTracker(&packageJSON.source)
-				r.debugMeta.notes = append(
-					[]logger.MsgData{tracker.MsgData(debug.token,
-						fmt.Sprintf("The remapped path %q could not be resolved", resolvedPath))},
-					r.debugMeta.notes...)
-			}
-			return absolute, ok, diffCase
-		}
-
-		return r.finalizeImportsExportsResult(
-			dirInfo.absPath, conditions, *packageJSON.importsMap, packageJSON,
 			resolvedPath, status, debug,
 			"", "", "",
 		)
