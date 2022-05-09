@@ -368,8 +368,7 @@ publish-all: check-go-version
 	@read OTP && OTP="$$OTP" $(MAKE) --no-print-directory -j4 \
 		publish-windows \
 		publish-windows-32 \
-		publish-windows-arm64 \
-		publish-sunos
+		publish-windows-arm64
 
 	@echo Enter one-time password:
 	@read OTP && OTP="$$OTP" $(MAKE) --no-print-directory -j4 \
