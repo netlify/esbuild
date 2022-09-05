@@ -2,6 +2,8 @@ import fs = require('fs');
 import os = require('os');
 import path = require('path');
 
+declare const ESBUILD_VERSION: string;
+
 // This feature was added to give external code a way to modify the binary
 // path without modifying the code itself. Do not remove this because
 // external code relies on this.
@@ -27,6 +29,7 @@ export const knownUnixlikePackages: Record<string, string> = {
   'linux riscv64 LE': '@netlify/esbuild-linux-riscv64',
   'linux s390x BE': '@netlify/esbuild-linux-s390x',
   'linux x64 LE': '@netlify/esbuild-linux-64',
+  'linux loong64 LE': '@netlify/linux-loong64',
   'netbsd x64 LE': '@netlify/esbuild-netbsd-64',
   'openbsd x64 LE': '@netlify/esbuild-openbsd-64',
   'sunos x64 LE': '@netlify/esbuild-sunos-64',
@@ -178,16 +181,40 @@ by esbuild to install the correct binary executable for your current platform.`)
   // it's inside a virtual file system and the OS needs it in the real file
   // system. So we need to copy the file out of the virtual file system into
   // the real file system.
-  let isYarnPnP = false;
+  //
+  // You might think that we could use "preferUnplugged: true" in each of the
+  // platform-specific packages for this instead, since that tells Yarn to not
+  // use the virtual file system for those packages. This is not done because:
+  //
+  // * Really early versions of Yarn don't support "preferUnplugged", so package
+  //   installation would break on those Yarn versions if we did this.
+  //
+  // * Earlier Yarn versions always installed all optional dependencies for all
+  //   platforms even though most of them are incompatible. To minimize file
+  //   system space, we want these useless packages to take up as little space
+  //   as possible so they should remain unzipped inside their ".zip" files.
+  //
+  //   We have to explicitly pass "preferUnplugged: false" instead of leaving
+  //   it up to Yarn's default behavior because Yarn's heuristics otherwise
+  //   automatically unzip packages containing ".exe" files, and we don't want
+  //   our Windows-specific packages to be unzipped either.
+  //
+  let pnpapi: any;
   try {
-    require('pnpapi');
-    isYarnPnP = true;
+    pnpapi = require('pnpapi');
   } catch (e) {
   }
-  if (isYarnPnP) {
-    const esbuildLibDir = path.dirname(require.resolve('esbuild'));
-    const binTargetPath = path.join(esbuildLibDir, `pnpapi-${pkg}-${path.basename(subpath)}`);
+  if (pnpapi) {
+    const root = pnpapi.getPackageInformation(pnpapi.topLevel).packageLocation;
+    const binTargetPath = path.join(
+      root,
+      'node_modules',
+      '.cache',
+      'esbuild',
+      `pnpapi-${pkg}-${ESBUILD_VERSION}-${path.basename(subpath)}`,
+    );
     if (!fs.existsSync(binTargetPath)) {
+      fs.mkdirSync(path.dirname(binTargetPath), { recursive: true });
       fs.copyFileSync(binPath, binTargetPath);
       fs.chmodSync(binTargetPath, 0o755);
     }

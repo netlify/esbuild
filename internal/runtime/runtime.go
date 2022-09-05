@@ -15,11 +15,7 @@ import (
 // all code that references this index can be discovered easily.
 const SourceIndex = uint32(0)
 
-func CanUseES6(unsupportedFeatures compat.JSFeature) bool {
-	return !unsupportedFeatures.Has(compat.Let) && !unsupportedFeatures.Has(compat.ForOf)
-}
-
-func code(isES6 bool) string {
+func Source(unsupportedJSFeatures compat.JSFeature) logger.Source {
 	// Note: These helper functions used to be named similar things to the helper
 	// functions from the TypeScript compiler. However, people sometimes use these
 	// two projects in combination and TypeScript's implementation of these helpers
@@ -93,7 +89,7 @@ func code(isES6 bool) string {
 		`
 
 	// Avoid "of" when not using ES6
-	if isES6 {
+	if !unsupportedJSFeatures.Has(compat.ForOf) {
 		text += `
 				for (var prop of __getOwnPropSymbols(b)) {
 		`
@@ -111,9 +107,6 @@ func code(isES6 bool) string {
 			return a
 		}
 		export var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b))
-
-		// Tells importing modules that this can be considered an ES module
-		var __markAsModule = target => __defProp(target, '__esModule', { value: true })
 
 		// Update the "name" property on the function or class for "--keep-names"
 		export var __name = (target, value) => __defProp(target, 'name', { value, configurable: true })
@@ -146,7 +139,7 @@ func code(isES6 bool) string {
 	`
 
 	// Avoid "of" when not using ES6
-	if isES6 {
+	if !unsupportedJSFeatures.Has(compat.ForOf) {
 		text += `
 				for (var prop of __getOwnPropSymbols(source)) {
 		`
@@ -185,58 +178,63 @@ func code(isES6 bool) string {
 			for (var name in all)
 				__defProp(target, name, { get: all[name], enumerable: true })
 		}
-		export var __reExport = (target, module, copyDefault, desc) => {
-			if (module && typeof module === 'object' || typeof module === 'function')
+
+		var __copyProps = (to, from, except, desc) => {
+			if (from && typeof from === 'object' || typeof from === 'function')
 	`
 
 	// Avoid "let" when not using ES6
-	if isES6 {
+	if !unsupportedJSFeatures.Has(compat.ForOf) && !unsupportedJSFeatures.Has(compat.ConstAndLet) {
 		text += `
-				for (let key of __getOwnPropNames(module))
-					if (!__hasOwnProp.call(target, key) && (copyDefault || key !== 'default'))
-						__defProp(target, key, { get: () => module[key], enumerable: !(desc = __getOwnPropDesc(module, key)) || desc.enumerable })
+				for (let key of __getOwnPropNames(from))
+					if (!__hasOwnProp.call(to, key) && key !== except)
+						__defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable })
 		`
 	} else {
 		text += `
-				for (var keys = __getOwnPropNames(module), i = 0, n = keys.length, key; i < n; i++) {
+				for (var keys = __getOwnPropNames(from), i = 0, n = keys.length, key; i < n; i++) {
 					key = keys[i]
-					if (!__hasOwnProp.call(target, key) && (copyDefault || key !== 'default'))
-						__defProp(target, key, { get: (k => module[k]).bind(null, key), enumerable: !(desc = __getOwnPropDesc(module, key)) || desc.enumerable })
+					if (!__hasOwnProp.call(to, key) && key !== except)
+						__defProp(to, key, { get: (k => from[k]).bind(null, key), enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable })
 				}
 		`
 	}
 
 	text += `
-			return target
+			return to
 		}
 
-		// Converts the module from CommonJS to ESM
-		export var __toESM = (module, isNodeMode) => {
-			return __reExport(__markAsModule(
-				__defProp(
-					module != null ? __create(__getProtoOf(module)) : {},
-					'default',
+		// This is used to implement "export * from" statements. It copies properties
+		// from the imported module to the current module's ESM export object. If the
+		// current module is an entry point and the target format is CommonJS, we
+		// also copy the properties to "module.exports" in addition to our module's
+		// internal ESM export object.
+		export var __reExport = (target, mod, secondTarget) => (
+			__copyProps(target, mod, 'default'),
+			secondTarget && __copyProps(secondTarget, mod, 'default')
+		)
 
-					// If the importer is not in node compatibility mode and this is an ESM
-					// file that has been converted to a CommonJS file using a Babel-
-					// compatible transform (i.e. "__esModule" has been set), then forward
-					// "default" to the export named "default". Otherwise set "default" to
-					// "module.exports" for node compatibility.
-					!isNodeMode && module && module.__esModule
-						? { get: () => module.default, enumerable: true }
-						: { value: module, enumerable: true })
-			), module)
-		}
+		// Converts the module from CommonJS to ESM. When in node mode (i.e. in an
+		// ".mjs" file, package.json has "type: module", or the "__esModule" export
+		// in the CommonJS file is falsy or missing), the "default" property is
+		// overridden to point to the original CommonJS exports object instead.
+		export var __toESM = (mod, isNodeMode, target) => (
+			target = mod != null ? __create(__getProtoOf(mod)) : {},
+			__copyProps(
+				// If the importer is in node compatibility mode or this is not an ESM
+				// file that has been converted to a CommonJS file using a Babel-
+				// compatible transform (i.e. "__esModule" has not been set), then set
+				// "default" to the CommonJS "module.exports" for node compatibility.
+				isNodeMode || !mod || !mod.__esModule
+					? __defProp(target, 'default', { value: mod, enumerable: true })
+					: target,
+				mod)
+		)
 
-		// Converts the module from ESM to CommonJS
-		export var __toCommonJS = /* @__PURE__ */ (cache => {
-			return (module, temp) => {
-				return (cache && cache.get(module)) || (
-					temp = __reExport(__markAsModule({}), module, /* copyDefault */ 1),
-					cache && cache.set(module, temp),
-					temp)
-			}
-		})(typeof WeakMap !== 'undefined' ? new WeakMap : 0)
+		// Converts the module from ESM to CommonJS. This clones the input module
+		// object with the addition of a non-enumerable "__esModule" property set
+		// to "true", which overwrites any existing export named "__esModule".
+		export var __toCommonJS = mod => __copyProps(__defProp({}, '__esModule', { value: true }), mod)
 
 		// For TypeScript decorators
 		// - kind === undefined: class
@@ -278,33 +276,52 @@ func code(isES6 bool) string {
 			setter ? setter.call(obj, value) : member.set(obj, value)
 			return value
 		}
-		export var __privateWrapper = (obj, member, setter, getter) => {
-			return {
+	`
+
+	if !unsupportedJSFeatures.Has(compat.ObjectAccessors) {
+		text += `
+			export var __privateWrapper = (obj, member, setter, getter) => ({
 				set _(value) { __privateSet(obj, member, value, setter) },
 				get _() { return __privateGet(obj, member, getter) },
-			}
-		}
+			})
+		`
+	} else {
+		text += `
+		export var __privateWrapper = (obj, member, setter, getter) => __defProp({}, '_', {
+			set: value => __privateSet(obj, member, value, setter),
+			get: () => __privateGet(obj, member, getter),
+		})
+		`
+	}
+
+	text += `
 		export var __privateMethod = (obj, member, method) => {
 			__accessCheck(obj, member, 'access private method')
 			return method
 		}
 
 		// For "super" property accesses
-		export var __superStaticGet = (obj, member) => __reflectGet(__getProtoOf(obj), member, obj)
-		export var __superStaticSet = (obj, member, value) => (__reflectSet(__getProtoOf(obj), member, value, obj), value)
-		export var __superWrapper = (getter, setter, member) => {
-			return {
-				set _(value) { setter(member, value) },
-				get _() { return getter(member) },
-			}
-		}
-		export var __superStaticWrapper = (obj, member) => {
-			return {
-				set _(value) { __superStaticSet(obj, member, value) },
-				get _() { return __superStaticGet(obj, member) },
-			}
-		}
+		export var __superGet = (cls, obj, key) => __reflectGet(__getProtoOf(cls), key, obj)
+		export var __superSet = (cls, obj, key, val) => (__reflectSet(__getProtoOf(cls), key, val, obj), val)
+	`
 
+	if !unsupportedJSFeatures.Has(compat.ObjectAccessors) {
+		text += `
+			export var __superWrapper = (cls, obj, key) => ({
+				get _() { return __superGet(cls, obj, key) },
+				set _(val) { __superSet(cls, obj, key, val) },
+			})
+		`
+	} else {
+		text += `
+			export var __superWrapper = (cls, obj, key) => __defProp({}, '_', {
+				get: () => __superGet(cls, obj, key),
+				set: val => __superSet(cls, obj, key, val),
+			})
+		`
+	}
+
+	text += `
 		// For lowering tagged template literals
 		export var __template = (cooked, raw) => __freeze(__defProp(cooked, 'raw', { value: __freeze(raw || cooked.slice()) }))
 
@@ -330,6 +347,26 @@ func code(isES6 bool) string {
 			})
 		}
 
+		// This helps for lowering for-await loops
+		export var __forAwait = (obj, it, method) => {
+			it = obj[Symbol.asyncIterator]
+			method = (key, fn) =>
+				(fn = obj[key]) && (it[key] = arg =>
+					new Promise((resolve, reject, done) => {
+						arg = fn.call(obj, arg)
+						done = arg.done
+						return Promise.resolve(arg.value)
+							.then((value) => resolve({ value, done }), reject)
+					}))
+			return it
+				? it.call(obj)
+				: (obj = obj[Symbol.iterator](),
+					it = {},
+					method("next"),
+					method("return"),
+					it)
+		}
+
 		// This is for the "binary" loader (custom code is ~2x faster than "atob")
 		export var __toBinaryNode = base64 => new Uint8Array(Buffer.from(base64, 'base64'))
 		export var __toBinary = /* @__PURE__ */ (() => {
@@ -349,23 +386,13 @@ func code(isES6 bool) string {
 		})()
 	`
 
-	return text
-}
-
-var ES6Source = logger.Source{
-	Index:          SourceIndex,
-	KeyPath:        logger.Path{Text: "<runtime>"},
-	PrettyPath:     "<runtime>",
-	IdentifierName: "runtime",
-	Contents:       code(true /* isES6 */),
-}
-
-var ES5Source = logger.Source{
-	Index:          SourceIndex,
-	KeyPath:        logger.Path{Text: "<runtime>"},
-	PrettyPath:     "<runtime>",
-	IdentifierName: "runtime",
-	Contents:       code(false /* isES6 */),
+	return logger.Source{
+		Index:          SourceIndex,
+		KeyPath:        logger.Path{Text: "<runtime>"},
+		PrettyPath:     "<runtime>",
+		IdentifierName: "runtime",
+		Contents:       text,
+	}
 }
 
 // The TypeScript decorator transform behaves similar to the official

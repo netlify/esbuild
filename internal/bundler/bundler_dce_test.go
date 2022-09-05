@@ -1487,6 +1487,125 @@ func TestTreeShakingImportIdentifier(t *testing.T) {
 	})
 }
 
+func TestTreeShakingObjectProperty(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				let remove1 = { x: 'x' }
+				let remove2 = { x() {} }
+				let remove3 = { get x() {} }
+				let remove4 = { set x(_) {} }
+				let remove5 = { async x() {} }
+				let remove6 = { ['x']: 'x' }
+				let remove7 = { ['x']() {} }
+				let remove8 = { get ['x']() {} }
+				let remove9 = { set ['x'](_) {} }
+				let remove10 = { async ['x']() {} }
+				let remove11 = { [0]: 'x' }
+				let remove12 = { [null]: 'x' }
+				let remove13 = { [undefined]: 'x' }
+				let remove14 = { [false]: 'x' }
+				let remove15 = { [0n]: 'x' }
+				let remove16 = { toString() {} }
+
+				let keep1 = { x }
+				let keep2 = { x: x }
+				let keep3 = { ...x }
+				let keep4 = { [x]: 'x' }
+				let keep5 = { [x]() {} }
+				let keep6 = { get [x]() {} }
+				let keep7 = { set [x](_) {} }
+				let keep8 = { async [x]() {} }
+				let keep9 = { [{ toString() {} }]: 'x' }
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModePassThrough,
+			TreeShaking:   true,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+func TestTreeShakingClassProperty(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				let remove1 = class { x }
+				let remove2 = class { x = x }
+				let remove3 = class { x() {} }
+				let remove4 = class { get x() {} }
+				let remove5 = class { set x(_) {} }
+				let remove6 = class { async x() {} }
+				let remove7 = class { ['x'] = x }
+				let remove8 = class { ['x']() {} }
+				let remove9 = class { get ['x']() {} }
+				let remove10 = class { set ['x'](_) {} }
+				let remove11 = class { async ['x']() {} }
+				let remove12 = class { [0] = 'x' }
+				let remove13 = class { [null] = 'x' }
+				let remove14 = class { [undefined] = 'x' }
+				let remove15 = class { [false] = 'x' }
+				let remove16 = class { [0n] = 'x' }
+				let remove17 = class { toString() {} }
+
+				let keep1 = class { [x] = 'x' }
+				let keep2 = class { [x]() {} }
+				let keep3 = class { get [x]() {} }
+				let keep4 = class { set [x](_) {} }
+				let keep5 = class { async [x]() {} }
+				let keep6 = class { [{ toString() {} }] = 'x' }
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModePassThrough,
+			TreeShaking:   true,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+func TestTreeShakingClassStaticProperty(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				let remove1 = class { static x }
+				let remove3 = class { static x() {} }
+				let remove4 = class { static get x() {} }
+				let remove5 = class { static set x(_) {} }
+				let remove6 = class { static async x() {} }
+				let remove8 = class { static ['x']() {} }
+				let remove9 = class { static get ['x']() {} }
+				let remove10 = class { static set ['x'](_) {} }
+				let remove11 = class { static async ['x']() {} }
+				let remove12 = class { static [0] = 'x' }
+				let remove13 = class { static [null] = 'x' }
+				let remove14 = class { static [undefined] = 'x' }
+				let remove15 = class { static [false] = 'x' }
+				let remove16 = class { static [0n] = 'x' }
+				let remove17 = class { static toString() {} }
+
+				let keep1 = class { static x = x }
+				let keep2 = class { static ['x'] = x }
+				let keep3 = class { static [x] = 'x' }
+				let keep4 = class { static [x]() {} }
+				let keep5 = class { static get [x]() {} }
+				let keep6 = class { static set [x](_) {} }
+				let keep7 = class { static async [x]() {} }
+				let keep8 = class { static [{ toString() {} }] = 'x' }
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModePassThrough,
+			TreeShaking:   true,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
 func TestTreeShakingUnaryOperators(t *testing.T) {
 	dce_suite.expectBundled(t, bundled{
 		files: map[string]string{
@@ -2895,6 +3014,58 @@ const-update.js: NOTE: The symbol "x" was declared a constant here:
 	})
 }
 
+func TestConstValueInliningDirectEval(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/top-level-no-eval.js": `
+				const x = 1
+				console.log(x, evil('x'))
+			`,
+			"/top-level-eval.js": `
+				const x = 1
+				console.log(x, eval('x'))
+			`,
+			"/nested-no-eval.js": `
+				(() => {
+					const x = 1
+					console.log(x, evil('x'))
+				})()
+			`,
+			"/nested-eval.js": `
+				(() => {
+					const x = 1
+					console.log(x, eval('x'))
+				})()
+			`,
+			"/ts-namespace-no-eval.ts": `
+				namespace y {
+					export const x = 1
+					console.log(x, evil('x'))
+				}
+			`,
+			"/ts-namespace-eval.ts": `
+				namespace z {
+					export const x = 1
+					console.log(x, eval('x'))
+				}
+			`,
+		},
+		entryPaths: []string{
+			"/top-level-no-eval.js",
+			"/top-level-eval.js",
+			"/nested-no-eval.js",
+			"/nested-eval.js",
+			"/ts-namespace-no-eval.ts",
+			"/ts-namespace-eval.ts",
+		},
+		options: config.Options{
+			Mode:         config.ModePassThrough,
+			AbsOutputDir: "/out",
+			MinifySyntax: true,
+		},
+	})
+}
+
 func TestCrossModuleConstantFolding(t *testing.T) {
 	dce_suite.expectBundled(t, bundled{
 		files: map[string]string{
@@ -3013,6 +3184,262 @@ func TestCrossModuleConstantFolding(t *testing.T) {
 			Mode:         config.ModeBundle,
 			AbsOutputDir: "/out",
 			MinifySyntax: true,
+		},
+	})
+}
+
+func TestMultipleDeclarationTreeShaking(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/var2.js": `
+				var x = 1
+				console.log(x)
+				var x = 2
+			`,
+			"/var3.js": `
+				var x = 1
+				console.log(x)
+				var x = 2
+				console.log(x)
+				var x = 3
+			`,
+			"/function2.js": `
+				function x() { return 1 }
+				console.log(x())
+				function x() { return 2 }
+			`,
+			"/function3.js": `
+				function x() { return 1 }
+				console.log(x())
+				function x() { return 2 }
+				console.log(x())
+				function x() { return 3 }
+			`,
+		},
+		entryPaths: []string{
+			"/var2.js",
+			"/var3.js",
+			"/function2.js",
+			"/function3.js",
+		},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+			MinifySyntax: false,
+		},
+	})
+}
+
+func TestMultipleDeclarationTreeShakingMinifySyntax(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/var2.js": `
+				var x = 1
+				console.log(x)
+				var x = 2
+			`,
+			"/var3.js": `
+				var x = 1
+				console.log(x)
+				var x = 2
+				console.log(x)
+				var x = 3
+			`,
+			"/function2.js": `
+				function x() { return 1 }
+				console.log(x())
+				function x() { return 2 }
+			`,
+			"/function3.js": `
+				function x() { return 1 }
+				console.log(x())
+				function x() { return 2 }
+				console.log(x())
+				function x() { return 3 }
+			`,
+		},
+		entryPaths: []string{
+			"/var2.js",
+			"/var3.js",
+			"/function2.js",
+			"/function3.js",
+		},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+			MinifySyntax: true,
+		},
+	})
+}
+
+// Pure call removal should still run iterators, which can have side effects
+func TestPureCallsWithSpread(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				/* @__PURE__ */ foo(...args);
+				/* @__PURE__ */ new foo(...args);
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
+			MinifySyntax:  true,
+		},
+	})
+}
+
+func TestTopLevelFunctionInliningWithSpread(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				function empty1() {}
+				function empty2() {}
+				function empty3() {}
+
+				function identity1(x) { return x }
+				function identity2(x) { return x }
+				function identity3(x) { return x }
+
+				empty1()
+				empty2(args)
+				empty3(...args)
+
+				identity1()
+				identity2(args)
+				identity3(...args)
+			`,
+
+			"/inner.js": `
+				export function empty1() {}
+				export function empty2() {}
+				export function empty3() {}
+
+				export function identity1(x) { return x }
+				export function identity2(x) { return x }
+				export function identity3(x) { return x }
+			`,
+
+			"/entry-outer.js": `
+				import {
+					empty1,
+					empty2,
+					empty3,
+
+					identity1,
+					identity2,
+					identity3,
+				} from './inner.js'
+
+				empty1()
+				empty2(args)
+				empty3(...args)
+
+				identity1()
+				identity2(args)
+				identity3(...args)
+			`,
+		},
+		entryPaths: []string{"/entry.js", "/entry-outer.js"},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+			MinifySyntax: true,
+		},
+	})
+}
+
+func TestNestedFunctionInliningWithSpread(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				function empty1() {}
+				function empty2() {}
+				function empty3() {}
+
+				function identity1(x) { return x }
+				function identity2(x) { return x }
+				function identity3(x) { return x }
+
+				check(
+					empty1(),
+					empty2(args),
+					empty3(...args),
+
+					identity1(),
+					identity2(args),
+					identity3(...args),
+				)
+			`,
+
+			"/inner.js": `
+				export function empty1() {}
+				export function empty2() {}
+				export function empty3() {}
+
+				export function identity1(x) { return x }
+				export function identity2(x) { return x }
+				export function identity3(x) { return x }
+			`,
+
+			"/entry-outer.js": `
+				import {
+					empty1,
+					empty2,
+					empty3,
+
+					identity1,
+					identity2,
+					identity3,
+				} from './inner.js'
+
+				check(
+					empty1(),
+					empty2(args),
+					empty3(...args),
+
+					identity1(),
+					identity2(args),
+					identity3(...args),
+				)
+			`,
+		},
+		entryPaths: []string{"/entry.js", "/entry-outer.js"},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+			MinifySyntax: true,
+		},
+	})
+}
+
+func TestPackageJsonSideEffectsFalseCrossPlatformSlash(t *testing.T) {
+	dce_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/Users/user/project/src/entry.js": `
+				import "demo-pkg/foo"
+				import "demo-pkg/bar"
+			`,
+			"/Users/user/project/node_modules/demo-pkg/foo.js": `
+				console.log('foo')
+			`,
+			"/Users/user/project/node_modules/demo-pkg/bar/index.js": `
+				console.log('bar')
+			`,
+			"/Users/user/project/node_modules/demo-pkg/package.json": `
+				{
+					"sideEffects": [
+						"**/foo.js",
+						"bar/index.js"
+					]
+				}
+			`,
+		},
+		entryPaths: []string{"/Users/user/project/src/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
 		},
 	})
 }

@@ -226,6 +226,7 @@ let initializeWasCalled = false;
 export let initialize: typeof types.initialize = options => {
   options = common.validateInitializeOptions(options || {});
   if (options.wasmURL) throw new Error(`The "wasmURL" option only works in the browser`)
+  if (options.wasmModule) throw new Error(`The "wasmModule" option only works in the browser`)
   if (options.worker) throw new Error(`The "worker" option only works in the browser`)
   if (initializeWasCalled) throw new Error('Cannot call "initialize" more than once')
   ensureServiceIsRunning()
@@ -257,17 +258,20 @@ let ensureServiceIsRunning = (): Service => {
     writeToStdin(bytes) {
       child.stdin.write(bytes, err => {
         // Assume the service was stopped if we get an error writing to stdin
-        if (err) afterClose();
+        if (err) afterClose(err);
       });
     },
     readFileSync: fs.readFileSync,
     isSync: false,
-    isBrowser: false,
+    isWriteUnavailable: false,
     esbuild: ourselves,
   });
 
   // Assume the service was stopped if we get an error writing to stdin
   child.stdin.on('error', afterClose);
+
+  // Propagate errors about failure to run the executable itself
+  child.on('error', afterClose);
 
   const stdin: typeof child.stdin & { unref?(): void } = child.stdin;
   const stdout: typeof child.stdout & { unref?(): void } = child.stdout;
@@ -361,7 +365,7 @@ let runServiceSync = (callback: (service: common.StreamService) => void): void =
       stdin = bytes;
     },
     isSync: true,
-    isBrowser: false,
+    isWriteUnavailable: false,
     esbuild: ourselves,
   });
   callback(service);
@@ -377,7 +381,7 @@ let runServiceSync = (callback: (service: common.StreamService) => void): void =
     maxBuffer: +process.env.ESBUILD_MAX_BUFFER! || 16 * 1024 * 1024,
   });
   readFromStdout(stdout);
-  afterClose();
+  afterClose(null);
 };
 
 let randomFileName = () => {
@@ -418,12 +422,11 @@ let startWorkerThreadService = (worker_threads: typeof import('worker_threads'))
     execArgv: [],
   });
   let nextID = 0;
-  let wasStopped = false;
 
   // This forbids options which would cause structured clone errors
   let fakeBuildError = (text: string) => {
     let error: any = new Error(`Build failed with 1 error:\nerror: ${text}`);
-    let errors: types.Message[] = [{ pluginName: '', text, location: null, notes: [], detail: void 0 }];
+    let errors: types.Message[] = [{ id: '', pluginName: '', text, location: null, notes: [], detail: void 0 }];
     error.errors = errors;
     error.warnings = [];
     return error;
@@ -448,7 +451,6 @@ let startWorkerThreadService = (worker_threads: typeof import('worker_threads'))
   };
 
   let runCallSync = (command: string, args: any[]): any => {
-    if (wasStopped) throw new Error('The service was stopped');
     let id = nextID++;
 
     // Make a fresh shared buffer for every request. That way we can't have a
@@ -505,12 +507,6 @@ let startWorkerThreadService = (worker_threads: typeof import('worker_threads'))
 let startSyncServiceWorker = () => {
   let workerPort: import('worker_threads').MessagePort = worker_threads!.workerData.workerPort;
   let parentPort = worker_threads!.parentPort!;
-  let service = ensureServiceIsRunning();
-
-  // Take the default working directory from the main thread because we want it
-  // to be consistent. This will be the working directory that was current at
-  // the time the "esbuild" package was first imported.
-  defaultWD = worker_threads!.workerData.defaultWD;
 
   // MessagePort doesn't copy the properties of Error objects. We still want
   // error objects to have extra properties such as "warnings" so implement the
@@ -525,35 +521,68 @@ let startSyncServiceWorker = () => {
     return properties;
   };
 
-  parentPort.on('message', (msg: MainToWorkerMessage) => {
-    (async () => {
-      let { sharedBuffer, id, command, args } = msg;
-      let sharedBufferView = new Int32Array(sharedBuffer);
+  try {
+    let service = ensureServiceIsRunning();
 
-      try {
-        switch (command) {
-          case 'build':
-            workerPort.postMessage({ id, resolve: await service.build(args[0]) });
-            break;
+    // Take the default working directory from the main thread because we want it
+    // to be consistent. This will be the working directory that was current at
+    // the time the "esbuild" package was first imported.
+    defaultWD = worker_threads!.workerData.defaultWD;
 
-          case 'transform':
-            workerPort.postMessage({ id, resolve: await service.transform(args[0], args[1]) });
-            break;
+    parentPort.on('message', (msg: MainToWorkerMessage) => {
+      (async () => {
+        let { sharedBuffer, id, command, args } = msg;
+        let sharedBufferView = new Int32Array(sharedBuffer);
 
-          case 'formatMessages':
-            workerPort.postMessage({ id, resolve: await service.formatMessages(args[0], args[1]) });
-            break;
+        try {
+          switch (command) {
+            case 'build':
+              workerPort.postMessage({ id, resolve: await service.build(args[0]) });
+              break;
 
-          case 'analyzeMetafile':
-            workerPort.postMessage({ id, resolve: await service.analyzeMetafile(args[0], args[1]) });
-            break;
+            case 'transform':
+              workerPort.postMessage({ id, resolve: await service.transform(args[0], args[1]) });
+              break;
 
-          default:
-            throw new Error(`Invalid command: ${command}`);
+            case 'formatMessages':
+              workerPort.postMessage({ id, resolve: await service.formatMessages(args[0], args[1]) });
+              break;
+
+            case 'analyzeMetafile':
+              workerPort.postMessage({ id, resolve: await service.analyzeMetafile(args[0], args[1]) });
+              break;
+
+            default:
+              throw new Error(`Invalid command: ${command}`);
+          }
+        } catch (reject) {
+          workerPort.postMessage({ id, reject, properties: extractProperties(reject) });
         }
-      } catch (reject) {
-        workerPort.postMessage({ id, reject, properties: extractProperties(reject) });
-      }
+
+        // The message has already been posted by this point, so it should be
+        // safe to wake the main thread. The main thread should always get the
+        // message we sent above.
+
+        // First, change the shared value. That way if the main thread attempts
+        // to wait for us after this point, the wait will fail because the shared
+        // value has changed.
+        Atomics.add(sharedBufferView, 0, 1);
+
+        // Then, wake the main thread. This handles the case where the main
+        // thread was already waiting for us before the shared value was changed.
+        Atomics.notify(sharedBufferView, 0, Infinity);
+      })();
+    });
+  }
+
+  // Creating the service can fail if the on-disk state is corrupt. In that case
+  // we just fail all incoming messages with whatever error message we got.
+  // Otherwise incoming messages will hang forever waiting for a reply.
+  catch (reject) {
+    parentPort.on('message', (msg: MainToWorkerMessage) => {
+      let { sharedBuffer, id } = msg;
+      let sharedBufferView = new Int32Array(sharedBuffer);
+      workerPort.postMessage({ id, reject, properties: extractProperties(reject) });
 
       // The message has already been posted by this point, so it should be
       // safe to wake the main thread. The main thread should always get the
@@ -567,8 +596,8 @@ let startSyncServiceWorker = () => {
       // Then, wake the main thread. This handles the case where the main
       // thread was already waiting for us before the shared value was changed.
       Atomics.notify(sharedBufferView, 0, Infinity);
-    })();
-  });
+    });
+  }
 };
 
 // If we're in the worker thread, start the worker code

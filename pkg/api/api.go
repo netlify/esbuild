@@ -5,7 +5,7 @@
 // creating a child process, there is also an API for the command-line
 // interface itself: https://godoc.org/github.com/evanw/esbuild/pkg/cli.
 //
-// Build API
+// # Build API
 //
 // This function runs an end-to-end build operation. It takes an array of file
 // paths as entry points, parses them and all of their dependencies, and
@@ -14,29 +14,29 @@
 //
 // Example usage:
 //
-//     package main
+//	package main
 //
-//     import (
-//         "os"
+//	import (
+//	    "os"
 //
-//         "github.com/evanw/esbuild/pkg/api"
-//     )
+//	    "github.com/evanw/esbuild/pkg/api"
+//	)
 //
-//     func main() {
-//         result := api.Build(api.BuildOptions{
-//             EntryPoints: []string{"input.js"},
-//             Outfile:     "output.js",
-//             Bundle:      true,
-//             Write:       true,
-//             LogLevel:    api.LogLevelInfo,
-//         })
+//	func main() {
+//	    result := api.Build(api.BuildOptions{
+//	        EntryPoints: []string{"input.js"},
+//	        Outfile:     "output.js",
+//	        Bundle:      true,
+//	        Write:       true,
+//	        LogLevel:    api.LogLevelInfo,
+//	    })
 //
-//         if len(result.Errors) > 0 {
-//             os.Exit(1)
-//         }
-//     }
+//	    if len(result.Errors) > 0 {
+//	        os.Exit(1)
+//	    }
+//	}
 //
-// Transform API
+// # Transform API
 //
 // This function transforms a string of source code into JavaScript. It can be
 // used to minify JavaScript, convert TypeScript/JSX to JavaScript, or convert
@@ -45,36 +45,35 @@
 //
 // Example usage:
 //
-//     package main
+//	package main
 //
-//     import (
-//         "fmt"
-//         "os"
+//	import (
+//	    "fmt"
+//	    "os"
 //
-//         "github.com/evanw/esbuild/pkg/api"
-//     )
+//	    "github.com/evanw/esbuild/pkg/api"
+//	)
 //
-//     func main() {
-//         jsx := `
-//             import * as React from 'react'
-//             import * as ReactDOM from 'react-dom'
+//	func main() {
+//	    jsx := `
+//	        import * as React from 'react'
+//	        import * as ReactDOM from 'react-dom'
 //
-//             ReactDOM.render(
-//                 <h1>Hello, world!</h1>,
-//                 document.getElementById('root')
-//             );
-//         `
+//	        ReactDOM.render(
+//	            <h1>Hello, world!</h1>,
+//	            document.getElementById('root')
+//	        );
+//	    `
 //
-//         result := api.Transform(jsx, api.TransformOptions{
-//             Loader: api.LoaderJSX,
-//         })
+//	    result := api.Transform(jsx, api.TransformOptions{
+//	        Loader: api.LoaderJSX,
+//	    })
 //
-//         fmt.Printf("%d errors and %d warnings\n",
-//             len(result.Errors), len(result.Warnings))
+//	    fmt.Printf("%d errors and %d warnings\n",
+//	        len(result.Errors), len(result.Warnings))
 //
-//         os.Stdout.Write(result.Code)
-//     }
-//
+//	    os.Stdout.Write(result.Code)
+//	}
 package api
 
 type SourceMap uint8
@@ -110,6 +109,7 @@ type JSXMode uint8
 const (
 	JSXModeTransform JSXMode = iota
 	JSXModePreserve
+	JSXModeAutomatic
 )
 
 type Target uint8
@@ -132,24 +132,26 @@ type Loader uint8
 
 const (
 	LoaderNone Loader = iota
+	LoaderBase64
+	LoaderBinary
+	LoaderCopy
+	LoaderCSS
+	LoaderDataURL
+	LoaderDefault
+	LoaderFile
 	LoaderJS
+	LoaderJSON
 	LoaderJSX
+	LoaderText
 	LoaderTS
 	LoaderTSX
-	LoaderJSON
-	LoaderText
-	LoaderBase64
-	LoaderDataURL
-	LoaderFile
-	LoaderBinary
-	LoaderCSS
-	LoaderDefault
 )
 
 type Platform uint8
 
 const (
-	PlatformBrowser Platform = iota
+	PlatformDefault Platform = iota
+	PlatformBrowser
 	PlatformNode
 	PlatformNeutral
 )
@@ -161,19 +163,6 @@ const (
 	FormatIIFE
 	FormatCommonJS
 	FormatESModule
-)
-
-type EngineName uint8
-
-const (
-	EngineChrome EngineName = iota
-	EngineEdge
-	EngineFirefox
-	EngineIE
-	EngineIOS
-	EngineNode
-	EngineOpera
-	EngineSafari
 )
 
 type Engine struct {
@@ -192,6 +181,7 @@ type Location struct {
 }
 
 type Message struct {
+	ID         string
 	PluginName string
 	Text       string
 	Location   *Location
@@ -260,16 +250,18 @@ const (
 // Build API
 
 type BuildOptions struct {
-	Color    StderrColor // Documentation: https://esbuild.github.io/api/#color
-	LogLimit int         // Documentation: https://esbuild.github.io/api/#log-limit
-	LogLevel LogLevel    // Documentation: https://esbuild.github.io/api/#log-level
+	Color       StderrColor         // Documentation: https://esbuild.github.io/api/#color
+	LogLevel    LogLevel            // Documentation: https://esbuild.github.io/api/#log-level
+	LogLimit    int                 // Documentation: https://esbuild.github.io/api/#log-limit
+	LogOverride map[string]LogLevel // Documentation: https://esbuild.github.io/api/#log-override
 
 	Sourcemap      SourceMap      // Documentation: https://esbuild.github.io/api/#sourcemap
 	SourceRoot     string         // Documentation: https://esbuild.github.io/api/#source-root
 	SourcesContent SourcesContent // Documentation: https://esbuild.github.io/api/#sources-content
 
-	Target  Target   // Documentation: https://esbuild.github.io/api/#target
-	Engines []Engine // Documentation: https://esbuild.github.io/api/#target
+	Target    Target          // Documentation: https://esbuild.github.io/api/#target
+	Engines   []Engine        // Documentation: https://esbuild.github.io/api/#target
+	Supported map[string]bool // Documentation: https://esbuild.github.io/api/#supported
 
 	MangleProps       string                 // Documentation: https://esbuild.github.io/api/#mangle-props
 	ReserveProps      string                 // Documentation: https://esbuild.github.io/api/#mangle-props
@@ -284,9 +276,11 @@ type BuildOptions struct {
 	IgnoreAnnotations bool                   // Documentation: https://esbuild.github.io/api/#ignore-annotations
 	LegalComments     LegalComments          // Documentation: https://esbuild.github.io/api/#legal-comments
 
-	JSXMode     JSXMode // Documentation: https://esbuild.github.io/api/#jsx-mode
-	JSXFactory  string  // Documentation: https://esbuild.github.io/api/#jsx-factory
-	JSXFragment string  // Documentation: https://esbuild.github.io/api/#jsx-fragment
+	JSXMode         JSXMode // Documentation: https://esbuild.github.io/api/#jsx-mode
+	JSXFactory      string  // Documentation: https://esbuild.github.io/api/#jsx-factory
+	JSXFragment     string  // Documentation: https://esbuild.github.io/api/#jsx-fragment
+	JSXImportSource string  // Documentation: https://esbuild.github.io/api/#jsx-import-source
+	JSXDev          bool    // Documentation: https://esbuild.github.io/api/#jsx-dev
 
 	Define    map[string]string // Documentation: https://esbuild.github.io/api/#define
 	Pure      []string          // Documentation: https://esbuild.github.io/api/#pure
@@ -374,19 +368,22 @@ func Build(options BuildOptions) BuildResult {
 // Transform API
 
 type TransformOptions struct {
-	Color    StderrColor // Documentation: https://esbuild.github.io/api/#color
-	LogLimit int         // Documentation: https://esbuild.github.io/api/#log-limit
-	LogLevel LogLevel    // Documentation: https://esbuild.github.io/api/#log-level
+	Color       StderrColor         // Documentation: https://esbuild.github.io/api/#color
+	LogLevel    LogLevel            // Documentation: https://esbuild.github.io/api/#log-level
+	LogLimit    int                 // Documentation: https://esbuild.github.io/api/#log-limit
+	LogOverride map[string]LogLevel // Documentation: https://esbuild.github.io/api/#log-override
 
 	Sourcemap      SourceMap      // Documentation: https://esbuild.github.io/api/#sourcemap
 	SourceRoot     string         // Documentation: https://esbuild.github.io/api/#source-root
 	SourcesContent SourcesContent // Documentation: https://esbuild.github.io/api/#sources-content
 
-	Target  Target   // Documentation: https://esbuild.github.io/api/#target
-	Engines []Engine // Documentation: https://esbuild.github.io/api/#target
+	Target    Target          // Documentation: https://esbuild.github.io/api/#target
+	Engines   []Engine        // Documentation: https://esbuild.github.io/api/#target
+	Supported map[string]bool // Documentation: https://esbuild.github.io/api/#supported
 
-	Format     Format // Documentation: https://esbuild.github.io/api/#format
-	GlobalName string // Documentation: https://esbuild.github.io/api/#global-name
+	Platform   Platform // Documentation: https://esbuild.github.io/api/#platform
+	Format     Format   // Documentation: https://esbuild.github.io/api/#format
+	GlobalName string   // Documentation: https://esbuild.github.io/api/#global-name
 
 	MangleProps       string                 // Documentation: https://esbuild.github.io/api/#mangle-props
 	ReserveProps      string                 // Documentation: https://esbuild.github.io/api/#mangle-props
@@ -401,9 +398,11 @@ type TransformOptions struct {
 	IgnoreAnnotations bool                   // Documentation: https://esbuild.github.io/api/#ignore-annotations
 	LegalComments     LegalComments          // Documentation: https://esbuild.github.io/api/#legal-comments
 
-	JSXMode     JSXMode // Documentation: https://esbuild.github.io/api/#jsx
-	JSXFactory  string  // Documentation: https://esbuild.github.io/api/#jsx-factory
-	JSXFragment string  // Documentation: https://esbuild.github.io/api/#jsx-fragment
+	JSXMode         JSXMode // Documentation: https://esbuild.github.io/api/#jsx
+	JSXFactory      string  // Documentation: https://esbuild.github.io/api/#jsx-factory
+	JSXFragment     string  // Documentation: https://esbuild.github.io/api/#jsx-fragment
+	JSXImportSource string  // Documentation: https://esbuild.github.io/api/#jsx-import-source
+	JSXDev          bool    // Documentation: https://esbuild.github.io/api/#jsx-dev
 
 	TsconfigRaw string // Documentation: https://esbuild.github.io/api/#tsconfig-raw
 	Banner      string // Documentation: https://esbuild.github.io/api/#banner

@@ -31,12 +31,13 @@ const features = {
   'destructuring, assignment': { target: 'Destructuring' },
   'destructuring, parameters': { target: 'Destructuring' },
   'new.target': { target: 'NewTarget' },
-  'const': { target: 'Const' },
-  'let': { target: 'Let' },
+  'const': { target: 'ConstAndLet' },
+  'let': { target: 'ConstAndLet' },
   'arrow functions': { target: 'Arrow' },
   'class': { target: 'Class' },
   'generators': { target: 'Generator' },
   'Unicode code point escapes': { target: 'UnicodeEscapes' },
+  'RegExp "y" and "u" flags': { target: 'RegexpStickyAndUnicodeFlags' },
 
   // >ES6 features
   'exponentiation (**) operator': { target: 'ExponentOperator' },
@@ -44,10 +45,14 @@ const features = {
   'nested rest destructuring, parameters': { target: 'NestedRestBinding' },
   'async functions': { target: 'AsyncAwait' },
   'object rest/spread properties': { target: 'ObjectRestSpread' },
+  'RegExp Lookbehind Assertions': { target: 'RegexpLookbehindAssertions' },
+  'RegExp named capture groups': { target: 'RegexpNamedCaptureGroups' },
+  'RegExp Unicode Property Escapes': { target: 'RegexpUnicodePropertyEscapes' },
+  's (dotAll) flag for regular expressions': { target: 'RegexpDotAllFlag' },
   'Asynchronous Iterators: async generators': { target: 'AsyncGenerator' },
   'Asynchronous Iterators: for-await-of loops': { target: 'ForAwait' },
   'optional catch binding': { target: 'OptionalCatchBinding' },
-  'BigInt: basic functionality': { target: 'BigInt' },
+  'BigInt: basic functionality': { target: 'Bigint' },
   'optional chaining operator (?.)': { target: 'OptionalChain' },
   'nullish coalescing operator (??)': { target: 'NullishCoalescing' },
   'Logical Assignment': { target: 'LogicalAssignment' },
@@ -78,16 +83,40 @@ const features = {
 
 const versions = {}
 const engines = [
+  // The JavaScript standard
+  'es',
+
+  // Common JavaScript runtimes
   'chrome',
   'edge',
-  'es',
   'firefox',
   'ie',
   'ios',
   'node',
   'opera',
   'safari',
+
+  // Uncommon JavaScript runtimes
+  'hermes',
+  'rhino',
 ]
+
+function getValueOfTest(value) {
+  // Handle values like this:
+  //
+  //   {
+  //     val: true,
+  //     note_id: "ff-shorthand-methods",
+  //     ...
+  //   }
+  //
+  if (typeof value === 'object' && value !== null) {
+    return value.val === true
+  }
+
+  // String values such as "flagged" are considered to be false
+  return value === true
+}
 
 function mergeVersions(target, res) {
   // The original data set will contain something like "chrome44: true" for a
@@ -97,7 +126,7 @@ function mergeVersions(target, res) {
   const lowestVersionMap = {}
 
   for (const key in res) {
-    if (res[key] === true) {
+    if (getValueOfTest(res[key])) {
       const match = /^([a-z_]+)[0-9_]+$/.exec(key)
       if (match) {
         const engine = match[1]
@@ -130,15 +159,15 @@ mergeVersions('ObjectAccessors', { es5: true })
 mergeVersions('ArraySpread', { es2015: true })
 mergeVersions('Arrow', { es2015: true })
 mergeVersions('Class', { es2015: true })
-mergeVersions('Const', { es2015: true })
+mergeVersions('ConstAndLet', { es2015: true })
 mergeVersions('DefaultArgument', { es2015: true })
 mergeVersions('Destructuring', { es2015: true })
 mergeVersions('DynamicImport', { es2015: true })
 mergeVersions('ForOf', { es2015: true })
 mergeVersions('Generator', { es2015: true })
-mergeVersions('Let', { es2015: true })
 mergeVersions('NewTarget', { es2015: true })
 mergeVersions('ObjectExtensions', { es2015: true })
+mergeVersions('RegexpStickyAndUnicodeFlags', { es2015: true })
 mergeVersions('RestArgument', { es2015: true })
 mergeVersions('TemplateLiteral', { es2015: true })
 mergeVersions('UnicodeEscapes', { es2015: true })
@@ -150,8 +179,12 @@ mergeVersions('AsyncAwait', { es2017: true })
 mergeVersions('AsyncGenerator', { es2018: true })
 mergeVersions('ForAwait', { es2018: true })
 mergeVersions('ObjectRestSpread', { es2018: true })
+mergeVersions('RegexpDotAllFlag', { es2018: true })
+mergeVersions('RegexpLookbehindAssertions', { es2018: true })
+mergeVersions('RegexpNamedCaptureGroups', { es2018: true })
+mergeVersions('RegexpUnicodePropertyEscapes', { es2018: true })
 mergeVersions('OptionalCatchBinding', { es2019: true })
-mergeVersions('BigInt', { es2020: true })
+mergeVersions('Bigint', { es2020: true })
 mergeVersions('ImportMeta', { es2020: true })
 mergeVersions('NullishCoalescing', { es2020: true })
 mergeVersions('OptionalChain', { es2020: true })
@@ -169,6 +202,7 @@ mergeVersions('ClassStaticBlocks', { es2022: true })
 mergeVersions('ClassStaticField', { es2022: true })
 mergeVersions('TopLevelAwait', { es2022: true })
 mergeVersions('ArbitraryModuleNamespaceNames', { es2022: true })
+mergeVersions('RegexpMatchIndices', { es2022: true })
 mergeVersions('ImportAssertions', {})
 
 // Manually copied from https://caniuse.com/?search=export%20*%20as
@@ -178,6 +212,7 @@ mergeVersions('ExportStarAs', {
   es2020: true,
   firefox80: true,
   node12: true, // From https://developer.mozilla.org/en-US/docs/web/javascript/reference/statements/export
+  opera60: true,
 
   // This feature has been implemented in Safari but I have no idea what version
   // this bug corresponds to: https://bugs.webkit.org/show_bug.cgi?id=214379
@@ -190,6 +225,7 @@ mergeVersions('ImportMeta', {
   firefox62: true,
   ios12: true,
   node10_4: true, // From https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/import.meta
+  opera51: true,
   safari11_1: true,
 })
 
@@ -199,6 +235,7 @@ mergeVersions('TopLevelAwait', {
   edge89: true,
   firefox89: true,
   node14_8: true,
+  opera75: true,
   safari15: true,
 })
 
@@ -208,6 +245,7 @@ mergeVersions('DynamicImport', {
   edge79: true,
   firefox67: true,
   ios11: true,
+  opera50: true,
   safari11_1: true,
 })
 
@@ -268,18 +306,26 @@ mergeVersions('ImportAssertions', {
   // From https://github.com/nodejs/node/blob/master/doc/changelogs/CHANGELOG_V16.md#16.14.0
   node16_14: true,
 
-  // Not yet in Firefox: https://bugzilla.mozilla.org/show_bug.cgi?id=1668330
+  // Not yet in Firefox: https://bugzilla.mozilla.org/show_bug.cgi?id=1736059
 })
 
+// Manually copied from https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Classes/Class_static_initialization_blocks
 mergeVersions('ClassStaticBlocks', {
-  // From https://www.chromestatus.com/feature/6482797915013120
-  chrome91: true,
-
-  // https://github.com/nodejs/node/blob/master/doc/changelogs/CHANGELOG_V16.md
-  // combined with https://v8.dev/blog/v8-release-94
+  chrome91: true, // From https://www.chromestatus.com/feature/6482797915013120
+  edge94: true,
+  firefox93: true,
   node16_11: true,
+  opera80: true,
+})
 
-  // Not yet in Firefox: https://bugzilla.mozilla.org/show_bug.cgi?id=1670018
+// Manually copied from https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/RegExp/hasIndices
+mergeVersions('RegexpMatchIndices', {
+  chrome90: true,
+  edge90: true,
+  firefox88: true,
+  ios15: true,
+  opera76: true,
+  safari15: true,
 })
 
 for (const test of [...es5.tests, ...es6.tests, ...stage4.tests, ...stage1to3.tests]) {
@@ -287,9 +333,17 @@ for (const test of [...es5.tests, ...es6.tests, ...stage4.tests, ...stage1to3.te
   if (feature) {
     feature.found = true
     if (test.subtests) {
-      for (const subtest of test.subtests) {
-        mergeVersions(feature.target, subtest.res)
-      }
+      const res = {}
+
+      // Intersect all subtests (so a key is only true if it's true in all subtests)
+      for (const subtest of test.subtests)
+        for (const key in subtest.res)
+          res[key] = true
+      for (const subtest of test.subtests)
+        for (const key in res)
+          res[key] &&= getValueOfTest(subtest.res[key] ?? false)
+
+      mergeVersions(feature.target, res)
     } else {
       mergeVersions(feature.target, test.res)
     }
@@ -304,13 +358,6 @@ for (const test of [...es5.tests, ...es6.tests, ...stage4.tests, ...stage1to3.te
   }
 }
 
-// Work around V8-specific issues
-for (const v8 of ['chrome', 'edge', 'node']) {
-  // Always lower object rest and spread for V8-based JavaScript VMs because of
-  // a severe performance issue: https://bugs.chromium.org/p/v8/issues/detail?id=11536
-  delete versions.ObjectRestSpread[v8]
-}
-
 for (const feature in features) {
   if (!features[feature].found) {
     throw new Error(`Did not find ${feature}`)
@@ -322,7 +369,19 @@ function upper(text) {
   return text[0].toUpperCase() + text.slice(1)
 }
 
-function writeInnerMap(obj) {
+function jsFeatureString(feature) {
+  return feature.replace(/([A-Z])/g, '-$1').slice(1).toLowerCase()
+}
+
+function simpleMap(entries) {
+  let maxLength = 0
+  for (const [key] of entries) {
+    maxLength = Math.max(maxLength, key.length + 1)
+  }
+  return entries.map(([key, value]) => `\t${(key + ':').padEnd(maxLength)} ${value},`).join('\n')
+}
+
+function jsTableMap(obj) {
   const keys = Object.keys(obj).sort()
   const maxLength = keys.reduce((a, b) => Math.max(a, b.length + 1), 0)
   if (keys.length === 0) return '{}'
@@ -335,6 +394,15 @@ function writeInnerMap(obj) {
   }).join('\n')}\n\t}`
 }
 
+function jsTableValidEnginesMap(engines) {
+  const keys = engines.slice().sort()
+  const maxLength = keys.reduce((a, b) => Math.max(a, b.length + 4), 0)
+  if (keys.length === 0) return '{}'
+  return keys.map(x => {
+    return `\t${`"${x}": `.padEnd(maxLength)}api.Engine${upper(x)},`
+  }).join('\n')
+}
+
 fs.writeFileSync(__dirname + '/../internal/compat/js_table.go',
   `// This file was automatically generated by "${path.basename(__filename)}"
 
@@ -343,12 +411,12 @@ package compat
 type Engine uint8
 
 const (
-${engines.map((x, i) => `\t${upper(x)}${i ? '' : ' Engine = iota'}`).join('\n')}
+${engines.slice().sort().map((x, i) => `\t${upper(x)}${i ? '' : ' Engine = iota'}`).join('\n')}
 )
 
 func (e Engine) String() string {
 \tswitch e {
-${engines.map((x, i) => `\tcase ${upper(x)}:\n\t\treturn "${x}"`).join('\n')}
+${engines.slice().sort().map(x => `\tcase ${upper(x)}:\n\t\treturn "${x}"`).join('\n')}
 \t}
 \treturn ""
 }
@@ -359,12 +427,24 @@ const (
 ${Object.keys(versions).sort().map((x, i) => `\t${x}${i ? '' : ' JSFeature = 1 << iota'}`).join('\n')}
 )
 
+var StringToJSFeature = map[string]JSFeature{
+${simpleMap(Object.keys(versions).sort().map(x => [`"${jsFeatureString(x)}"`, x]))}
+}
+
+var JSFeatureToString = map[JSFeature]string{
+${simpleMap(Object.keys(versions).sort().map(x => [x, `"${jsFeatureString(x)}"`]))}
+}
+
 func (features JSFeature) Has(feature JSFeature) bool {
 \treturn (features & feature) != 0
 }
 
+func (features JSFeature) ApplyOverrides(overrides JSFeature, mask JSFeature) JSFeature {
+\treturn (features & ^mask) | (overrides & mask)
+}
+
 var jsTable = map[JSFeature]map[Engine][]versionRange{
-${Object.keys(versions).sort().map(x => `\t${x}: ${writeInnerMap(versions[x])},`).join('\n')}
+${Object.keys(versions).sort().map(x => `\t${x}: ${jsTableMap(versions[x])},`).join('\n')}
 }
 
 // Return all features that are not available in at least one environment
@@ -377,5 +457,39 @@ func UnsupportedJSFeatures(constraints map[Engine][]int) (unsupported JSFeature)
 \t\t}
 \t}
 \treturn
+}
+`)
+
+fs.writeFileSync(__dirname + '/../pkg/api/api_js_table.go',
+  `// This file was automatically generated by "${path.basename(__filename)}"
+
+package api
+
+import "github.com/evanw/esbuild/internal/compat"
+
+type EngineName uint8
+
+const (
+${engines.filter(x => x !== 'es').map((x, i) => `\tEngine${upper(x)}${i ? '' : ' EngineName = iota'}`).join('\n')}
+)
+
+func convertEngineName(engine EngineName) compat.Engine {
+\tswitch engine {
+${engines.filter(x => x !== 'es').map(x => `\tcase Engine${upper(x)}:\n\t\treturn compat.${upper(x)}`).join('\n')}
+\tdefault:
+\t\tpanic("Invalid engine name")
+\t}
+}
+`)
+
+fs.writeFileSync(__dirname + '/../pkg/cli/cli_js_table.go',
+  `// This file was automatically generated by "${path.basename(__filename)}"
+
+package cli
+
+import "github.com/evanw/esbuild/pkg/api"
+
+var validEngines = map[string]api.EngineName{
+${jsTableValidEnginesMap(engines.filter(x => x !== 'es'))}
 }
 `)

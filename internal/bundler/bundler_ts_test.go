@@ -5,7 +5,6 @@ import (
 
 	"github.com/evanw/esbuild/internal/compat"
 	"github.com/evanw/esbuild/internal/config"
-	"github.com/evanw/esbuild/internal/js_ast"
 )
 
 var ts_suite = suite{
@@ -217,6 +216,41 @@ func TestTSDeclareConstEnum(t *testing.T) {
 			`,
 		},
 		entryPaths: []string{"/entry.ts"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+func TestTSConstEnumComments(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/bar.ts": `
+				export const enum Foo {
+					"%/*" = 1,
+					"*/%" = 2,
+				}
+			`,
+			"/foo.ts": `
+				import { Foo } from "./bar";
+				const enum Bar {
+					"%/*" = 1,
+					"*/%" = 2,
+				}
+				console.log({
+					'should have comments': [
+						Foo["%/*"],
+						Bar["%/*"],
+					],
+					'should not have comments': [
+						Foo["*/%"],
+						Bar["*/%"],
+					],
+				});
+			`,
+		},
+		entryPaths: []string{"/foo.ts"},
 		options: config.Options{
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
@@ -650,6 +684,69 @@ func TestTSImportEqualsEliminationTest(t *testing.T) {
 	})
 }
 
+func TestTSImportEqualsTreeShakingFalse(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				import { foo } from 'pkg'
+				import used = foo.used
+				import unused = foo.unused
+				export { used }
+			`,
+		},
+		entryPaths: []string{"/entry.ts"},
+		options: config.Options{
+			Mode:          config.ModePassThrough,
+			AbsOutputFile: "/out.js",
+			TreeShaking:   false,
+		},
+	})
+}
+
+func TestTSImportEqualsTreeShakingTrue(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				import { foo } from 'pkg'
+				import used = foo.used
+				import unused = foo.unused
+				export { used }
+			`,
+		},
+		entryPaths: []string{"/entry.ts"},
+		options: config.Options{
+			Mode:          config.ModePassThrough,
+			AbsOutputFile: "/out.js",
+			TreeShaking:   true,
+		},
+	})
+}
+
+func TestTSImportEqualsBundle(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				import { foo } from 'pkg'
+				import used = foo.used
+				import unused = foo.unused
+				export { used }
+			`,
+		},
+		entryPaths: []string{"/entry.ts"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
+			ExternalSettings: config.ExternalSettings{
+				PreResolve: config.ExternalMatchers{
+					Exact: map[string]bool{
+						"pkg": true,
+					},
+				},
+			},
+		},
+	})
+}
+
 func TestTSMinifiedBundleES6(t *testing.T) {
 	ts_suite.expectBundled(t, bundled{
 		files: map[string]string{
@@ -860,6 +957,43 @@ func TestTypeScriptDecoratorsKeepNames(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 			KeepNames:     true,
+		},
+	})
+}
+
+// See: https://github.com/evanw/esbuild/issues/2147
+func TestTypeScriptDecoratorScopeIssue2147(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				let foo = 1
+				class Foo {
+					method1(@dec(foo) foo = 2) {}
+					method2(@dec(() => foo) foo = 3) {}
+				}
+
+				class Bar {
+					static x = class {
+						static y = () => {
+							let bar = 1
+							@dec(bar)
+							@dec(() => bar)
+							class Baz {
+								@dec(bar) method1() {}
+								@dec(() => bar) method2() {}
+								method3(@dec(() => bar) bar) {}
+								method4(@dec(() => bar) bar) {}
+							}
+							return Baz
+						}
+					}
+				}
+			`,
+		},
+		entryPaths: []string{"/entry.ts"},
+		options: config.Options{
+			Mode:          config.ModePassThrough,
+			AbsOutputFile: "/out.js",
 		},
 	})
 }
@@ -1682,8 +1816,8 @@ func TestTSEnumDefine(t *testing.T) {
 			Defines: &config.ProcessedDefines{
 				IdentifierDefines: map[string]config.DefineData{
 					"d": {
-						DefineFunc: func(args config.DefineArgs) js_ast.E {
-							return &js_ast.EIdentifier{Ref: args.FindSymbol(args.Loc, "b")}
+						DefineExpr: &config.DefineExpr{
+							Parts: []string{"b"},
 						},
 					},
 				},
@@ -1892,5 +2026,61 @@ func TestTSEnumExportClause(t *testing.T) {
 			Mode:         config.ModeBundle,
 			AbsOutputDir: "/out",
 		},
+	})
+}
+
+// This checks that we don't generate a warning for code that the TypeScript
+// compiler generates that looks like this:
+//
+//	var __rest = (this && this.__rest) || function (s, e) {
+//	  ...
+//	};
+func TestTSThisIsUndefinedWarning(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/warning1.ts": `export var foo = this`,
+			"/warning2.ts": `export var foo = this || this.foo`,
+			"/warning3.ts": `export var foo = this ? this.foo : null`,
+
+			"/silent1.ts": `export var foo = this && this.foo`,
+			"/silent2.ts": `export var foo = this && (() => this.foo)`,
+		},
+		entryPaths: []string{
+			"/warning1.ts",
+			"/warning2.ts",
+			"/warning3.ts",
+
+			"/silent1.ts",
+			"/silent2.ts",
+		},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+		},
+		expectedScanLog: `warning1.ts: WARNING: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+warning1.ts: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
+warning2.ts: WARNING: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+warning2.ts: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
+warning3.ts: WARNING: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+warning3.ts: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
+`,
+	})
+}
+
+func TestTSCommonJSVariableInESMTypeModule(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts":     `module.exports = null`,
+			"/package.json": `{ "type": "module" }`,
+		},
+		entryPaths: []string{"/entry.ts"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
+		},
+		expectedScanLog: `entry.ts: WARNING: The CommonJS "module" variable is treated as a global variable in an ECMAScript module and may not work as expected
+package.json: NOTE: This file is considered to be an ECMAScript module because the enclosing "package.json" file sets the type of this file to "module":
+NOTE: Node's package format requires that CommonJS files in a "type": "module" package use the ".cjs" file extension. If you are using TypeScript, you can use the ".cts" file extension with esbuild instead.
+`,
 	})
 }

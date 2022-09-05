@@ -1,3 +1,9 @@
+TestCommonJSVariableInESMTypeModule
+---------- /out.js ----------
+// entry.js
+module.exports = null;
+
+================================================================================
 TestExportTypeIssue379
 ---------- /out.js ----------
 // a.ts
@@ -30,6 +36,27 @@ var foo4 = 123;
 
 // entry.ts
 console.log(a_exports, b_exports, c_exports, d_exports);
+
+================================================================================
+TestTSCommonJSVariableInESMTypeModule
+---------- /out.js ----------
+// entry.ts
+module.exports = null;
+
+================================================================================
+TestTSConstEnumComments
+---------- /out.js ----------
+// foo.ts
+console.log({
+  "should have comments": [
+    1 /* %/* */,
+    1 /* %/* */
+  ],
+  "should not have comments": [
+    2,
+    2
+  ]
+});
 
 ================================================================================
 TestTSDeclareClass
@@ -527,6 +554,16 @@ function foo() {
 foo();
 
 ================================================================================
+TestTSImportEqualsBundle
+---------- /out.js ----------
+// entry.ts
+import { foo } from "pkg";
+var used = foo.used;
+export {
+  used
+};
+
+================================================================================
 TestTSImportEqualsEliminationTest
 ---------- /out.js ----------
 // entry.ts
@@ -537,6 +574,21 @@ var bar = c;
 export {
   bar
 };
+
+================================================================================
+TestTSImportEqualsTreeShakingFalse
+---------- /out.js ----------
+import { foo } from "pkg";
+const used = foo.used;
+const unused = foo.unused;
+export { used };
+
+================================================================================
+TestTSImportEqualsTreeShakingTrue
+---------- /out.js ----------
+import { foo } from "pkg";
+const used = foo.used;
+export { used };
 
 ================================================================================
 TestTSImportMissingUnusedES6
@@ -833,6 +885,94 @@ export var x;
 })(x || (x = {}));
 
 ================================================================================
+TestTSThisIsUndefinedWarning
+---------- /out/warning1.js ----------
+// warning1.ts
+var foo = void 0;
+export {
+  foo
+};
+
+---------- /out/warning2.js ----------
+// warning2.ts
+var foo = (void 0).foo;
+export {
+  foo
+};
+
+---------- /out/warning3.js ----------
+// warning3.ts
+var foo = void 0 ? (void 0).foo : null;
+export {
+  foo
+};
+
+---------- /out/silent1.js ----------
+// silent1.ts
+var foo = void 0;
+export {
+  foo
+};
+
+---------- /out/silent2.js ----------
+// silent2.ts
+var foo = void 0;
+export {
+  foo
+};
+
+================================================================================
+TestTypeScriptDecoratorScopeIssue2147
+---------- /out.js ----------
+var _a;
+let foo = 1;
+class Foo {
+  method1(foo2 = 2) {
+  }
+  method2(foo2 = 3) {
+  }
+}
+__decorateClass([
+  __decorateParam(0, dec(foo))
+], Foo.prototype, "method1", 1);
+__decorateClass([
+  __decorateParam(0, dec(() => foo))
+], Foo.prototype, "method2", 1);
+class Bar {
+}
+Bar.x = (_a = class {
+}, _a.y = () => {
+  let bar = 1;
+  let Baz = class {
+    method1() {
+    }
+    method2() {
+    }
+    method3(bar2) {
+    }
+    method4(bar2) {
+    }
+  };
+  __decorateClass([
+    dec(bar)
+  ], Baz.prototype, "method1", 1);
+  __decorateClass([
+    dec(() => bar)
+  ], Baz.prototype, "method2", 1);
+  __decorateClass([
+    __decorateParam(0, dec(() => bar))
+  ], Baz.prototype, "method3", 1);
+  __decorateClass([
+    __decorateParam(0, dec(() => bar))
+  ], Baz.prototype, "method4", 1);
+  Baz = __decorateClass([
+    dec(bar),
+    dec(() => bar)
+  ], Baz);
+  return Baz;
+}, _a);
+
+================================================================================
 TestTypeScriptDecorators
 ---------- /out.js ----------
 // all.ts
@@ -1074,7 +1214,7 @@ var k_default = class {
   }
 };
 __decorateClass([
-  __decorateParam(0, x2(() => 0)),
+  __decorateParam(0, x(() => 0)),
   __decorateParam(0, y(() => 1))
 ], k_default.prototype, "foo", 1);
 

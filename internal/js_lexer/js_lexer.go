@@ -245,14 +245,17 @@ type MaybeSubstring struct {
 }
 
 type Lexer struct {
-	CommentsToPreserveBefore []js_ast.Comment
-	AllOriginalComments      []js_ast.Comment
-	Identifier               MaybeSubstring
-	log                      logger.Log
-	source                   logger.Source
-	JSXFactoryPragmaComment  logger.Span
-	JSXFragmentPragmaComment logger.Span
-	SourceMappingURL         logger.Span
+	CommentsToPreserveBefore     []js_ast.Comment
+	AllOriginalComments          []js_ast.Comment
+	Identifier                   MaybeSubstring
+	log                          logger.Log
+	source                       logger.Source
+	JSXFactoryPragmaComment      logger.Span
+	JSXFragmentPragmaComment     logger.Span
+	JSXRuntimePragmaComment      logger.Span
+	JSXImportSourcePragmaComment logger.Span
+	SourceMappingURL             logger.Span
+	BadArrowInTSXSuggestion      string
 
 	// Escape sequences in string literals are decoded lazily because they are
 	// not interpreted inside tagged templates, and tagged templates can contain
@@ -270,6 +273,8 @@ type Lexer struct {
 	start                           int
 	end                             int
 	ApproximateNewlineCount         int
+	CouldBeBadArrowInTSX            int
+	BadArrowInTSXRange              logger.Range
 	LegacyOctalLoc                  logger.Loc
 	AwaitKeywordLoc                 logger.Loc
 	FnOrArrowStartLoc               logger.Loc
@@ -996,23 +1001,36 @@ func (lexer *Lexer) NextJSXElementChild() {
 					} else {
 						replacement = "{'>'}"
 					}
-					msg := logger.Msg{Kind: logger.Error, Data: lexer.tracker.MsgData(logger.Range{Loc: logger.Loc{Start: int32(lexer.end)}, Len: 1},
-						fmt.Sprintf("The character \"%c\" is not valid inside a JSX element", lexer.codePoint)),
-						Notes: []logger.MsgData{{Text: fmt.Sprintf("Did you mean to escape it as %q instead?", replacement)}}}
-					msg.Data.Location.Suggestion = replacement
-					if !lexer.ts.Parse {
-						// TypeScript treats this as an error but Babel doesn't treat this
-						// as an error yet, so allow this in JS for now. Babel version 8
-						// was supposed to be released in 2021 but was never released. If
-						// it's released in the future, this can be changed to an error too.
-						//
-						// More context:
-						// * TypeScript change: https://github.com/microsoft/TypeScript/issues/36341
-						// * Babel 8 change: https://github.com/babel/babel/issues/11042
-						// * Babel 8 release: https://github.com/babel/babel/issues/10746
-						//
-						msg.Kind = logger.Warning
+					msg := logger.Msg{
+						Kind: logger.Error,
+						Data: lexer.tracker.MsgData(logger.Range{Loc: logger.Loc{Start: int32(lexer.end)}, Len: 1},
+							fmt.Sprintf("The character \"%c\" is not valid inside a JSX element", lexer.codePoint)),
 					}
+
+					// Attempt to provide a better error message if this looks like an arrow function
+					if lexer.CouldBeBadArrowInTSX > 0 && lexer.codePoint == '>' && lexer.source.Contents[lexer.end-1] == '=' {
+						msg.Notes = []logger.MsgData{lexer.tracker.MsgData(lexer.BadArrowInTSXRange,
+							"TypeScript's TSX syntax interprets arrow functions with a single generic type parameter as an opening JSX element. "+
+								"If you want it to be interpreted as an arrow function instead, you need to add a trailing comma after the type parameter to disambiguate:")}
+						msg.Notes[0].Location.Suggestion = lexer.BadArrowInTSXSuggestion
+					} else {
+						msg.Notes = []logger.MsgData{{Text: fmt.Sprintf("Did you mean to escape it as %q instead?", replacement)}}
+						msg.Data.Location.Suggestion = replacement
+						if !lexer.ts.Parse {
+							// TypeScript treats this as an error but Babel doesn't treat this
+							// as an error yet, so allow this in JS for now. Babel version 8
+							// was supposed to be released in 2021 but was never released. If
+							// it's released in the future, this can be changed to an error too.
+							//
+							// More context:
+							// * TypeScript change: https://github.com/microsoft/TypeScript/issues/36341
+							// * Babel 8 change: https://github.com/babel/babel/issues/11042
+							// * Babel 8 release: https://github.com/babel/babel/issues/10746
+							//
+							msg.Kind = logger.Warning
+						}
+					}
+
 					lexer.log.AddMsg(msg)
 					lexer.step()
 
@@ -1464,7 +1482,7 @@ func (lexer *Lexer) Next() {
 				if lexer.codePoint == '>' && lexer.HasNewlineBefore {
 					lexer.step()
 					lexer.LegacyHTMLCommentRange = lexer.Range()
-					lexer.log.Add(logger.Warning, &lexer.tracker, lexer.Range(),
+					lexer.log.AddID(logger.MsgID_JS_HTMLCommentInJS, logger.Warning, &lexer.tracker, lexer.Range(),
 						"Treating \"-->\" as the start of a legacy HTML single-line comment")
 				singleLineHTMLCloseComment:
 					for {
@@ -1619,7 +1637,7 @@ func (lexer *Lexer) Next() {
 					lexer.step()
 					lexer.step()
 					lexer.LegacyHTMLCommentRange = lexer.Range()
-					lexer.log.Add(logger.Warning, &lexer.tracker, lexer.Range(),
+					lexer.log.AddID(logger.MsgID_JS_HTMLCommentInJS, logger.Warning, &lexer.tracker, lexer.Range(),
 						"Treating \"<!--\" as the start of a legacy HTML single-line comment")
 				singleLineHTMLOpenComment:
 					for {
@@ -2242,12 +2260,10 @@ func (lexer *Lexer) ScanRegExp() {
 		}
 
 		switch lexer.codePoint {
-		case '\r', '\n', 0x2028, 0x2029:
-			// Newlines aren't allowed in regular expressions
-			lexer.SyntaxError()
-
-		case -1: // This indicates the end of the file
-			lexer.SyntaxError()
+		case -1, // This indicates the end of the file
+			'\r', '\n', 0x2028, 0x2029: // Newlines aren't allowed in regular expressions
+			lexer.addRangeError(logger.Range{Loc: logger.Loc{Start: int32(lexer.end)}}, "Unterminated regular expression")
+			panic(LexerPanic{})
 
 		default:
 			lexer.step()
@@ -2261,7 +2277,7 @@ func (lexer *Lexer) ScanRegExp() {
 			bits := uint32(0)
 			for IsIdentifierContinue(lexer.codePoint) {
 				switch lexer.codePoint {
-				case 'g', 'i', 'm', 's', 'u', 'y':
+				case 'd', 'g', 'i', 'm', 's', 'u', 'y':
 					bit := uint32(1) << uint32(lexer.codePoint-'a')
 					if (bit & bits) != 0 {
 						// Reject duplicate flags
@@ -2270,7 +2286,7 @@ func (lexer *Lexer) ScanRegExp() {
 						for r1.Loc.Start < r2.Loc.Start && lexer.source.Contents[r1.Loc.Start] != byte(lexer.codePoint) {
 							r1.Loc.Start++
 						}
-						lexer.log.AddWithNotes(logger.Error, &lexer.tracker, r2,
+						lexer.log.AddErrorWithNotes(&lexer.tracker, r2,
 							fmt.Sprintf("Duplicate flag \"%c\" in regular expression", lexer.codePoint),
 							[]logger.MsgData{lexer.tracker.MsgData(r1,
 								fmt.Sprintf("The first \"%c\" was here:", lexer.codePoint))})
@@ -2681,7 +2697,7 @@ func (lexer *Lexer) addRangeError(r logger.Range, text string) {
 	lexer.prevErrorLoc = r.Loc
 
 	if !lexer.IsLogDisabled {
-		lexer.log.Add(logger.Error, &lexer.tracker, r, text)
+		lexer.log.AddError(&lexer.tracker, r, text)
 	}
 }
 
@@ -2707,7 +2723,7 @@ func (lexer *Lexer) AddRangeErrorWithNotes(r logger.Range, text string, notes []
 	lexer.prevErrorLoc = r.Loc
 
 	if !lexer.IsLogDisabled {
-		lexer.log.AddWithNotes(logger.Error, &lexer.tracker, r, text, notes)
+		lexer.log.AddErrorWithNotes(&lexer.tracker, r, text, notes)
 	}
 }
 
@@ -2822,6 +2838,14 @@ func (lexer *Lexer) scanCommentText() {
 			} else if hasPrefixWithWordBoundary(rest, "jsxFrag") {
 				if arg, ok := scanForPragmaArg(pragmaSkipSpaceFirst, lexer.start+i+1, "jsxFrag", rest); ok {
 					lexer.JSXFragmentPragmaComment = arg
+				}
+			} else if hasPrefixWithWordBoundary(rest, "jsxRuntime") {
+				if arg, ok := scanForPragmaArg(pragmaSkipSpaceFirst, lexer.start+i+1, "jsxRuntime", rest); ok {
+					lexer.JSXRuntimePragmaComment = arg
+				}
+			} else if hasPrefixWithWordBoundary(rest, "jsxImportSource") {
+				if arg, ok := scanForPragmaArg(pragmaSkipSpaceFirst, lexer.start+i+1, "jsxImportSource", rest); ok {
+					lexer.JSXImportSourcePragmaComment = arg
 				}
 			} else if i == 2 && strings.HasPrefix(rest, " sourceMappingURL=") {
 				if arg, ok := scanForPragmaArg(pragmaNoSpaceFirst, lexer.start+i+1, " sourceMappingURL=", rest); ok {

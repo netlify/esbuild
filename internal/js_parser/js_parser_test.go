@@ -19,7 +19,7 @@ func expectParseErrorCommon(t *testing.T, contents string, expected string, opti
 	t.Helper()
 	t.Run(contents, func(t *testing.T) {
 		t.Helper()
-		log := logger.NewDeferLog(logger.DeferLogNoVerboseOrDebug)
+		log := logger.NewDeferLog(logger.DeferLogNoVerboseOrDebug, nil)
 		Parse(log, test.SourceForTest(contents), OptionsFromConfig(&options))
 		msgs := log.Done()
 		text := ""
@@ -44,11 +44,18 @@ func expectParseErrorTarget(t *testing.T, esVersion int, contents string, expect
 	})
 }
 
+func expectParseErrorWithUnsupportedFeatures(t *testing.T, unsupportedJSFeatures compat.JSFeature, contents string, expected string) {
+	t.Helper()
+	expectParseErrorCommon(t, contents, expected, config.Options{
+		UnsupportedJSFeatures: unsupportedJSFeatures,
+	})
+}
+
 func expectPrintedCommon(t *testing.T, contents string, expected string, options config.Options) {
 	t.Helper()
 	t.Run(contents, func(t *testing.T) {
 		t.Helper()
-		log := logger.NewDeferLog(logger.DeferLogNoVerboseOrDebug)
+		log := logger.NewDeferLog(logger.DeferLogNoVerboseOrDebug, nil)
 		options.OmitRuntimeForTests = true
 		tree, ok := Parse(log, test.SourceForTest(contents), OptionsFromConfig(&options))
 		msgs := log.Done()
@@ -149,26 +156,34 @@ func expectPrintedJSX(t *testing.T, contents string, expected string) {
 	})
 }
 
-func expectParseErrorTargetJSX(t *testing.T, esVersion int, contents string, expected string) {
+type JSXAutomaticTestOptions struct {
+	Development            bool
+	ImportSource           string
+	OmitJSXRuntimeForTests bool
+}
+
+func expectParseErrorJSXAutomatic(t *testing.T, options JSXAutomaticTestOptions, contents string, expected string) {
 	t.Helper()
 	expectParseErrorCommon(t, contents, expected, config.Options{
-		UnsupportedJSFeatures: compat.UnsupportedJSFeatures(map[compat.Engine][]int{
-			compat.ES: {esVersion},
-		}),
+		OmitJSXRuntimeForTests: options.OmitJSXRuntimeForTests,
 		JSX: config.JSXOptions{
-			Parse: true,
+			AutomaticRuntime: true,
+			Parse:            true,
+			Development:      options.Development,
+			ImportSource:     options.ImportSource,
 		},
 	})
 }
 
-func expectPrintedTargetJSX(t *testing.T, esVersion int, contents string, expected string) {
+func expectPrintedJSXAutomatic(t *testing.T, options JSXAutomaticTestOptions, contents string, expected string) {
 	t.Helper()
 	expectPrintedCommon(t, contents, expected, config.Options{
-		UnsupportedJSFeatures: compat.UnsupportedJSFeatures(map[compat.Engine][]int{
-			compat.ES: {esVersion},
-		}),
+		OmitJSXRuntimeForTests: options.OmitJSXRuntimeForTests,
 		JSX: config.JSXOptions{
-			Parse: true,
+			AutomaticRuntime: true,
+			Parse:            true,
+			Development:      options.Development,
+			ImportSource:     options.ImportSource,
 		},
 	})
 }
@@ -577,12 +592,16 @@ func TestAwait(t *testing.T) {
 }
 
 func TestRegExp(t *testing.T) {
+	expectPrinted(t, "/x/d", "/x/d;\n")
 	expectPrinted(t, "/x/g", "/x/g;\n")
 	expectPrinted(t, "/x/i", "/x/i;\n")
 	expectPrinted(t, "/x/m", "/x/m;\n")
 	expectPrinted(t, "/x/s", "/x/s;\n")
 	expectPrinted(t, "/x/u", "/x/u;\n")
 	expectPrinted(t, "/x/y", "/x/y;\n")
+
+	expectParseError(t, "/)/", "<stdin>: ERROR: Unexpected \")\" in regular expression\n")
+	expectPrinted(t, "/[\\])]/", "/[\\])]/;\n")
 
 	expectParseError(t, "/x/msuygig",
 		`<stdin>: ERROR: Duplicate flag "g" in regular expression
@@ -1122,6 +1141,12 @@ func TestPattern(t *testing.T) {
 
 	expectPrinted(t, "let {1_2_3n: x} = y", "let { 123n: x } = y;\n")
 	expectPrinted(t, "let {0x1_2_3n: x} = y", "let { 0x123n: x } = y;\n")
+
+	expectParseError(t, "var [ (x) ] = 0", "<stdin>: ERROR: Expected identifier but found \"(\"\n")
+	expectParseError(t, "var [ ...(x) ] = 0", "<stdin>: ERROR: Expected identifier but found \"(\"\n")
+	expectParseError(t, "var { (x) } = 0", "<stdin>: ERROR: Expected identifier but found \"(\"\n")
+	expectParseError(t, "var { x: (y) } = 0", "<stdin>: ERROR: Expected identifier but found \"(\"\n")
+	expectParseError(t, "var { ...(x) } = 0", "<stdin>: ERROR: Expected identifier but found \"(\"\n")
 }
 
 func TestAssignTarget(t *testing.T) {
@@ -1135,6 +1160,12 @@ func TestAssignTarget(t *testing.T) {
 	expectParseError(t, "({...x} = 0)", "")
 	expectParseError(t, "({x = 0} = 0)", "")
 	expectParseError(t, "({x: y = 0} = 0)", "")
+
+	expectParseError(t, "[ (y) ] = 0", "")
+	expectParseError(t, "[ ...(y) ] = 0", "")
+	expectParseError(t, "({ (y) } = 0)", "<stdin>: ERROR: Expected identifier but found \"(\"\n")
+	expectParseError(t, "({ y: (z) } = 0)", "")
+	expectParseError(t, "({ ...(y) } = 0)", "")
 
 	expectParseError(t, "[...x = y] = 0", "<stdin>: ERROR: Invalid assignment target\n")
 	expectParseError(t, "x() = 0", "<stdin>: ERROR: Invalid assignment target\n")
@@ -1202,6 +1233,20 @@ func TestObject(t *testing.T) {
 	expectParseError(t, "({get x() {}, set x(y) {}, set x(y) {}})", duplicateWarning)
 	expectParseError(t, "({get x() {}, set x(y) {}})", "")
 	expectParseError(t, "({set x(y) {}, get x() {}})", "")
+
+	// Check the string-to-int optimization
+	expectPrintedMangle(t, "x = { '0': y }", "x = { 0: y };\n")
+	expectPrintedMangle(t, "x = { '123': y }", "x = { 123: y };\n")
+	expectPrintedMangle(t, "x = { '-123': y }", "x = { \"-123\": y };\n")
+	expectPrintedMangle(t, "x = { '-0': y }", "x = { \"-0\": y };\n")
+	expectPrintedMangle(t, "x = { '01': y }", "x = { \"01\": y };\n")
+	expectPrintedMangle(t, "x = { '-01': y }", "x = { \"-01\": y };\n")
+	expectPrintedMangle(t, "x = { '0x1': y }", "x = { \"0x1\": y };\n")
+	expectPrintedMangle(t, "x = { '-0x1': y }", "x = { \"-0x1\": y };\n")
+	expectPrintedMangle(t, "x = { '2147483647': y }", "x = { 2147483647: y };\n")
+	expectPrintedMangle(t, "x = { '2147483648': y }", "x = { \"2147483648\": y };\n")
+	expectPrintedMangle(t, "x = { '-2147483648': y }", "x = { \"-2147483648\": y };\n")
+	expectPrintedMangle(t, "x = { '-2147483649': y }", "x = { \"-2147483649\": y };\n")
 }
 
 func TestComputedProperty(t *testing.T) {
@@ -1544,6 +1589,20 @@ func TestClass(t *testing.T) {
 		"class Foo {\n  constructor() {\n  }\n  [\"constructor\"]() {\n  }\n}\n")
 	expectPrintedMangle(t, "class Foo { static constructor() {} static ['constructor']() {} }",
 		"class Foo {\n  static constructor() {\n  }\n  static constructor() {\n  }\n}\n")
+
+	// Check the string-to-int optimization
+	expectPrintedMangle(t, "class x { '0' = y }", "class x {\n  0 = y;\n}\n")
+	expectPrintedMangle(t, "class x { '123' = y }", "class x {\n  123 = y;\n}\n")
+	expectPrintedMangle(t, "class x { ['-123'] = y }", "class x {\n  \"-123\" = y;\n}\n")
+	expectPrintedMangle(t, "class x { '-0' = y }", "class x {\n  \"-0\" = y;\n}\n")
+	expectPrintedMangle(t, "class x { '01' = y }", "class x {\n  \"01\" = y;\n}\n")
+	expectPrintedMangle(t, "class x { '-01' = y }", "class x {\n  \"-01\" = y;\n}\n")
+	expectPrintedMangle(t, "class x { '0x1' = y }", "class x {\n  \"0x1\" = y;\n}\n")
+	expectPrintedMangle(t, "class x { '-0x1' = y }", "class x {\n  \"-0x1\" = y;\n}\n")
+	expectPrintedMangle(t, "class x { '2147483647' = y }", "class x {\n  2147483647 = y;\n}\n")
+	expectPrintedMangle(t, "class x { '2147483648' = y }", "class x {\n  \"2147483648\" = y;\n}\n")
+	expectPrintedMangle(t, "class x { ['-2147483648'] = y }", "class x {\n  \"-2147483648\" = y;\n}\n")
+	expectPrintedMangle(t, "class x { ['-2147483649'] = y }", "class x {\n  \"-2147483649\" = y;\n}\n")
 }
 
 func TestSuperCall(t *testing.T) {
@@ -1568,6 +1627,8 @@ func TestSuperCall(t *testing.T) {
 	expectPrinted(t, "class Foo extends Bar { constructor(x = () => super()) {} }",
 		"class Foo extends Bar {\n  constructor(x = () => super()) {\n  }\n}\n")
 
+	expectPrintedMangleTarget(t, 2015, "class A extends B { x; constructor() { super() } }",
+		"class A extends B {\n  constructor() {\n    super();\n    __publicField(this, \"x\");\n  }\n}\n")
 	expectPrintedMangleTarget(t, 2015, "class A extends B { x = 1; constructor() { super() } }",
 		"class A extends B {\n  constructor() {\n    super();\n    __publicField(this, \"x\", 1);\n  }\n}\n")
 	expectPrintedMangleTarget(t, 2015, "class A extends B { x = 1; constructor() { super(); c() } }",
@@ -1584,6 +1645,10 @@ func TestSuperCall(t *testing.T) {
 		"class A extends B {\n  constructor() {\n    super();\n    __publicField(this, \"x\", 1);\n    return c;\n  }\n}\n")
 	expectPrintedMangleTarget(t, 2015, "class A extends B { x = 1; constructor() { super(); throw c } }",
 		"class A extends B {\n  constructor() {\n    super();\n    __publicField(this, \"x\", 1);\n    throw c;\n  }\n}\n")
+	expectPrintedMangleTarget(t, 2015, "class A extends B { x = 1; constructor() { if (true) super(1); else super(2); } }",
+		"class A extends B {\n  constructor() {\n    super(1);\n    __publicField(this, \"x\", 1);\n  }\n}\n")
+	expectPrintedMangleTarget(t, 2015, "class A extends B { x = 1; constructor() { if (foo) super(1); else super(2); } }",
+		"class A extends B {\n  constructor() {\n    var __super = (...args) => {\n      super(...args);\n      __publicField(this, \"x\", 1);\n    };\n    foo ? __super(1) : __super(2);\n  }\n}\n")
 }
 
 func TestSuperProp(t *testing.T) {
@@ -1806,8 +1871,8 @@ func TestAsync(t *testing.T) {
 	expectPrinted(t, "new async function() { await 0 }", "new async function() {\n  await 0;\n}();\n")
 	expectPrinted(t, "new async function() { await 0 }.x", "new async function() {\n  await 0;\n}.x();\n")
 
-	friendlyAwaitError := "<stdin>: ERROR: \"await\" can only be used inside an \"async\" function\n" +
-		"<stdin>: NOTE: Consider adding the \"async\" keyword here:\n"
+	friendlyAwaitError := "<stdin>: ERROR: \"await\" can only be used inside an \"async\" function\n"
+	friendlyAwaitErrorWithNote := friendlyAwaitError + "<stdin>: NOTE: Consider adding the \"async\" keyword here:\n"
 
 	expectPrinted(t, "async", "async;\n")
 	expectPrinted(t, "async + 1", "async + 1;\n")
@@ -1830,7 +1895,7 @@ func TestAsync(t *testing.T) {
 	expectPrinted(t, "new (async().x)", "new (async()).x();\n")
 	expectParseError(t, "async x;", "<stdin>: ERROR: Expected \"=>\" but found \";\"\n")
 	expectParseError(t, "async (...x,) => {}", "<stdin>: ERROR: Unexpected \",\" after rest pattern\n")
-	expectParseError(t, "async => await 0", friendlyAwaitError)
+	expectParseError(t, "async => await 0", friendlyAwaitErrorWithNote)
 	expectParseError(t, "new async => {}", "<stdin>: ERROR: Expected \";\" but found \"=>\"\n")
 	expectParseError(t, "new async () => {}", "<stdin>: ERROR: Expected \";\" but found \"=>\"\n")
 
@@ -1869,8 +1934,10 @@ func TestAsync(t *testing.T) {
 	expectParseError(t, "async function foo() { class Foo { foo(x = await y) {} } }", friendlyAwaitError)
 	expectParseError(t, "async function foo() { (class { foo(x = await y) {} }) }", friendlyAwaitError)
 	expectParseError(t, "async function foo() { (x = await y) => {} }", "<stdin>: ERROR: Cannot use an \"await\" expression here:\n")
+	expectParseError(t, "async function foo(x = await y) {}", "<stdin>: ERROR: The keyword \"await\" cannot be used here:\n<stdin>: ERROR: Expected \")\" but found \"y\"\n")
+	expectParseError(t, "async function foo({ [await y]: x }) {}", "<stdin>: ERROR: The keyword \"await\" cannot be used here:\n<stdin>: ERROR: Expected \"]\" but found \"y\"\n")
 	expectPrinted(t, "async function foo() { (x = await y) }", "async function foo() {\n  x = await y;\n}\n")
-	expectParseError(t, "function foo() { (x = await y) }", friendlyAwaitError)
+	expectParseError(t, "function foo() { (x = await y) }", friendlyAwaitErrorWithNote)
 
 	// Newlines
 	expectPrinted(t, "(class { async \n foo() {} })", "(class {\n  async;\n  foo() {\n  }\n});\n")
@@ -1881,7 +1948,7 @@ func TestAsync(t *testing.T) {
 	// Top-level await
 	expectPrinted(t, "await foo;", "await foo;\n")
 	expectPrinted(t, "for await(foo of bar);", "for await (foo of bar)\n  ;\n")
-	expectParseError(t, "function foo() { await foo }", friendlyAwaitError)
+	expectParseError(t, "function foo() { await foo }", friendlyAwaitErrorWithNote)
 	expectParseError(t, "function foo() { for await(foo of bar); }", "<stdin>: ERROR: Cannot use \"await\" outside an async function\n")
 	expectPrinted(t, "function foo(x = await) {}", "function foo(x = await) {\n}\n")
 	expectParseError(t, "function foo(x = await y) {}", friendlyAwaitError)
@@ -1964,12 +2031,30 @@ func TestLabels(t *testing.T) {
 	expectPrinted(t, "x: ({ f() { x: 1; } }).f()", "x:\n  ({ f() {\n    x:\n      1;\n  } }).f();\n")
 	expectPrinted(t, "x: (function() { x: 1; })()", "x:\n  (function() {\n    x:\n      1;\n  })();\n")
 	expectParseError(t, "x: y: x: 1", "<stdin>: ERROR: Duplicate label \"x\"\n<stdin>: NOTE: The original label \"x\" is here:\n")
+
+	expectPrinted(t, "x: break x", "x:\n  break x;\n")
+	expectPrinted(t, "x: { break x; foo() }", "x: {\n  break x;\n  foo();\n}\n")
+	expectPrintedMangle(t, "x: break x", "")
+	expectPrintedMangle(t, "x: { break x; foo() }", "")
+	expectPrintedMangle(t, "y: while (foo()) x: { break x; foo() }", "y:\n  for (; foo(); )\n    ;\n")
+	expectPrintedMangle(t, "y: while (foo()) x: { break y; foo() }", "y:\n  for (; foo(); )\n    x:\n      break y;\n")
 }
 
 func TestArrow(t *testing.T) {
 	expectParseError(t, "({a: b, c() {}}) => {}", "<stdin>: ERROR: Invalid binding pattern\n")
 	expectParseError(t, "({a: b, get c() {}}) => {}", "<stdin>: ERROR: Invalid binding pattern\n")
 	expectParseError(t, "({a: b, set c(x) {}}) => {}", "<stdin>: ERROR: Invalid binding pattern\n")
+
+	expectParseError(t, "x = ([ (y) ]) => 0", "<stdin>: ERROR: Invalid binding pattern\n")
+	expectParseError(t, "x = ([ ...(y) ]) => 0", "<stdin>: ERROR: Invalid binding pattern\n")
+	expectParseError(t, "x = ({ (y) }) => 0", "<stdin>: ERROR: Expected identifier but found \"(\"\n")
+	expectParseError(t, "x = ({ y: (z) }) => 0", "<stdin>: ERROR: Invalid binding pattern\n")
+	expectParseError(t, "x = ({ ...(y) }) => 0", "<stdin>: ERROR: Invalid binding pattern\n")
+
+	expectPrinted(t, "x = ([ y = [ (z) ] ]) => 0", "x = ([y = [z]]) => 0;\n")
+	expectPrinted(t, "x = ([ y = [ ...(z) ] ]) => 0", "x = ([y = [...z]]) => 0;\n")
+	expectPrinted(t, "x = ({ y = { y: (z) } }) => 0", "x = ({ y = { y: z } }) => 0;\n")
+	expectPrinted(t, "x = ({ y = { ...(y) } }) => 0", "x = ({ y = { ...y } }) => 0;\n")
 
 	expectPrinted(t, "x => function() {}", "(x) => function() {\n};\n")
 	expectPrinted(t, "(x) => function() {}", "(x) => function() {\n};\n")
@@ -2698,7 +2783,7 @@ func TestWarningEqualsNewObject(t *testing.T) {
 
 func TestWarningEqualsNaN(t *testing.T) {
 	note := "NOTE: Floating-point equality is defined such that NaN is never equal to anything, so \"x === NaN\" always returns false. " +
-		"You need to use \"isNaN(x)\" instead to test for NaN.\n"
+		"You need to use \"Number.isNaN(x)\" instead to test for NaN.\n"
 
 	expectParseError(t, "x === NaN", "<stdin>: WARNING: Comparison with NaN using the \"===\" operator here is always false\n"+note)
 	expectParseError(t, "x !== NaN", "<stdin>: WARNING: Comparison with NaN using the \"!==\" operator here is always true\n"+note)
@@ -2882,6 +2967,20 @@ func TestMangleIndex(t *testing.T) {
 	expectPrintedMangle(t, "x?.['y z']", "x?.[\"y z\"];\n")
 	expectPrintedMangle(t, "x?.['y']()", "x?.y();\n")
 	expectPrintedMangle(t, "x?.['y z']()", "x?.[\"y z\"]();\n")
+
+	// Check the string-to-int optimization
+	expectPrintedMangle(t, "x['0']", "x[0];\n")
+	expectPrintedMangle(t, "x['123']", "x[123];\n")
+	expectPrintedMangle(t, "x['-123']", "x[-123];\n")
+	expectPrintedMangle(t, "x['-0']", "x[\"-0\"];\n")
+	expectPrintedMangle(t, "x['01']", "x[\"01\"];\n")
+	expectPrintedMangle(t, "x['-01']", "x[\"-01\"];\n")
+	expectPrintedMangle(t, "x['0x1']", "x[\"0x1\"];\n")
+	expectPrintedMangle(t, "x['-0x1']", "x[\"-0x1\"];\n")
+	expectPrintedMangle(t, "x['2147483647']", "x[2147483647];\n")
+	expectPrintedMangle(t, "x['2147483648']", "x[\"2147483648\"];\n")
+	expectPrintedMangle(t, "x['-2147483648']", "x[-2147483648];\n")
+	expectPrintedMangle(t, "x['-2147483649']", "x[\"-2147483649\"];\n")
 }
 
 func TestMangleBlock(t *testing.T) {
@@ -3192,6 +3291,16 @@ func TestMangleIf(t *testing.T) {
 	expectPrintedMangle(t, "(x ? 1 : y) || foo();", "x || y || foo();\n")
 }
 
+func TestMangleWrapToAvoidAmbiguousElse(t *testing.T) {
+	expectPrintedMangle(t, "if (a) { if (b) return c } else return d", "if (a) {\n  if (b)\n    return c;\n} else\n  return d;\n")
+	expectPrintedMangle(t, "if (a) while (1) { if (b) return c } else return d", "if (a) {\n  for (; ; )\n    if (b)\n      return c;\n} else\n  return d;\n")
+	expectPrintedMangle(t, "if (a) for (;;) { if (b) return c } else return d", "if (a) {\n  for (; ; )\n    if (b)\n      return c;\n} else\n  return d;\n")
+	expectPrintedMangle(t, "if (a) for (x in y) { if (b) return c } else return d", "if (a) {\n  for (x in y)\n    if (b)\n      return c;\n} else\n  return d;\n")
+	expectPrintedMangle(t, "if (a) for (x of y) { if (b) return c } else return d", "if (a) {\n  for (x of y)\n    if (b)\n      return c;\n} else\n  return d;\n")
+	expectPrintedMangle(t, "if (a) with (x) { if (b) return c } else return d", "if (a) {\n  with (x)\n    if (b)\n      return c;\n} else\n  return d;\n")
+	expectPrintedMangle(t, "if (a) x: { if (b) return c } else return d", "if (a) {\n  x:\n    if (b)\n      return c;\n} else\n  return d;\n")
+}
+
 func TestMangleOptionalChain(t *testing.T) {
 	expectPrintedMangle(t, "let a; return a != null ? a.b : undefined", "let a;\nreturn a?.b;\n")
 	expectPrintedMangle(t, "let a; return a != null ? a[b] : undefined", "let a;\nreturn a?.[b];\n")
@@ -3474,6 +3583,18 @@ func TestMangleCall(t *testing.T) {
 	expectPrintedMangle(t, "x = foo(1, ...[,2,,], 3)", "x = foo(1, void 0, 2, void 0, 3);\n")
 }
 
+func TestMangleNew(t *testing.T) {
+	expectPrintedMangle(t, "x = new foo(1, ...[], 2)", "x = new foo(1, 2);\n")
+	expectPrintedMangle(t, "x = new foo(1, ...2, 3)", "x = new foo(1, ...2, 3);\n")
+	expectPrintedMangle(t, "x = new foo(1, ...[2], 3)", "x = new foo(1, 2, 3);\n")
+	expectPrintedMangle(t, "x = new foo(1, ...[2, 3], 4)", "x = new foo(1, 2, 3, 4);\n")
+	expectPrintedMangle(t, "x = new foo(1, ...[2, ...y, 3], 4)", "x = new foo(1, 2, ...y, 3, 4);\n")
+	expectPrintedMangle(t, "x = new foo(1, ...{a, b}, 4)", "x = new foo(1, ...{ a, b }, 4);\n")
+
+	// Holes must become undefined
+	expectPrintedMangle(t, "x = new foo(1, ...[,2,,], 3)", "x = new foo(1, void 0, 2, void 0, 3);\n")
+}
+
 func TestMangleArray(t *testing.T) {
 	expectPrintedMangle(t, "x = [1, ...[], 2]", "x = [1, 2];\n")
 	expectPrintedMangle(t, "x = [1, ...2, 3]", "x = [1, ...2, 3];\n")
@@ -3587,6 +3708,10 @@ func TestMangleIIFE(t *testing.T) {
 	expectPrintedMangle(t, "(function() { a() })()", "(function() {\n  a();\n})();\n")
 	expectPrintedMangle(t, "(function*() { a() })()", "(function* () {\n  a();\n})();\n")
 	expectPrintedMangle(t, "(async function() { a() })()", "(async function() {\n  a();\n})();\n")
+
+	expectPrintedMangle(t, "(() => x)()", "x;\n")
+	expectPrintedMangle(t, "/* @__PURE__ */ (() => x)()", "")
+	expectPrintedMangle(t, "/* @__PURE__ */ (() => x)(y, z)", "y, z;\n")
 }
 
 func TestMangleTemplate(t *testing.T) {
@@ -4212,6 +4337,20 @@ func TestMangleInlineLocals(t *testing.T) {
 	expectPrintedMangleTarget(t, 2015, "(x => { let y = x; throw y ?? z })()", "((x) => {\n  let y = x;\n  throw y != null ? y : z;\n})();\n")
 	expectPrintedMangleTarget(t, 2015, "(x => { let y = x; y.z ??= z })()", "((x) => {\n  var _a;\n  let y = x;\n  (_a = y.z) != null || (y.z = z);\n})();\n")
 	expectPrintedMangleTarget(t, 2015, "(x => { let y = x; y?.z })()", "((x) => {\n  let y = x;\n  y == null || y.z;\n})();\n")
+
+	// Cannot substitute into call targets when it would change "this"
+	check("let x = arg0; x()", "arg0();")
+	check("let x = arg0; (0, x)()", "arg0();")
+	check("let x = arg0.foo; x.bar()", "arg0.foo.bar();")
+	check("let x = arg0.foo; x[bar]()", "arg0.foo[bar]();")
+	check("let x = arg0.foo; x()", "let x = arg0.foo;\nx();")
+	check("let x = arg0[foo]; x()", "let x = arg0[foo];\nx();")
+	check("let x = arg0?.foo; x()", "let x = arg0?.foo;\nx();")
+	check("let x = arg0?.[foo]; x()", "let x = arg0?.[foo];\nx();")
+	check("let x = arg0.foo; (0, x)()", "let x = arg0.foo;\nx();")
+	check("let x = arg0[foo]; (0, x)()", "let x = arg0[foo];\nx();")
+	check("let x = arg0?.foo; (0, x)()", "let x = arg0?.foo;\nx();")
+	check("let x = arg0?.[foo]; (0, x)()", "let x = arg0?.[foo];\nx();")
 }
 
 func TestTrimCodeInDeadControlFlow(t *testing.T) {
@@ -4426,6 +4565,7 @@ func TestJSX(t *testing.T) {
 	expectPrintedJSX(t, "<a>&lt;&gt;</a>", "/* @__PURE__ */ React.createElement(\"a\", null, \"<>\");\n")
 	expectPrintedJSX(t, "<a>&wrong;</a>", "/* @__PURE__ */ React.createElement(\"a\", null, \"&wrong;\");\n")
 	expectPrintedJSX(t, "<a>🙂</a>", "/* @__PURE__ */ React.createElement(\"a\", null, \"🙂\");\n")
+	expectPrintedJSX(t, "<a>{...children}</a>", "/* @__PURE__ */ React.createElement(\"a\", null, ...children);\n")
 
 	// Note: The TypeScript compiler and Babel disagree. This matches TypeScript.
 	expectPrintedJSX(t, "<a b=\"   c\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"   c\"\n});\n")
@@ -4520,7 +4660,6 @@ func TestJSX(t *testing.T) {
 		"<stdin>: ERROR: Expected closing tag \"c.d\" to match opening tag \"a.b\"\n<stdin>: NOTE: The opening tag \"a.b\" is here:\n")
 	expectParseErrorJSX(t, "<a-b.c>", "<stdin>: ERROR: Expected \">\" but found \".\"\n")
 	expectParseErrorJSX(t, "<a.b-c>", "<stdin>: ERROR: Unexpected \"-\"\n")
-	expectParseErrorJSX(t, "<a>{...children}</a>", "<stdin>: ERROR: Unexpected \"...\"\n")
 
 	expectPrintedJSX(t, "< /**/ a/>", "/* @__PURE__ */ React.createElement(\"a\", null);\n")
 	expectPrintedJSX(t, "< //\n a/>", "/* @__PURE__ */ React.createElement(\"a\", null);\n")
@@ -4599,6 +4738,160 @@ func TestJSXPragmas(t *testing.T) {
 	expectPrintedJSX(t, "// @jsxFrag a.b.c\n<></>", "/* @__PURE__ */ React.createElement(a.b.c, null);\n")
 	expectPrintedJSX(t, "/*@jsxFrag a.b.c*/\n<></>", "/* @__PURE__ */ React.createElement(a.b.c, null);\n")
 	expectPrintedJSX(t, "/* @jsxFrag a.b.c */\n<></>", "/* @__PURE__ */ React.createElement(a.b.c, null);\n")
+}
+
+func TestJSXAutomatic(t *testing.T) {
+	// Prod, without runtime imports
+	p := JSXAutomaticTestOptions{Development: false, OmitJSXRuntimeForTests: true}
+	expectPrintedJSXAutomatic(t, p, "<div>></div>", "/* @__PURE__ */ jsx(\"div\", {\n  children: \">\"\n});\n")
+	expectPrintedJSXAutomatic(t, p, "<div>{1}}</div>", "/* @__PURE__ */ jsxs(\"div\", {\n  children: [\n    1,\n    \"}\"\n  ]\n});\n")
+	expectPrintedJSXAutomatic(t, p, "<div key={true} />", "/* @__PURE__ */ jsx(\"div\", {}, true);\n")
+	expectPrintedJSXAutomatic(t, p, "<div key=\"key\" />", "/* @__PURE__ */ jsx(\"div\", {}, \"key\");\n")
+	expectPrintedJSXAutomatic(t, p, "<div key=\"key\" {...props} />", "/* @__PURE__ */ jsx(\"div\", {\n  ...props\n}, \"key\");\n")
+	expectPrintedJSXAutomatic(t, p, "<div {...props} key=\"key\" />", "/* @__PURE__ */ createElement(\"div\", {\n  ...props,\n  key: \"key\"\n});\n") // Falls back to createElement
+	expectPrintedJSXAutomatic(t, p, "<div>{...children}</div>", "/* @__PURE__ */ jsxs(\"div\", {\n  children: [\n    ...children\n  ]\n});\n")
+	expectPrintedJSXAutomatic(t, p, "<div>{...children}<a/></div>", "/* @__PURE__ */ jsxs(\"div\", {\n  children: [\n    ...children,\n    /* @__PURE__ */ jsx(\"a\", {})\n  ]\n});\n")
+	expectPrintedJSXAutomatic(t, p, "<>></>", "/* @__PURE__ */ jsx(Fragment, {\n  children: \">\"\n});\n")
+
+	expectParseErrorJSXAutomatic(t, p, "<a key/>",
+		`<stdin>: ERROR: Please provide an explicit value for "key":
+NOTE: Using "key" as a shorthand for "key={true}" is not allowed when using React's "automatic" JSX transform.
+`)
+	expectParseErrorJSXAutomatic(t, p, "<div __self={self} />",
+		`<stdin>: ERROR: Duplicate "__self" prop found:
+NOTE: Both "__source" and "__self" are set automatically by esbuild when using React's "automatic" JSX transform. This duplicate prop may have come from a plugin.
+`)
+	expectParseErrorJSXAutomatic(t, p, "<div __source=\"/path/to/source.jsx\" />",
+		`<stdin>: ERROR: Duplicate "__source" prop found:
+NOTE: Both "__source" and "__self" are set automatically by esbuild when using React's "automatic" JSX transform. This duplicate prop may have come from a plugin.
+`)
+
+	// Prod, with runtime imports
+	pr := JSXAutomaticTestOptions{Development: false}
+	expectPrintedJSXAutomatic(t, pr, "<div/>", "import { jsx } from \"react/jsx-runtime\";\n/* @__PURE__ */ jsx(\"div\", {});\n")
+	expectPrintedJSXAutomatic(t, pr, "<><a/><b/></>", "import { Fragment, jsx, jsxs } from \"react/jsx-runtime\";\n/* @__PURE__ */ jsxs(Fragment, {\n  children: [\n    /* @__PURE__ */ jsx(\"a\", {}),\n    /* @__PURE__ */ jsx(\"b\", {})\n  ]\n});\n")
+	expectPrintedJSXAutomatic(t, pr, "<div {...props} key=\"key\" />", "import { createElement } from \"react\";\n/* @__PURE__ */ createElement(\"div\", {\n  ...props,\n  key: \"key\"\n});\n")
+	expectPrintedJSXAutomatic(t, pr, "<><div {...props} key=\"key\" /></>", "import { Fragment, jsx } from \"react/jsx-runtime\";\nimport { createElement } from \"react\";\n/* @__PURE__ */ jsx(Fragment, {\n  children: /* @__PURE__ */ createElement(\"div\", {\n    ...props,\n    key: \"key\"\n  })\n});\n")
+
+	pri := JSXAutomaticTestOptions{Development: false, ImportSource: "my-jsx-lib"}
+	expectPrintedJSXAutomatic(t, pri, "<div/>", "import { jsx } from \"my-jsx-lib/jsx-runtime\";\n/* @__PURE__ */ jsx(\"div\", {});\n")
+	expectPrintedJSXAutomatic(t, pri, "<div {...props} key=\"key\" />", "import { createElement } from \"my-jsx-lib\";\n/* @__PURE__ */ createElement(\"div\", {\n  ...props,\n  key: \"key\"\n});\n")
+
+	// Dev, without runtime imports
+	d := JSXAutomaticTestOptions{Development: true, OmitJSXRuntimeForTests: true}
+	expectPrintedJSXAutomatic(t, d, "<div>></div>", "/* @__PURE__ */ jsxDEV(\"div\", {\n  children: \">\"\n}, void 0, false, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+	expectPrintedJSXAutomatic(t, d, "<div>{1}}</div>", "/* @__PURE__ */ jsxDEV(\"div\", {\n  children: [\n    1,\n    \"}\"\n  ]\n}, void 0, true, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+	expectPrintedJSXAutomatic(t, d, "<div key={true} />", "/* @__PURE__ */ jsxDEV(\"div\", {}, true, false, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+	expectPrintedJSXAutomatic(t, d, "<div key=\"key\" />", "/* @__PURE__ */ jsxDEV(\"div\", {}, \"key\", false, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+	expectPrintedJSXAutomatic(t, d, "<div key=\"key\" {...props} />", "/* @__PURE__ */ jsxDEV(\"div\", {\n  ...props\n}, \"key\", false, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+	expectPrintedJSXAutomatic(t, d, "<div {...props} key=\"key\" />", "/* @__PURE__ */ createElement(\"div\", {\n  ...props,\n  key: \"key\"\n});\n") // Falls back to createElement
+	expectPrintedJSXAutomatic(t, d, "<div>{...children}</div>", "/* @__PURE__ */ jsxDEV(\"div\", {\n  children: [\n    ...children\n  ]\n}, void 0, true, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+	expectPrintedJSXAutomatic(t, d, "<div>\n  {...children}\n  <a/></div>", "/* @__PURE__ */ jsxDEV(\"div\", {\n  children: [\n    ...children,\n    /* @__PURE__ */ jsxDEV(\"a\", {}, void 0, false, {\n      fileName: \"<stdin>\",\n      lineNumber: 3,\n      columnNumber: 3\n    }, this)\n  ]\n}, void 0, true, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+	expectPrintedJSXAutomatic(t, d, "<>></>", "/* @__PURE__ */ jsxDEV(Fragment, {\n  children: \">\"\n}, void 0, false, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+
+	expectParseErrorJSXAutomatic(t, d, "<a key/>",
+		`<stdin>: ERROR: Please provide an explicit value for "key":
+NOTE: Using "key" as a shorthand for "key={true}" is not allowed when using React's "automatic" JSX transform.
+`)
+	expectParseErrorJSXAutomatic(t, d, "<div __self={self} />",
+		`<stdin>: ERROR: Duplicate "__self" prop found:
+NOTE: Both "__source" and "__self" are set automatically by esbuild when using React's "automatic" JSX transform. This duplicate prop may have come from a plugin.
+`)
+	expectParseErrorJSXAutomatic(t, d, "<div __source=\"/path/to/source.jsx\" />",
+		`<stdin>: ERROR: Duplicate "__source" prop found:
+NOTE: Both "__source" and "__self" are set automatically by esbuild when using React's "automatic" JSX transform. This duplicate prop may have come from a plugin.
+`)
+
+	// Line/column offset tests. Unlike Babel, TypeScript sometimes points to a
+	// location other than the start of the element. I'm not sure if that's a bug
+	// or not, but it seems weird. So I decided to match Babel instead.
+	expectPrintedJSXAutomatic(t, d, "\r\n<x/>", "/* @__PURE__ */ jsxDEV(\"x\", {}, void 0, false, {\n  fileName: \"<stdin>\",\n  lineNumber: 2,\n  columnNumber: 1\n}, this);\n")
+	expectPrintedJSXAutomatic(t, d, "\n\r<x/>", "/* @__PURE__ */ jsxDEV(\"x\", {}, void 0, false, {\n  fileName: \"<stdin>\",\n  lineNumber: 3,\n  columnNumber: 1\n}, this);\n")
+	expectPrintedJSXAutomatic(t, d, "let 𐀀 = <x>🍕🍕🍕<y/></x>", "let 𐀀 = /* @__PURE__ */ jsxDEV(\"x\", {\n  children: [\n    \"🍕🍕🍕\",\n    /* @__PURE__ */ jsxDEV(\"y\", {}, void 0, false, {\n      fileName: \"<stdin>\",\n      lineNumber: 1,\n      columnNumber: 19\n    }, this)\n  ]\n}, void 0, true, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 10\n}, this);\n")
+
+	// Dev, with runtime imports
+	dr := JSXAutomaticTestOptions{Development: true}
+	expectPrintedJSXAutomatic(t, dr, "<div/>", "import { jsxDEV } from \"react/jsx-dev-runtime\";\n/* @__PURE__ */ jsxDEV(\"div\", {}, void 0, false, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+	expectPrintedJSXAutomatic(t, dr, "<>\n  <a/>\n  <b/>\n</>", "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\n/* @__PURE__ */ jsxDEV(Fragment, {\n  children: [\n    /* @__PURE__ */ jsxDEV(\"a\", {}, void 0, false, {\n      fileName: \"<stdin>\",\n      lineNumber: 2,\n      columnNumber: 3\n    }, this),\n    /* @__PURE__ */ jsxDEV(\"b\", {}, void 0, false, {\n      fileName: \"<stdin>\",\n      lineNumber: 3,\n      columnNumber: 3\n    }, this)\n  ]\n}, void 0, true, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+
+	dri := JSXAutomaticTestOptions{Development: true, ImportSource: "preact"}
+	expectPrintedJSXAutomatic(t, dri, "<div/>", "import { jsxDEV } from \"preact/jsx-dev-runtime\";\n/* @__PURE__ */ jsxDEV(\"div\", {}, void 0, false, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+	expectPrintedJSXAutomatic(t, dri, "<>\n  <a/>\n  <b/>\n</>", "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\n/* @__PURE__ */ jsxDEV(Fragment, {\n  children: [\n    /* @__PURE__ */ jsxDEV(\"a\", {}, void 0, false, {\n      fileName: \"<stdin>\",\n      lineNumber: 2,\n      columnNumber: 3\n    }, this),\n    /* @__PURE__ */ jsxDEV(\"b\", {}, void 0, false, {\n      fileName: \"<stdin>\",\n      lineNumber: 3,\n      columnNumber: 3\n    }, this)\n  ]\n}, void 0, true, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+
+	// JSX namespaced names
+	for _, colon := range []string{":", " :", ": ", " : "} {
+		expectPrintedJSXAutomatic(t, p, "<a"+colon+"b/>", "/* @__PURE__ */ jsx(\"a:b\", {});\n")
+		expectPrintedJSXAutomatic(t, p, "<a-b"+colon+"c-d/>", "/* @__PURE__ */ jsx(\"a-b:c-d\", {});\n")
+		expectPrintedJSXAutomatic(t, p, "<a-"+colon+"b-/>", "/* @__PURE__ */ jsx(\"a-:b-\", {});\n")
+		expectPrintedJSXAutomatic(t, p, "<Te"+colon+"st/>", "/* @__PURE__ */ jsx(\"Te:st\", {});\n")
+		expectPrintedJSXAutomatic(t, p, "<x a"+colon+"b/>", "/* @__PURE__ */ jsx(\"x\", {\n  \"a:b\": true\n});\n")
+		expectPrintedJSXAutomatic(t, p, "<x a-b"+colon+"c-d/>", "/* @__PURE__ */ jsx(\"x\", {\n  \"a-b:c-d\": true\n});\n")
+		expectPrintedJSXAutomatic(t, p, "<x a-"+colon+"b-/>", "/* @__PURE__ */ jsx(\"x\", {\n  \"a-:b-\": true\n});\n")
+		expectPrintedJSXAutomatic(t, p, "<x Te"+colon+"st/>", "/* @__PURE__ */ jsx(\"x\", {\n  \"Te:st\": true\n});\n")
+		expectPrintedJSXAutomatic(t, p, "<x a"+colon+"b={0}/>", "/* @__PURE__ */ jsx(\"x\", {\n  \"a:b\": 0\n});\n")
+		expectPrintedJSXAutomatic(t, p, "<x a-b"+colon+"c-d={0}/>", "/* @__PURE__ */ jsx(\"x\", {\n  \"a-b:c-d\": 0\n});\n")
+		expectPrintedJSXAutomatic(t, p, "<x a-"+colon+"b-={0}/>", "/* @__PURE__ */ jsx(\"x\", {\n  \"a-:b-\": 0\n});\n")
+		expectPrintedJSXAutomatic(t, p, "<x Te"+colon+"st={0}/>", "/* @__PURE__ */ jsx(\"x\", {\n  \"Te:st\": 0\n});\n")
+		expectPrintedJSXAutomatic(t, p, "<a-b a-b={a-b}/>", "/* @__PURE__ */ jsx(\"a-b\", {\n  \"a-b\": a - b\n});\n")
+		expectParseErrorJSXAutomatic(t, p, "<x"+colon+"/>", "<stdin>: ERROR: Expected identifier after \"x:\" in namespaced JSX name\n")
+		expectParseErrorJSXAutomatic(t, p, "<x"+colon+"y"+colon+"/>", "<stdin>: ERROR: Expected \">\" but found \":\"\n")
+		expectParseErrorJSXAutomatic(t, p, "<x"+colon+"0y/>", "<stdin>: ERROR: Expected identifier after \"x:\" in namespaced JSX name\n")
+	}
+
+	// Enabling the "automatic" runtime means that any JSX element will cause the
+	// file to be implicitly in strict mode due to the automatically-generated
+	// import statement. This is the same behavior as the TypeScript compiler.
+	strictModeError := "<stdin>: ERROR: With statements cannot be used in strict mode\n" +
+		"<stdin>: NOTE: This file is implicitly in strict mode due to the JSX element here:\n" +
+		"NOTE: When React's \"automatic\" JSX transform is enabled, using a JSX element automatically inserts an \"import\" statement at the top of the file " +
+		"for the corresponding the JSX helper function. This means the file is considered an ECMAScript module, and all ECMAScript modules use strict mode.\n"
+	expectPrintedJSX(t, "with (x) y(<z/>)", "with (x)\n  y(/* @__PURE__ */ React.createElement(\"z\", null));\n")
+	expectPrintedJSXAutomatic(t, p, "with (x) y", "with (x)\n  y;\n")
+	expectParseErrorJSX(t, "with (x) y(<z/>) // @jsxRuntime automatic", strictModeError)
+	expectParseErrorJSXAutomatic(t, p, "with (x) y(<z/>)", strictModeError)
+}
+
+func TestJSXAutomaticPragmas(t *testing.T) {
+	expectPrintedJSX(t, "// @jsxRuntime automatic\n<a/>", "import { jsx } from \"react/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+	expectPrintedJSX(t, "/*@jsxRuntime automatic*/\n<a/>", "import { jsx } from \"react/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+	expectPrintedJSX(t, "/* @jsxRuntime automatic */\n<a/>", "import { jsx } from \"react/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+	expectPrintedJSX(t, "<a/>\n/*@jsxRuntime automatic*/", "import { jsx } from \"react/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+	expectPrintedJSX(t, "<a/>\n/* @jsxRuntime automatic */", "import { jsx } from \"react/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+
+	expectPrintedJSX(t, "// @jsxRuntime classic\n<a/>", "/* @__PURE__ */ React.createElement(\"a\", null);\n")
+	expectPrintedJSX(t, "/*@jsxRuntime classic*/\n<a/>", "/* @__PURE__ */ React.createElement(\"a\", null);\n")
+	expectPrintedJSX(t, "/* @jsxRuntime classic */\n<a/>", "/* @__PURE__ */ React.createElement(\"a\", null);\n")
+	expectPrintedJSX(t, "<a/>\n/*@jsxRuntime classic*/\n", "/* @__PURE__ */ React.createElement(\"a\", null);\n")
+	expectPrintedJSX(t, "<a/>\n/* @jsxRuntime classic */\n", "/* @__PURE__ */ React.createElement(\"a\", null);\n")
+
+	expectParseErrorJSX(t, "// @jsxRuntime foo\n<a/>",
+		`<stdin>: WARNING: Invalid JSX runtime: "foo"
+NOTE: The JSX runtime can only be set to either "classic" or "automatic".
+`)
+
+	expectPrintedJSX(t, "// @jsxRuntime automatic @jsxImportSource src\n<a/>", "import { jsx } from \"src/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+	expectPrintedJSX(t, "/*@jsxRuntime automatic @jsxImportSource src*/\n<a/>", "import { jsx } from \"src/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+	expectPrintedJSX(t, "/*@jsxRuntime automatic*//*@jsxImportSource src*/\n<a/>", "import { jsx } from \"src/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+	expectPrintedJSX(t, "/* @jsxRuntime automatic */\n/* @jsxImportSource src */\n<a/>", "import { jsx } from \"src/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+	expectPrintedJSX(t, "<a/>\n/*@jsxRuntime automatic @jsxImportSource src*/", "import { jsx } from \"src/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+	expectPrintedJSX(t, "<a/>\n/*@jsxRuntime automatic*/\n/*@jsxImportSource src*/", "import { jsx } from \"src/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+	expectPrintedJSX(t, "<a/>\n/* @jsxRuntime automatic */\n/* @jsxImportSource src */", "import { jsx } from \"src/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+
+	expectPrintedJSX(t, "// @jsxRuntime classic @jsxImportSource src\n<a/>", "/* @__PURE__ */ React.createElement(\"a\", null);\n")
+	expectParseErrorJSX(t, "// @jsxRuntime classic @jsxImportSource src\n<a/>",
+		`<stdin>: WARNING: The JSX import source cannot be set without also enabling React's "automatic" JSX transform
+NOTE: You can enable React's "automatic" JSX transform for this file by using a "@jsxRuntime automatic" comment.
+`)
+	expectParseErrorJSX(t, "// @jsxImportSource src\n<a/>",
+		`<stdin>: WARNING: The JSX import source cannot be set without also enabling React's "automatic" JSX transform
+NOTE: You can enable React's "automatic" JSX transform for this file by using a "@jsxRuntime automatic" comment.
+`)
+
+	expectPrintedJSX(t, "// @jsxRuntime automatic @jsx h\n<a/>", "import { jsx } from \"react/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+	expectParseErrorJSX(t, "// @jsxRuntime automatic @jsx h\n<a/>", "<stdin>: WARNING: The JSX factory cannot be set when using React's \"automatic\" JSX transform\n")
+
+	expectPrintedJSX(t, "// @jsxRuntime automatic @jsxFrag f\n<></>", "import { Fragment, jsx } from \"react/jsx-runtime\";\n/* @__PURE__ */ jsx(Fragment, {});\n")
+	expectParseErrorJSX(t, "// @jsxRuntime automatic @jsxFrag f\n<></>", "<stdin>: WARNING: The JSX fragment cannot be set when using React's \"automatic\" JSX transform\n")
 }
 
 func TestPreserveOptionalChainParentheses(t *testing.T) {
@@ -4937,6 +5230,8 @@ func TestES5(t *testing.T) {
 	expectParseErrorTarget(t, 5, "function* gen() {}",
 		"<stdin>: ERROR: Transforming generator functions to the configured target environment is not supported yet\n")
 	expectParseErrorTarget(t, 5, "(function* () {});",
+		"<stdin>: ERROR: Transforming generator functions to the configured target environment is not supported yet\n")
+	expectParseErrorTarget(t, 5, "({ *foo() {} });",
 		"<stdin>: ERROR: Transforming generator functions to the configured target environment is not supported yet\n")
 }
 

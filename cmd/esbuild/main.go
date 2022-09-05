@@ -42,7 +42,7 @@ var helpText = func(colors logger.Colors) string {
                         is browser and cjs when platform is node)
   --loader:X=L          Use loader L to load file extension X, where L is
                         one of: js | jsx | ts | tsx | css | json | text |
-                        base64 | file | dataurl | binary
+                        base64 | file | dataurl | binary | copy
   --minify              Minify the output (sets all --minify-* flags)
   --outdir=...          The output directory (for multiple entry points)
   --outfile=...         The output file (for one entry point)
@@ -77,9 +77,13 @@ var helpText = func(colors logger.Colors) string {
                             incorrect tree-shaking annotations
   --inject:F                Import the file F into all input files and
                             automatically replace matching globals with imports
+  --jsx-dev                 Use React's automatic runtime in development mode
   --jsx-factory=...         What to use for JSX instead of React.createElement
   --jsx-fragment=...        What to use for JSX instead of React.Fragment
-  --jsx=...                 Set to "preserve" to disable transforming JSX to JS
+  --jsx-import-source=...   Override the package name for the automatic runtime
+                            (default "react")
+  --jsx=...                 Set to "automatic" to use React's automatic runtime
+                            or to "preserve" to disable transforming JSX to JS
   --keep-names              Preserve "name" on functions and classes
   --legal-comments=...      Where to place legal comments (none | inline |
                             eof | linked | external, default eof when bundling
@@ -87,6 +91,7 @@ var helpText = func(colors logger.Colors) string {
   --log-level=...           Disable logging (verbose | debug | info | warning |
                             error | silent, default info)
   --log-limit=...           Maximum message count or 0 to disable (default 6)
+  --log-override:X=Y        Use log level Y for log messages with identifier X
   --main-fields=...         Override the main file order in package.json
                             (default "browser,module,main" when platform is
                             browser and "main,module" when platform is node)
@@ -112,6 +117,7 @@ var helpText = func(colors logger.Colors) string {
   --sourcemap=external      Do not link to the source map with a comment
   --sourcemap=inline        Emit the source map with an inline data URL
   --sources-content=false   Omit "sourcesContent" in generated source maps
+  --supported:F=...         Consider syntax F to be supported (true | false)
   --tree-shaking=...        Force tree shaking on or off (false | true)
   --tsconfig=...            Use this tsconfig.json file instead of other ones
   --version                 Print the current version (` + esbuildVersion + `) and exit

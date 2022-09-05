@@ -269,6 +269,20 @@ type ClassStaticBlock struct {
 	Loc   logger.Loc
 }
 
+type PropertyFlags uint8
+
+const (
+	PropertyIsComputed PropertyFlags = 1 << iota
+	PropertyIsMethod
+	PropertyIsStatic
+	PropertyWasShorthand
+	PropertyPreferQuotedKey
+)
+
+func (flags PropertyFlags) Has(flag PropertyFlags) bool {
+	return (flags & flag) != 0
+}
+
 type Property struct {
 	ClassStaticBlock *ClassStaticBlock
 
@@ -290,12 +304,9 @@ type Property struct {
 
 	TSDecorators []Expr
 
-	Kind            PropertyKind
-	IsComputed      bool
-	IsMethod        bool
-	IsStatic        bool
-	WasShorthand    bool
-	PreferQuotedKey bool
+	Loc   logger.Loc
+	Kind  PropertyKind
+	Flags PropertyFlags
 }
 
 type PropertyBinding struct {
@@ -371,14 +382,16 @@ type BMissing struct{}
 type BIdentifier struct{ Ref Ref }
 
 type BArray struct {
-	Items        []ArrayBinding
-	HasSpread    bool
-	IsSingleLine bool
+	Items           []ArrayBinding
+	CloseBracketLoc logger.Loc
+	HasSpread       bool
+	IsSingleLine    bool
 }
 
 type BObject struct {
-	Properties   []PropertyBinding
-	IsSingleLine bool
+	Properties    []PropertyBinding
+	CloseBraceLoc logger.Loc
+	IsSingleLine  bool
 }
 
 type Expr struct {
@@ -475,11 +488,14 @@ var ESuperShared = &ESuper{}
 var ENullShared = &ENull{}
 var EUndefinedShared = &EUndefined{}
 var EThisShared = &EThis{}
+var SEmptyShared = &SEmpty{}
+var SDebuggerShared = &SDebugger{}
 
 type ENew struct {
 	Target        Expr
 	Args          []Expr
 	CloseParenLoc logger.Loc
+	IsMultiLine   bool
 
 	// True if there is a comment containing "@__PURE__" or "#__PURE__" preceding
 	// this call expression. See the comment inside ECall for more details.
@@ -506,6 +522,7 @@ type ECall struct {
 	CloseParenLoc logger.Loc
 	OptionalChain OptionalChain
 	IsDirectEval  bool
+	IsMultiLine   bool
 
 	// True if there is a comment containing "@__PURE__" or "#__PURE__" preceding
 	// this call expression. This is an annotation used for tree shaking, and
@@ -975,11 +992,11 @@ type SSwitch struct {
 
 // This object represents all of these types of import statements:
 //
-//    import 'path'
-//    import {item1, item2} from 'path'
-//    import * as ns from 'path'
-//    import defaultItem, {item1, item2} from 'path'
-//    import defaultItem, * as ns from 'path'
+//	import 'path'
+//	import {item1, item2} from 'path'
+//	import * as ns from 'path'
+//	import defaultItem, {item1, item2} from 'path'
+//	import defaultItem, * as ns from 'path'
 //
 // Many parts are optional and can be combined in different ways. The only
 // restriction is that you cannot have both a clause and a star namespace.
@@ -1037,17 +1054,6 @@ type SBreak struct {
 
 type SContinue struct {
 	Label *LocRef
-}
-
-func IsSuperCall(stmt Stmt) bool {
-	if expr, ok := stmt.Data.(*SExpr); ok {
-		if call, ok := expr.Value.Data.(*ECall); ok {
-			if _, ok := call.Target.Data.(*ESuper); ok {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 type ClauseItem struct {
@@ -1533,6 +1539,8 @@ const (
 	ExplicitStrictMode
 	ImplicitStrictModeClass
 	ImplicitStrictModeESM
+	ImplicitStrictModeTSAlwaysStrict
+	ImplicitStrictModeJSXAutomaticRuntime
 )
 
 func (s *Scope) RecursiveSetStrictMode(kind StrictModeKind) {
@@ -1549,27 +1557,27 @@ func (s *Scope) RecursiveSetStrictMode(kind StrictModeKind) {
 // block are merged into a single namespace while the non-exported code is
 // still scoped to just within that block:
 //
-//   let x = 1;
-//   namespace Foo {
-//     let x = 2;
-//     export let y = 3;
-//   }
-//   namespace Foo {
-//     console.log(x); // 1
-//     console.log(y); // 3
-//   }
+//	let x = 1;
+//	namespace Foo {
+//	  let x = 2;
+//	  export let y = 3;
+//	}
+//	namespace Foo {
+//	  console.log(x); // 1
+//	  console.log(y); // 3
+//	}
 //
 // Doing this also works inside an enum:
 //
-//   enum Foo {
-//     A = 3,
-//     B = A + 1,
-//   }
-//   enum Foo {
-//     C = A + 2,
-//   }
-//   console.log(Foo.B) // 4
-//   console.log(Foo.C) // 5
+//	enum Foo {
+//	  A = 3,
+//	  B = A + 1,
+//	}
+//	enum Foo {
+//	  C = A + 2,
+//	}
+//	console.log(Foo.B) // 4
+//	console.log(Foo.C) // 5
 //
 // This is a form of identifier lookup that works differently than the
 // hierarchical scope-based identifier lookup in JavaScript. Lookup now needs
@@ -1777,6 +1785,9 @@ type AST struct {
 	Symbols        []Symbol
 	ModuleScope    *Scope
 	CharFreq       *CharFreq
+
+	// This is internal-only data used for the implementation of Yarn PnP
+	ManifestForYarnPnP Expr
 
 	Hashbang  string
 	Directive string
@@ -2111,8 +2122,8 @@ type SymbolUse struct {
 }
 
 type SymbolCallUse struct {
-	CallCountEstimate          uint32
-	SingleArgCallCountEstimate uint32
+	CallCountEstimate                   uint32
+	SingleArgNonSpreadCallCountEstimate uint32
 }
 
 // Returns the canonical ref that represents the ref for the provided symbol.

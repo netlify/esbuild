@@ -29,7 +29,8 @@ type Log struct {
 
 	Done func() []Msg
 
-	Level LogLevel
+	Level     LogLevel
+	Overrides map[MsgID]LogLevel
 }
 
 type LogLevel int8
@@ -149,6 +150,7 @@ type Msg struct {
 	PluginName string
 	Data       MsgData
 	Kind       MsgKind
+	ID         MsgID
 }
 
 type MsgData struct {
@@ -274,6 +276,17 @@ func hasNoColorEnvironmentVariable() bool {
 // because it should work the same on Unix and Windows. These names end up in
 // the generated output and the generated output should not depend on the OS.
 func PlatformIndependentPathDirBaseExt(path string) (dir string, base string, ext string) {
+	absRootSlash := -1
+
+	// Make sure we don't strip off the slash for the root of the file system
+	if len(path) > 0 && (path[0] == '/' || path[0] == '\\') {
+		absRootSlash = 0 // Unix
+	} else if len(path) > 2 && path[1] == ':' && (path[2] == '/' || path[2] == '\\') {
+		if c := path[0]; (c >= 'a' && c < 'z') || (c >= 'A' && c <= 'Z') {
+			absRootSlash = 2 // Windows
+		}
+	}
+
 	for {
 		i := strings.LastIndexAny(path, "/\\")
 
@@ -284,6 +297,10 @@ func PlatformIndependentPathDirBaseExt(path string) (dir string, base string, ex
 		}
 
 		// Stop if we found a non-trailing slash
+		if i == absRootSlash {
+			dir, base = path[:i+1], path[i+1:]
+			break
+		}
 		if i+1 != len(path) {
 			dir, base = path[:i], path[i+1:]
 			break
@@ -297,7 +314,6 @@ func PlatformIndependentPathDirBaseExt(path string) (dir string, base string, ex
 	if dot := strings.LastIndexByte(base, '.'); dot >= 0 {
 		base, ext = base[:dot], base[dot:]
 	}
-
 	return
 }
 
@@ -382,6 +398,20 @@ func (s *Source) RangeOfString(loc Loc) Range {
 				return Range{Loc: loc, Len: int32(i + 1)}
 			} else if c == '\\' {
 				i += 1
+			}
+		}
+	}
+
+	if quote == '`' {
+		// Search for the matching quote character
+		for i := 1; i < len(text); i++ {
+			c := text[i]
+			if c == quote {
+				return Range{Loc: loc, Len: int32(i + 1)}
+			} else if c == '\\' {
+				i += 1
+			} else if c == '$' && i+1 < len(text) && text[i+1] == '{' {
+				break // Only return the range for no-substitution template literals
 			}
 		}
 	}
@@ -520,7 +550,8 @@ func NewStderrLog(options OutputOptions) Log {
 	}
 
 	return Log{
-		Level: options.LogLevel,
+		Level:     options.LogLevel,
+		Overrides: options.Overrides,
 
 		AddMsg: func(msg Msg) {
 			mutex.Lock()
@@ -932,13 +963,14 @@ const (
 	DeferLogNoVerboseOrDebug
 )
 
-func NewDeferLog(kind DeferLogKind) Log {
+func NewDeferLog(kind DeferLogKind, overrides map[MsgID]LogLevel) Log {
 	var msgs SortableMsgs
 	var mutex sync.Mutex
 	var hasErrors bool
 
 	return Log{
-		Level: LevelInfo,
+		Level:     LevelInfo,
+		Overrides: overrides,
 
 		AddMsg: func(msg Msg) {
 			if kind == DeferLogNoVerboseOrDebug && (msg.Kind == Verbose || msg.Kind == Debug) {
@@ -983,11 +1015,12 @@ type OutputOptions struct {
 	IncludeSource bool
 	Color         UseColor
 	LogLevel      LogLevel
+	Overrides     map[MsgID]LogLevel
 }
 
 func (msg Msg) String(options OutputOptions, terminalInfo TerminalInfo) string {
 	// Format the message
-	text := msgString(options.IncludeSource, terminalInfo, msg.Kind, msg.Data, msg.PluginName)
+	text := msgString(options.IncludeSource, terminalInfo, msg.ID, msg.Kind, msg.Data, msg.PluginName)
 
 	// Format the notes
 	var oldData MsgData
@@ -995,7 +1028,7 @@ func (msg Msg) String(options OutputOptions, terminalInfo TerminalInfo) string {
 		if options.IncludeSource && (i == 0 || strings.IndexByte(oldData.Text, '\n') >= 0 || oldData.Location != nil) {
 			text += "\n"
 		}
-		text += msgString(options.IncludeSource, terminalInfo, Note, note, "")
+		text += msgString(options.IncludeSource, terminalInfo, MsgID_None, Note, note, "")
 		oldData = note
 	}
 
@@ -1022,7 +1055,7 @@ func emptyMarginText(maxMargin int, isLast bool) string {
 	return fmt.Sprintf("      %s │ ", space)
 }
 
-func msgString(includeSource bool, terminalInfo TerminalInfo, kind MsgKind, data MsgData, pluginName string) string {
+func msgString(includeSource bool, terminalInfo TerminalInfo, id MsgID, kind MsgKind, data MsgData, pluginName string) string {
 	if !includeSource {
 		if loc := data.Location; loc != nil {
 			return fmt.Sprintf("%s: %s: %s\n", loc.File, kind.String(), data.Text)
@@ -1120,11 +1153,16 @@ func msgString(includeSource bool, terminalInfo TerminalInfo, kind MsgKind, data
 		pluginName = fmt.Sprintf("%s%s[plugin %s]%s ", colors.Bold, colors.Magenta, pluginName, colors.Reset)
 	}
 
-	return fmt.Sprintf("%s%s %s[%s%s%s]%s %s%s%s%s\n%s",
+	msgID := MsgIDToString(id)
+	if msgID != "" {
+		msgID = fmt.Sprintf(" [%s]", msgID)
+	}
+
+	return fmt.Sprintf("%s%s %s[%s%s%s]%s %s%s%s%s%s\n%s",
 		iconColor, kind.Icon(),
 		kindColorBrackets, kindColorText, kind.String(), kindColorBrackets, colors.Reset,
 		pluginName,
-		colors.Bold, data.Text, colors.Reset,
+		colors.Bold, data.Text, colors.Reset, msgID,
 		location,
 	)
 }
@@ -1598,17 +1636,229 @@ func renderTabStops(withTabs string, spacesPerTab int) string {
 	return withoutTabs.String()
 }
 
-func (log Log) Add(kind MsgKind, tracker *LineColumnTracker, r Range, text string) {
+func (log Log) AddError(tracker *LineColumnTracker, r Range, text string) {
 	log.AddMsg(Msg{
-		Kind: kind,
+		Kind: Error,
 		Data: tracker.MsgData(r, text),
 	})
 }
 
-func (log Log) AddWithNotes(kind MsgKind, tracker *LineColumnTracker, r Range, text string, notes []MsgData) {
+func (log Log) AddID(id MsgID, kind MsgKind, tracker *LineColumnTracker, r Range, text string) {
+	if override, ok := allowOverride(log.Overrides, id, kind); ok {
+		log.AddMsg(Msg{
+			ID:   id,
+			Kind: override,
+			Data: tracker.MsgData(r, text),
+		})
+	}
+}
+
+func (log Log) AddErrorWithNotes(tracker *LineColumnTracker, r Range, text string, notes []MsgData) {
 	log.AddMsg(Msg{
-		Kind:  kind,
+		Kind:  Error,
 		Data:  tracker.MsgData(r, text),
 		Notes: notes,
 	})
+}
+
+func (log Log) AddIDWithNotes(id MsgID, kind MsgKind, tracker *LineColumnTracker, r Range, text string, notes []MsgData) {
+	if override, ok := allowOverride(log.Overrides, id, kind); ok {
+		log.AddMsg(Msg{
+			ID:    id,
+			Kind:  override,
+			Data:  tracker.MsgData(r, text),
+			Notes: notes,
+		})
+	}
+}
+
+func (log Log) AddMsgID(id MsgID, msg Msg) {
+	if override, ok := allowOverride(log.Overrides, id, msg.Kind); ok {
+		msg.ID = id
+		msg.Kind = override
+		log.AddMsg(msg)
+	}
+}
+
+func allowOverride(overrides map[MsgID]LogLevel, id MsgID, kind MsgKind) (MsgKind, bool) {
+	if logLevel, ok := overrides[id]; ok {
+		switch logLevel {
+		case LevelVerbose:
+			return Verbose, true
+		case LevelDebug:
+			return Debug, true
+		case LevelInfo:
+			return Info, true
+		case LevelWarning:
+			return Warning, true
+		case LevelError:
+			return Error, true
+		default:
+			// Setting the log level to "silent" silences this log message
+			return MsgKind(0), false
+		}
+	}
+	return kind, true
+}
+
+// For Yarn PnP we sometimes parse JSON embedded in a JS string. This is a shim
+// that remaps log message locations inside the embedded string literal into
+// log messages in the actual JS file, which makes them easier to understand.
+func NewStringInJSLog(log Log, outerTracker *LineColumnTracker, outerStringLiteralLoc Loc, innerContents string) Log {
+	type entry struct {
+		line   int32
+		column int32
+		loc    Loc
+	}
+
+	var table []entry
+	oldAddMsg := log.AddMsg
+
+	generateTable := func() {
+		i := 0
+		n := len(innerContents)
+		line := int32(1)
+		column := int32(0)
+		loc := Loc{Start: outerStringLiteralLoc.Start + 1}
+		outerContents := outerTracker.contents
+
+		for i < n {
+			// Ignore line continuations. A line continuation is not an escaped newline.
+			for {
+				if c, _ := utf8.DecodeRuneInString(outerContents[loc.Start:]); c != '\\' {
+					break
+				}
+				c, width := utf8.DecodeRuneInString(outerContents[loc.Start+1:])
+				switch c {
+				case '\n', '\r', '\u2028', '\u2029':
+					loc.Start += 1 + int32(width)
+					if c == '\r' && outerContents[loc.Start] == '\n' {
+						// Make sure Windows CRLF counts as a single newline
+						loc.Start++
+					}
+					continue
+				}
+				break
+			}
+
+			c, width := utf8.DecodeRuneInString(innerContents[i:])
+
+			// Compress the table using run-length encoding
+			table = append(table, entry{line: line, column: column, loc: loc})
+			if len(table) > 1 {
+				if last := table[len(table)-2]; line == last.line && loc.Start-column == last.loc.Start-last.column {
+					table = table[:len(table)-1]
+				}
+			}
+
+			// Advance the inner line/column
+			switch c {
+			case '\n', '\r', '\u2028', '\u2029':
+				line++
+				column = 0
+
+				// Handle newlines on Windows
+				if c == '\r' && i+1 < n && innerContents[i+1] == '\n' {
+					i++
+				}
+
+			default:
+				column += int32(width)
+			}
+			i += width
+
+			// Advance the outer loc, assuming the string syntax is already valid
+			c, width = utf8.DecodeRuneInString(outerContents[loc.Start:])
+			if c == '\r' && outerContents[loc.Start] == '\n' {
+				// Handle newlines on Windows in template literal strings
+				loc.Start += 2
+			} else if c != '\\' {
+				loc.Start += int32(width)
+			} else {
+				// Handle an escape sequence
+				c, width = utf8.DecodeRuneInString(outerContents[loc.Start+1:])
+				switch c {
+				case 'x':
+					// 2-digit hexadecimal
+					loc.Start += 1 + 2
+
+				case 'u':
+					loc.Start++
+					if outerContents[loc.Start] == '{' {
+						// Variable-length
+						for outerContents[loc.Start] != '}' {
+							loc.Start++
+						}
+						loc.Start++
+					} else {
+						// Fixed-length
+						loc.Start += 4
+					}
+
+				case '\n', '\r', '\u2028', '\u2029':
+					// This will be handled by the next iteration
+					break
+
+				default:
+					loc.Start += int32(width)
+				}
+			}
+		}
+	}
+
+	remapLineAndColumnToLoc := func(line int32, column int32) Loc {
+		count := len(table)
+		index := 0
+
+		// Binary search to find the previous entry
+		for count > 0 {
+			step := count / 2
+			i := index + step
+			if i+1 < len(table) {
+				if entry := table[i+1]; entry.line < line || (entry.line == line && entry.column < column) {
+					index = i + 1
+					count -= step + 1
+					continue
+				}
+			}
+			count = step
+		}
+
+		entry := table[index]
+		entry.loc.Start += column - entry.column // Undo run-length compression
+		return entry.loc
+	}
+
+	remapData := func(data MsgData) MsgData {
+		if data.Location == nil {
+			return data
+		}
+
+		// Generate and cache a lookup table to accelerate remappings
+		if table == nil {
+			generateTable()
+		}
+
+		// Generate a range in the outer source using the line/column/length in the inner source
+		r := Range{Loc: remapLineAndColumnToLoc(int32(data.Location.Line), int32(data.Location.Column))}
+		if data.Location.Length != 0 {
+			r.Len = remapLineAndColumnToLoc(int32(data.Location.Line), int32(data.Location.Column+data.Location.Length)).Start - r.Loc.Start
+		}
+
+		// Use that range to look up the line in the outer source
+		location := outerTracker.MsgData(r, data.Text).Location
+		location.Suggestion = data.Location.Suggestion
+		data.Location = location
+		return data
+	}
+
+	log.AddMsg = func(msg Msg) {
+		msg.Data = remapData(msg.Data)
+		for i, note := range msg.Notes {
+			msg.Notes[i] = remapData(note)
+		}
+		oldAddMsg(msg)
+	}
+
+	return log
 }

@@ -11,7 +11,6 @@ import (
 	"github.com/evanw/esbuild/internal/js_ast"
 	"github.com/evanw/esbuild/internal/js_lexer"
 	"github.com/evanw/esbuild/internal/js_parser"
-	"github.com/evanw/esbuild/internal/js_printer"
 	"github.com/evanw/esbuild/internal/logger"
 )
 
@@ -35,7 +34,7 @@ func parseMangleCache(osArgs []string, fs fs.FS, absPath string) (map[string]int
 		}
 
 		// Otherwise, report the error
-		log.Add(logger.Error, nil, logger.Range{},
+		log.AddError(nil, logger.Range{},
 			fmt.Sprintf("Failed to read from mangle cache file %q: %s", prettyPath, originalError.Error()))
 		return nil, nil
 	}
@@ -56,7 +55,7 @@ func parseMangleCache(osArgs []string, fs fs.FS, absPath string) (map[string]int
 	// Validate the top-level object
 	root, ok := result.Data.(*js_ast.EObject)
 	if !ok {
-		log.Add(logger.Error, &tracker, logger.Range{Loc: result.Loc},
+		log.AddError(&tracker, logger.Range{Loc: result.Loc},
 			"Expected a top-level object in mangle cache file")
 		return nil, nil
 	}
@@ -71,7 +70,7 @@ func parseMangleCache(osArgs []string, fs fs.FS, absPath string) (map[string]int
 		switch v := property.ValueOrNil.Data.(type) {
 		case *js_ast.EBoolean:
 			if v.Value {
-				log.Add(logger.Error, &tracker, js_lexer.RangeOfIdentifier(source, property.ValueOrNil.Loc),
+				log.AddError(&tracker, js_lexer.RangeOfIdentifier(source, property.ValueOrNil.Loc),
 					fmt.Sprintf("Expected %q in mangle cache file to map to either a string or false", key))
 			} else {
 				mangleCache[key] = false
@@ -81,7 +80,7 @@ func parseMangleCache(osArgs []string, fs fs.FS, absPath string) (map[string]int
 			mangleCache[key] = helpers.UTF16ToString(v.Value)
 
 		default:
-			log.Add(logger.Error, &tracker, logger.Range{Loc: property.ValueOrNil.Loc},
+			log.AddError(&tracker, logger.Range{Loc: property.ValueOrNil.Loc},
 				fmt.Sprintf("Expected %q in mangle cache file to map to either a string or false", key))
 		}
 	}
@@ -130,12 +129,12 @@ func printMangleCache(mangleCache map[string]interface{}, originalOrder []string
 		} else {
 			j.AddString("\n  ")
 		}
-		j.AddBytes(js_printer.QuoteForJSON(key, asciiOnly))
+		j.AddBytes(helpers.QuoteForJSON(key, asciiOnly))
 
 		// Print the value
 		if value := mangleCache[key]; value != false {
 			j.AddString(": ")
-			j.AddBytes(js_printer.QuoteForJSON(value.(string), asciiOnly))
+			j.AddBytes(helpers.QuoteForJSON(value.(string), asciiOnly))
 		} else {
 			j.AddString(": false")
 		}

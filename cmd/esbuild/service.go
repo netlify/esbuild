@@ -435,11 +435,11 @@ func (service *serviceType) handleBuildRequest(id uint32, request map[string]int
 	}
 
 	// Optionally allow input from the stdin channel
-	if stdin, ok := request["stdinContents"].(string); ok {
+	if stdin, ok := request["stdinContents"].([]byte); ok {
 		if options.Stdin == nil {
 			options.Stdin = &api.StdinOptions{}
 		}
-		options.Stdin.Contents = stdin
+		options.Stdin.Contents = string(stdin)
 		if resolveDir, ok := request["stdinResolveDir"].(string); ok {
 			options.Stdin.ResolveDir = resolveDir
 		}
@@ -987,7 +987,7 @@ func (service *serviceType) convertPlugins(key int, jsPlugins interface{}, activ
 
 func (service *serviceType) handleTransformRequest(id uint32, request map[string]interface{}) []byte {
 	inputFS := request["inputFS"].(bool)
-	input := request["input"].(string)
+	input := string(request["input"].([]byte))
 	flags := decodeStringArray(request["flags"].([]interface{}))
 
 	options, err := cli.ParseTransformOptions(flags)
@@ -1148,6 +1148,7 @@ func encodeMessages(msgs []api.Message) []interface{} {
 	values := make([]interface{}, len(msgs))
 	for i, msg := range msgs {
 		value := map[string]interface{}{
+			"id":         msg.ID,
 			"pluginName": msg.PluginName,
 			"text":       msg.Text,
 			"location":   encodeLocation(msg.Location),
@@ -1198,6 +1199,7 @@ func decodeMessages(values []interface{}) []api.Message {
 	for i, value := range values {
 		obj := value.(map[string]interface{})
 		msg := api.Message{
+			ID:         obj["id"].(string),
 			PluginName: obj["pluginName"].(string),
 			Text:       obj["text"].(string),
 			Location:   decodeLocation(obj["location"]),
@@ -1237,6 +1239,7 @@ func decodeLocationToPrivate(value interface{}) *logger.MsgLocation {
 
 func decodeMessageToPrivate(obj map[string]interface{}) logger.Msg {
 	msg := logger.Msg{
+		ID:         logger.StringToMaximumMsgID(obj["id"].(string)),
 		PluginName: obj["pluginName"].(string),
 		Data: logger.MsgData{
 			Text:       obj["text"].(string),

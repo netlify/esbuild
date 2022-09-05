@@ -1,6 +1,6 @@
 export type Platform = 'browser' | 'node' | 'neutral';
 export type Format = 'iife' | 'cjs' | 'esm';
-export type Loader = 'js' | 'jsx' | 'ts' | 'tsx' | 'css' | 'json' | 'text' | 'base64' | 'file' | 'dataurl' | 'binary' | 'default';
+export type Loader = 'js' | 'jsx' | 'ts' | 'tsx' | 'css' | 'json' | 'text' | 'base64' | 'file' | 'dataurl' | 'binary' | 'copy' | 'default';
 export type LogLevel = 'verbose' | 'debug' | 'info' | 'warning' | 'error' | 'silent';
 export type Charset = 'ascii' | 'utf8';
 export type Drop = 'console' | 'debugger';
@@ -17,10 +17,14 @@ interface CommonOptions {
 
   /** Documentation: https://esbuild.github.io/api/#format */
   format?: Format;
-  /** Documentation: https://esbuild.github.io/api/#globalName */
+  /** Documentation: https://esbuild.github.io/api/#global-name */
   globalName?: string;
   /** Documentation: https://esbuild.github.io/api/#target */
   target?: string | string[];
+  /** Documentation: https://esbuild.github.io/api/#supported */
+  supported?: Record<string, boolean>;
+  /** Documentation: https://esbuild.github.io/api/#platform */
+  platform?: Platform;
 
   /** Documentation: https://esbuild.github.io/api/#mangle-props */
   mangleProps?: RegExp;
@@ -48,11 +52,15 @@ interface CommonOptions {
   ignoreAnnotations?: boolean;
 
   /** Documentation: https://esbuild.github.io/api/#jsx */
-  jsx?: 'transform' | 'preserve';
+  jsx?: 'transform' | 'preserve' | 'automatic';
   /** Documentation: https://esbuild.github.io/api/#jsx-factory */
   jsxFactory?: string;
   /** Documentation: https://esbuild.github.io/api/#jsx-fragment */
   jsxFragment?: string;
+  /** Documentation: https://esbuild.github.io/api/#jsx-import-source */
+  jsxImportSource?: string;
+  /** Documentation: https://esbuild.github.io/api/#jsx-development */
+  jsxDev?: boolean;
 
   /** Documentation: https://esbuild.github.io/api/#define */
   define?: { [key: string]: string };
@@ -67,6 +75,8 @@ interface CommonOptions {
   logLevel?: LogLevel;
   /** Documentation: https://esbuild.github.io/api/#log-limit */
   logLimit?: number;
+  /** Documentation: https://esbuild.github.io/api/#log-override */
+  logOverride?: Record<string, LogLevel>;
 }
 
 export interface BuildOptions extends CommonOptions {
@@ -84,15 +94,13 @@ export interface BuildOptions extends CommonOptions {
   outdir?: string;
   /** Documentation: https://esbuild.github.io/api/#outbase */
   outbase?: string;
-  /** Documentation: https://esbuild.github.io/api/#platform */
-  platform?: Platform;
   /** Documentation: https://esbuild.github.io/api/#external */
   external?: string[];
   /** Documentation: https://esbuild.github.io/api/#loader */
   loader?: { [ext: string]: Loader };
   /** Documentation: https://esbuild.github.io/api/#resolve-extensions */
   resolveExtensions?: string[];
-  /** Documentation: https://esbuild.github.io/api/#mainFields */
+  /** Documentation: https://esbuild.github.io/api/#main-fields */
   mainFields?: string[];
   /** Documentation: https://esbuild.github.io/api/#conditions */
   conditions?: string[];
@@ -139,13 +147,14 @@ export interface WatchMode {
 }
 
 export interface StdinOptions {
-  contents: string;
+  contents: string | Uint8Array;
   resolveDir?: string;
   sourcefile?: string;
   loader?: Loader;
 }
 
 export interface Message {
+  id: string;
   pluginName: string;
   text: string;
   location: Location | null;
@@ -430,6 +439,7 @@ export interface OnDynamicImportResult {
 }
 
 export interface PartialMessage {
+  id?: string;
   pluginName?: string;
   text?: string;
   location?: Partial<Location> | null;
@@ -519,7 +529,7 @@ export declare function serve(serveOptions: ServeOptions, buildOptions: BuildOpt
  *
  * Documentation: https://esbuild.github.io/api/#transform-api
  */
-export declare function transform(input: string, options?: TransformOptions): Promise<TransformResult>;
+export declare function transform(input: string | Uint8Array, options?: TransformOptions): Promise<TransformResult>;
 
 /**
  * Converts log messages to formatted message strings suitable for printing in
@@ -600,6 +610,16 @@ export interface InitializeOptions {
    * esbuild in the browser.
    */
   wasmURL?: string
+
+  /**
+   * The result of calling "new WebAssembly.Module(buffer)" where "buffer"
+   * is a typed array or ArrayBuffer containing the binary code of the
+   * "esbuild.wasm" file.
+   *
+   * You can use this as an alternative to "wasmURL" for environments where it's
+   * not possible to download the WebAssembly module.
+   */
+  wasmModule?: WebAssembly.Module
 
   /**
    * By default esbuild runs the WebAssembly-based browser API in a web worker
