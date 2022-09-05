@@ -1923,7 +1923,7 @@ func (p *printer) printExpr(expr js_ast.Expr, level js_ast.L, flags printExprFla
 		if e.DynamicExpressionImportIndex != nil && p.dynamicExpressionImportRecords[*e.DynamicExpressionImportIndex].ShimPath != "" {
 			dynamicExpressionImportRef := p.dynamicExpressionImportRefs[*e.DynamicExpressionImportIndex]
 
-			p.printSymbol(dynamicExpressionImportRef)
+			p.printIdentifier(p.renamer.NameForSymbol(dynamicExpressionImportRef))
 			p.print("(")
 		} else {
 			p.print("import(")
@@ -3791,7 +3791,7 @@ func (p *printer) printStmt(stmt js_ast.Stmt, flags printStmtFlags) {
 			importRef := p.dynamicExpressionImportRefs[s.ImportRecordIndex]
 
 			p.print("import ")
-			p.printSymbol(importRef)
+			p.printIdentifier(p.renamer.NameForSymbol(importRef))
 			p.print(" from ")
 			p.printQuotedUTF8(importRecord.ShimPath, false)
 			p.printSemicolonAfterStatement()
