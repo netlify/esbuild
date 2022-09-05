@@ -15,7 +15,6 @@
     "esbuild": "bin/esbuild"
   },
   "optionalDependencies": {
-    "@esbuild/linux-loong64": "0.15.6",
     "@netlify/esbuild-android-64": "0.15.6",
     "@netlify/esbuild-android-arm64": "0.15.6",
     "@netlify/esbuild-darwin-64": "0.15.6",
@@ -35,7 +34,8 @@
     "@netlify/esbuild-sunos-64": "0.15.6",
     "@netlify/esbuild-windows-32": "0.15.6",
     "@netlify/esbuild-windows-64": "0.15.6",
-    "@netlify/esbuild-windows-arm64": "0.15.6"
+    "@netlify/esbuild-windows-arm64": "0.15.6",
+    "@netlify/linux-loong64": "0.15.6"
   },
   "license": "MIT"
 }
