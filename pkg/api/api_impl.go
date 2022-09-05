@@ -1716,7 +1716,7 @@ func (impl *pluginImpl) onLoad(options OnLoadOptions, callback func(OnLoadArgs) 
 func (impl *pluginImpl) OnDynamicImport(options OnDynamicImportOptions, callback func(OnDynamicImportArgs) (OnDynamicImportResult, error)) {
 	filter, err := config.CompileFilterForPlugin(impl.plugin.Name, "OnDynamicImport", options.Filter)
 	if filter == nil {
-		impl.log.Add(logger.Error, nil, logger.Range{}, err.Error())
+		impl.log.AddError(nil, logger.Range{}, err.Error())
 		return
 	}
 

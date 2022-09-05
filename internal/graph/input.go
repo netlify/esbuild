@@ -134,6 +134,12 @@ func (repr *CopyRepr) ImportRecords() *[]ast.ImportRecord {
 	return nil
 }
 
+func (repr *CopyRepr) DynamicExpressionImportRecords() *[]ast.DynamicExpressionImportRecord {
+	return &[]ast.DynamicExpressionImportRecord{}
+}
+
+func (repr *CopyRepr) ClaimDynamicExpressionImport(int, string) {}
+
 func (repr *CSSRepr) DynamicExpressionImportRecords() *[]ast.DynamicExpressionImportRecord {
 	return &[]ast.DynamicExpressionImportRecord{}
 }
