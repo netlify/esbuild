@@ -1,6 +1,6 @@
 {
   "name": "@netlify/esbuild-android-64",
-  "version": "0.14.25",
+  "version": "0.14.39",
   "description": "A WebAssembly shim for esbuild on Android x64.",
   "repository": "https://github.com/netlify/esbuild",
   "license": "MIT",

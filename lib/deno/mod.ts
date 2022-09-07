@@ -146,6 +146,7 @@ async function install(): Promise<string> {
   }
   const knownUnixlikePackages: Record<string, string> = {
     'aarch64-apple-darwin': 'esbuild-darwin-arm64',
+    'aarch64-unknown-linux-gnu': 'esbuild-linux-arm64',
     'x86_64-apple-darwin': 'esbuild-darwin-64',
     'x86_64-unknown-linux-gnu': 'esbuild-linux-64',
   }
@@ -224,7 +225,7 @@ let ensureServiceIsRunning = (): Promise<Service> => {
       const stdoutBuffer = new Uint8Array(4 * 1024 * 1024)
       const readMoreStdout = () => child.stdout.read(stdoutBuffer).then(n => {
         if (n === null) {
-          afterClose()
+          afterClose(null)
         } else {
           readFromStdout(stdoutBuffer.subarray(0, n))
           readMoreStdout()
@@ -232,7 +233,7 @@ let ensureServiceIsRunning = (): Promise<Service> => {
       }).catch(e => {
         if (e instanceof Deno.errors.Interrupted || e instanceof Deno.errors.BadResource) {
           // ignore the error if read was interrupted (stdout was closed)
-          afterClose()
+          afterClose(e)
         } else {
           throw e;
         }

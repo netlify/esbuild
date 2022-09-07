@@ -99,7 +99,14 @@ func (r resolverQuery) checkBrowserMap(resolveDirInfo *dirInfo, inputPath string
 	packageJSON := resolveDirInfo.enclosingBrowserScope.packageJSON
 	browserMap := packageJSON.browserMap
 
-	checkPath := func(pathToCheck string) bool {
+	type implicitExtensions uint8
+
+	const (
+		includeImplicitExtensions implicitExtensions = iota
+		skipImplicitExtensions
+	)
+
+	checkPath := func(pathToCheck string, implicitExtensions implicitExtensions) bool {
 		if r.debugLogs != nil {
 			r.debugLogs.addNote(fmt.Sprintf("Checking for %q in the \"browser\" map in %q",
 				pathToCheck, packageJSON.source.KeyPath.Text))
@@ -116,15 +123,17 @@ func (r resolverQuery) checkBrowserMap(resolveDirInfo *dirInfo, inputPath string
 		}
 
 		// If that failed, try adding implicit extensions
-		for _, ext := range r.options.ExtensionOrder {
-			extPath := pathToCheck + ext
-			if r.debugLogs != nil {
-				r.debugLogs.addNote(fmt.Sprintf("  Checking for %q", extPath))
-			}
-			remapped, ok = browserMap[extPath]
-			if ok {
-				inputPath = extPath
-				return true
+		if implicitExtensions == includeImplicitExtensions {
+			for _, ext := range r.options.ExtensionOrder {
+				extPath := pathToCheck + ext
+				if r.debugLogs != nil {
+					r.debugLogs.addNote(fmt.Sprintf("  Checking for %q", extPath))
+				}
+				remapped, ok = browserMap[extPath]
+				if ok {
+					inputPath = extPath
+					return true
+				}
 			}
 		}
 
@@ -145,15 +154,17 @@ func (r resolverQuery) checkBrowserMap(resolveDirInfo *dirInfo, inputPath string
 		}
 
 		// If that failed, try adding implicit extensions
-		for _, ext := range r.options.ExtensionOrder {
-			extPath := indexPath + ext
-			if r.debugLogs != nil {
-				r.debugLogs.addNote(fmt.Sprintf("  Checking for %q", extPath))
-			}
-			remapped, ok = browserMap[extPath]
-			if ok {
-				inputPath = extPath
-				return true
+		if implicitExtensions == includeImplicitExtensions {
+			for _, ext := range r.options.ExtensionOrder {
+				extPath := indexPath + ext
+				if r.debugLogs != nil {
+					r.debugLogs.addNote(fmt.Sprintf("  Checking for %q", extPath))
+				}
+				remapped, ok = browserMap[extPath]
+				if ok {
+					inputPath = extPath
+					return true
+				}
 			}
 		}
 
@@ -175,11 +186,11 @@ func (r resolverQuery) checkBrowserMap(resolveDirInfo *dirInfo, inputPath string
 	}
 
 	// First try the import path as a package path
-	if !checkPath(inputPath) && IsPackagePath(inputPath) {
+	if !checkPath(inputPath, includeImplicitExtensions) && IsPackagePath(inputPath) {
 		// If a package path didn't work, try the import path as a relative path
 		switch kind {
 		case absolutePathKind:
-			checkPath("./" + inputPath)
+			checkPath("./"+inputPath, includeImplicitExtensions)
 
 		case packagePathKind:
 			// Browserify allows a browser map entry of "./pkg" to override a package
@@ -206,7 +217,10 @@ func (r resolverQuery) checkBrowserMap(resolveDirInfo *dirInfo, inputPath string
 					relativePathPrefix += strings.ReplaceAll(relPath, "\\", "/") + "/"
 				}
 
-				checkPath(relativePathPrefix + inputPath)
+				// Browserify lets "require('pkg')" match "./pkg" but not "./pkg.js".
+				// So don't add implicit extensions specifically in this place so we
+				// match Browserify's behavior.
+				checkPath(relativePathPrefix+inputPath, skipImplicitExtensions)
 			}
 		}
 	}
@@ -701,8 +715,9 @@ func (status pjStatus) isUndefined() bool {
 
 type pjDebug struct {
 	// If the status is "pjStatusUndefinedNoConditionsMatch", this is the set of
-	// conditions that didn't match. This information is used for error messages.
-	unmatchedConditions []string
+	// conditions that didn't match, in the order that they were found in the file.
+	// This information is used for error messages.
+	unmatchedConditions []logger.Span
 
 	// This is the range of the token to use for error messages
 	token logger.Range
@@ -1056,9 +1071,9 @@ func (r resolverQuery) esmPackageTargetResolve(
 				// More information: https://github.com/evanw/esbuild/issues/1484
 				target = lastMapEntry.value
 			}
-			keys := make([]string, len(target.mapData))
+			keys := make([]logger.Span, len(target.mapData))
 			for i, p := range target.mapData {
-				keys[i] = p.key
+				keys[i] = logger.Span{Text: p.key, Range: p.keyRange}
 			}
 			return "", pjStatusUndefinedNoConditionsMatch, pjDebug{
 				token:               target.firstToken,
