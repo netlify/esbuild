@@ -93,6 +93,7 @@ exports.buildWasmLib = async (esbuildPath) => {
       'build',
       '-o', path.join(npmWasmDir, 'esbuild.wasm'),
       '-ldflags=-s -w', // This removes ~0.14mb of unnecessary WebAssembly code
+      '-trimpath',
       path.join(repoDir, 'cmd', 'esbuild'),
     ],
     { cwd: repoDir, stdio: 'inherit', env: { ...process.env, GOOS: 'js', GOARCH: 'wasm' } },
@@ -106,41 +107,9 @@ exports.buildWasmLib = async (esbuildPath) => {
   // Generate "npm/esbuild-wasm/wasm_exec.js"
   const GOROOT = childProcess.execFileSync('go', ['env', 'GOROOT']).toString().trim();
   let wasm_exec_js = fs.readFileSync(path.join(GOROOT, 'misc', 'wasm', 'wasm_exec.js'), 'utf8');
-  const replace = (toReplace, replacement) => {
-    if (wasm_exec_js.indexOf(toReplace) === -1) throw new Error(`Failed to find ${JSON.stringify(toReplace)} in Go JS shim code`);
-    wasm_exec_js = wasm_exec_js.replace(toReplace, replacement);
-  }
-  replace('global.fs = fs;', `
-    global.fs = Object.assign({}, fs, {
-      // Hack around a Unicode bug in node: https://github.com/nodejs/node/issues/24550
-      write(fd, buf, offset, length, position, callback) {
-        if (offset === 0 && length === buf.length && position === null) {
-          if (fd === process.stdout.fd) {
-            try {
-              process.stdout.write(buf, err => err ? callback(err, 0, null) : callback(null, length, buf));
-            } catch (err) {
-              callback(err, 0, null);
-            }
-            return;
-          }
-          if (fd === process.stderr.fd) {
-            try {
-              process.stderr.write(buf, err => err ? callback(err, 0, null) : callback(null, length, buf));
-            } catch (err) {
-              callback(err, 0, null);
-            }
-            return;
-          }
-        }
-        fs.write(fd, buf, offset, length, position, callback);
-      },
-    });
-  `);
-  replace('// End of polyfills for common API.', `
-    // Make sure Go sees the shadowed "fs" global
-    const { fs } = global;
-  `);
+  let wasm_exec_node_js = fs.readFileSync(path.join(GOROOT, 'misc', 'wasm', 'wasm_exec_node.js'), 'utf8');
   fs.writeFileSync(path.join(npmWasmDir, 'wasm_exec.js'), wasm_exec_js);
+  fs.writeFileSync(path.join(npmWasmDir, 'wasm_exec_node.js'), wasm_exec_node_js);
 
   // Generate "npm/esbuild-wasm/lib/main.js"
   childProcess.execFileSync(esbuildPath, [
@@ -167,26 +136,29 @@ exports.buildWasmLib = async (esbuildPath) => {
     let wasmWorkerCode = {}
 
     for (const [format, target] of Object.entries({ umd: umdBrowserTarget, esm: esmBrowserTarget })) {
-      // Process "npm/esbuild-wasm/wasm_exec.js"
-      let wasmExecCode = wasm_exec_js;
-      if (minify) {
-        const wasmExecMin = childProcess.execFileSync(esbuildPath, [
-          '--target=' + target,
-        ].concat(minifyFlags), { cwd: repoDir, input: wasmExecCode }).toString()
-        const commentLines = wasmExecCode.split('\n')
-        const firstNonComment = commentLines.findIndex(line => !line.startsWith('//'))
-        wasmExecCode = '\n' + commentLines.slice(0, firstNonComment).concat(wasmExecMin).join('\n')
-      }
-
-      // Process "lib/worker.ts"
-      const workerCode = childProcess.execFileSync(esbuildPath, [
-        path.join(repoDir, 'lib', 'npm', 'worker.ts'),
+      // Process "npm/esbuild-wasm/wasm_exec.js" and "lib/worker.ts"
+      const input = `
+        let onmessage;
+        let globalThis = {};
+        for (let o = self; o; o = Object.getPrototypeOf(o))
+          for (let k of Object.getOwnPropertyNames(o))
+            if (!(k in globalThis))
+              Object.defineProperty(globalThis, k, { get: () => self[k] });
+        ${wasm_exec_js.replace(/\bfs\./g, 'globalThis.fs.')}
+        ${fs.readFileSync(path.join(repoDir, 'lib', 'npm', 'worker.ts'), 'utf8')}
+        return m => onmessage(m)
+      `;
+      const wasmExecAndWorker = childProcess.execFileSync(esbuildPath, [
+        '--loader=ts',
         '--target=' + target,
         '--define:ESBUILD_VERSION=' + JSON.stringify(version),
-        '--log-level=warning',
-      ].concat(minifyFlags), { cwd: repoDir }).toString().trim()
-
-      wasmWorkerCode[format] = wasmExecCode + workerCode
+      ].concat(minifyFlags), { cwd: repoDir, input }).toString().trim()
+      const commentLines = wasm_exec_js.split('\n')
+      const firstNonComment = commentLines.findIndex(line => !line.startsWith('//'))
+      const commentPrefix = '\n' + commentLines.slice(0, firstNonComment).join('\n') + '\n'
+      wasmWorkerCode[format] = minify
+        ? `(postMessage=>{${commentPrefix}${wasmExecAndWorker}})`
+        : `((postMessage) => {${(commentPrefix + wasmExecAndWorker).replace(/\n/g, '\n      ')}\n    })`
     }
 
     // Generate "npm/esbuild-wasm/lib/browser.*"
@@ -202,7 +174,7 @@ exports.buildWasmLib = async (esbuildPath) => {
       '--banner:js=' + umdPrefix,
       '--footer:js=' + umdSuffix,
       '--log-level=warning',
-    ].concat(minifyFlags), { cwd: repoDir }).toString()
+    ].concat(minifyFlags), { cwd: repoDir }).toString().replace('WEB_WORKER_FUNCTION', wasmWorkerCode.umd)
     fs.writeFileSync(path.join(libDir, minify ? 'browser.min.js' : 'browser.js'), browserCJS)
 
     // Generate "npm/esbuild-wasm/esm/browser.min.js"
@@ -214,7 +186,7 @@ exports.buildWasmLib = async (esbuildPath) => {
       '--define:ESBUILD_VERSION=' + JSON.stringify(version),
       '--define:WEB_WORKER_SOURCE_CODE=' + JSON.stringify(wasmWorkerCode.esm),
       '--log-level=warning',
-    ].concat(minifyFlags), { cwd: repoDir }).toString()
+    ].concat(minifyFlags), { cwd: repoDir }).toString().replace('WEB_WORKER_FUNCTION', wasmWorkerCode.esm)
     fs.writeFileSync(path.join(esmDir, minify ? 'browser.min.js' : 'browser.js'), browserESM)
   }
 
@@ -245,6 +217,7 @@ module.exports = ${JSON.stringify(exit0Map, null, 2)};
   for (const dir of npmWasmShimDirs) {
     fs.mkdirSync(path.join(dir, 'bin'), { recursive: true })
     fs.writeFileSync(path.join(dir, 'wasm_exec.js'), wasm_exec_js);
+    fs.writeFileSync(path.join(dir, 'wasm_exec_node.js'), wasm_exec_node_js);
     fs.writeFileSync(path.join(dir, 'exit0.js'), exit0Code);
     fs.copyFileSync(path.join(npmWasmDir, 'bin', 'esbuild'), path.join(dir, 'bin', 'esbuild'));
     fs.copyFileSync(path.join(npmWasmDir, 'esbuild.wasm'), path.join(dir, 'esbuild.wasm'));
@@ -291,7 +264,7 @@ exports.writeFileAtomic = (where, contents) => {
 }
 
 exports.buildBinary = () => {
-  childProcess.execFileSync('go', ['build', '-ldflags=-s -w', './cmd/esbuild'], { cwd: repoDir, stdio: 'ignore' })
+  childProcess.execFileSync('go', ['build', '-ldflags=-s -w', '-trimpath', './cmd/esbuild'], { cwd: repoDir, stdio: 'ignore' })
   return path.join(repoDir, process.platform === 'win32' ? 'esbuild.exe' : 'esbuild')
 }
 

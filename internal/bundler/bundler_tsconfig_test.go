@@ -1417,3 +1417,195 @@ func TestTsconfigOverriddenTargetWarning(t *testing.T) {
 `,
 	})
 }
+
+func TestTsConfigNoBaseURLExtendsPaths(t *testing.T) {
+	tsconfig_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/Users/user/project/src/entry.ts": `
+				import { foo } from "foo"
+				console.log(foo)
+			`,
+			"/Users/user/project/lib/foo.ts": `
+				export let foo = 123
+			`,
+			"/Users/user/project/tsconfig.json": `{
+				"extends": "./base/defaults"
+			}`,
+			"/Users/user/project/base/defaults.json": `{
+				"compilerOptions": {
+					"paths": {
+						"*": ["lib/*"]
+					}
+				}
+			}`,
+		},
+		entryPaths: []string{"/Users/user/project/src/entry.ts"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/Users/user/project/out.js",
+		},
+		expectedScanLog: `Users/user/project/base/defaults.json: WARNING: Non-relative path "lib/*" is not allowed when "baseUrl" is not set (did you forget a leading "./"?)
+Users/user/project/src/entry.ts: ERROR: Could not resolve "foo"
+NOTE: You can mark the path "foo" as external to exclude it from the bundle, which will remove this error.
+`,
+	})
+}
+
+func TestTsConfigBaseURLExtendsPaths(t *testing.T) {
+	tsconfig_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/Users/user/project/src/entry.ts": `
+				import { foo } from "foo"
+				console.log(foo)
+			`,
+			"/Users/user/project/lib/foo.ts": `
+				export let foo = 123
+			`,
+			"/Users/user/project/tsconfig.json": `{
+				"extends": "./base/defaults",
+				"compilerOptions": {
+					"baseUrl": "."
+				}
+			}`,
+			"/Users/user/project/base/defaults.json": `{
+				"compilerOptions": {
+					"paths": {
+						"*": ["lib/*"]
+					}
+				}
+			}`,
+		},
+		entryPaths: []string{"/Users/user/project/src/entry.ts"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/Users/user/project/out.js",
+		},
+	})
+}
+
+func TestTsConfigPathsExtendsBaseURL(t *testing.T) {
+	tsconfig_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/Users/user/project/src/entry.ts": `
+				import { foo } from "foo"
+				console.log(foo)
+			`,
+			"/Users/user/project/base/test/lib/foo.ts": `
+				export let foo = 123
+			`,
+			"/Users/user/project/tsconfig.json": `{
+				"extends": "./base/defaults",
+				"compilerOptions": {
+					"paths": {
+						"*": ["lib/*"]
+					}
+				}
+			}`,
+			"/Users/user/project/base/defaults.json": `{
+				"compilerOptions": {
+					"baseUrl": "test"
+				}
+			}`,
+		},
+		entryPaths: []string{"/Users/user/project/src/entry.ts"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/Users/user/project/out.js",
+		},
+	})
+}
+
+func TestTsConfigModuleSuffixesInsert(t *testing.T) {
+	tsconfig_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/Users/user/project/src/entry.ts": `
+				import "./foo"
+				import "./bar.js"
+				import "./baz.a.js"
+			`,
+
+			"/Users/user/project/src/foo.a.ts": `console.log('foo.a')`,
+			"/Users/user/project/src/foo.b.ts": `console.log('foo.b')`,
+			"/Users/user/project/src/foo.ts":   `console.log('foo')`,
+
+			"/Users/user/project/src/bar.a.ts": `console.log('bar.a')`,
+			"/Users/user/project/src/bar.b.ts": `console.log('bar.b')`,
+			"/Users/user/project/src/bar.ts":   `console.log('bar')`,
+
+			"/Users/user/project/src/baz.a.ts": `console.log('baz.a')`,
+			"/Users/user/project/src/baz.b.ts": `console.log('baz.b')`,
+			"/Users/user/project/src/baz.ts":   `console.log('baz')`,
+
+			"/Users/user/project/tsconfig.json": `{
+				"compilerOptions": {
+					"moduleSuffixes": [".a", ".b", ""]
+				}
+			}`,
+		},
+		entryPaths: []string{"/Users/user/project/src/entry.ts"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/Users/user/project/out.js",
+		},
+	})
+}
+
+func TestTsConfigModuleSuffixesNoInsert(t *testing.T) {
+	tsconfig_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/Users/user/project/src/entry.ts": `
+				import "./foo.b"
+				import "./bar.js"
+				import "./baz.b.js"
+			`,
+
+			"/Users/user/project/src/foo.a.ts": `console.log('foo.a')`,
+			"/Users/user/project/src/foo.b.ts": `console.log('foo.b')`,
+			"/Users/user/project/src/foo.ts":   `console.log('foo')`,
+
+			"/Users/user/project/src/bar.ts": `console.log('bar')`,
+
+			"/Users/user/project/src/baz.a.ts": `console.log('baz.a')`,
+			"/Users/user/project/src/baz.b.ts": `console.log('baz.b')`,
+			"/Users/user/project/src/baz.ts":   `console.log('baz')`,
+
+			"/Users/user/project/tsconfig.json": `{
+				"compilerOptions": {
+					"moduleSuffixes": [".a", ".b", ""]
+				}
+			}`,
+		},
+		entryPaths: []string{"/Users/user/project/src/entry.ts"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/Users/user/project/out.js",
+		},
+	})
+}
+
+func TestTsConfigModuleSuffixesNoEmpty(t *testing.T) {
+	tsconfig_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/Users/user/project/src/entry.ts": `
+				import "./foo.js"
+				import "./bar"
+			`,
+
+			"/Users/user/project/src/foo.b.ts": `console.log('foo.b')`,
+			"/Users/user/project/src/bar.ts":   `console.log('bar')`,
+
+			"/Users/user/project/tsconfig.json": `{
+				"compilerOptions": {
+					"moduleSuffixes": [".a", ".b"]
+				}
+			}`,
+		},
+		entryPaths: []string{"/Users/user/project/src/entry.ts"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/Users/user/project/out.js",
+		},
+		expectedScanLog: `Users/user/project/src/entry.ts: ERROR: Could not resolve "./bar"
+`,
+	})
+}

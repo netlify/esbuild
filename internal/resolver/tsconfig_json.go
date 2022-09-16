@@ -33,14 +33,28 @@ type TSConfigJSON struct {
 	// the wildcard is substituted into the fallback path. The keys represent
 	// module-style path names and the fallback paths are relative to the
 	// "baseUrl" value in the "tsconfig.json" file.
-	Paths map[string][]string
+	Paths *TSConfigPaths
 
 	TSTarget                       *config.TSTarget
 	JSXFactory                     []string
 	JSXFragmentFactory             []string
+	ModuleSuffixes                 []string
 	UseDefineForClassFields        config.MaybeBool
 	PreserveImportsNotUsedAsValues bool
 	PreserveValueImports           bool
+}
+
+type TSConfigPath struct {
+	Text string
+	Loc  logger.Loc
+}
+
+type TSConfigPaths struct {
+	Map map[string][]TSConfigPath
+
+	// This may be different from the original "tsconfig.json" source if the
+	// "paths" value is from another file via an "extends" clause.
+	Source logger.Source
 }
 
 func ParseTSConfigJSON(
@@ -100,6 +114,22 @@ func ParseTSConfigJSON(
 		if valueJSON, _, ok := getProperty(compilerOptionsJSON, "jsxFragmentFactory"); ok {
 			if value, ok := getString(valueJSON); ok {
 				result.JSXFragmentFactory = parseMemberExpressionForJSX(log, &source, &tracker, valueJSON.Loc, value)
+			}
+		}
+
+		// Parse "moduleSuffixes"
+		if valueJSON, _, ok := getProperty(compilerOptionsJSON, "moduleSuffixes"); ok {
+			if value, ok := valueJSON.Data.(*js_ast.EArray); ok {
+				result.ModuleSuffixes = make([]string, 0, len(value.Items))
+				for _, item := range value.Items {
+					if str, ok := item.Data.(*js_ast.EString); ok {
+						result.ModuleSuffixes = append(result.ModuleSuffixes, helpers.UTF16ToString(str.Value))
+					} else {
+						log.Add(logger.Warning, &tracker, logger.Range{Loc: item.Loc}, "Expected module suffix to be a string")
+						result.ModuleSuffixes = nil
+						break
+					}
+				}
 			}
 		}
 
@@ -196,7 +226,7 @@ func ParseTSConfigJSON(
 				} else {
 					result.BaseURLForPaths = "."
 				}
-				result.Paths = make(map[string][]string)
+				result.Paths = &TSConfigPaths{Source: source, Map: make(map[string][]TSConfigPath)}
 				for _, prop := range paths.Properties {
 					if key, ok := getString(prop.Key); ok {
 						if !isValidTSConfigPathPattern(key, log, &source, &tracker, prop.Key.Loc) {
@@ -227,9 +257,8 @@ func ParseTSConfigJSON(
 						if array, ok := prop.ValueOrNil.Data.(*js_ast.EArray); ok {
 							for _, item := range array.Items {
 								if str, ok := getString(item); ok {
-									if isValidTSConfigPathPattern(str, log, &source, &tracker, item.Loc) &&
-										(hasBaseURL || isValidTSConfigPathNoBaseURLPattern(str, log, &source, &tracker, item.Loc)) {
-										result.Paths[key] = append(result.Paths[key], str)
+									if isValidTSConfigPathPattern(str, log, &source, &tracker, item.Loc) {
+										result.Paths.Map[key] = append(result.Paths.Map[key], TSConfigPath{Text: str, Loc: item.Loc})
 									}
 								}
 							}
@@ -281,7 +310,7 @@ func isSlash(c byte) bool {
 	return c == '/' || c == '\\'
 }
 
-func isValidTSConfigPathNoBaseURLPattern(text string, log logger.Log, source *logger.Source, tracker *logger.LineColumnTracker, loc logger.Loc) bool {
+func isValidTSConfigPathNoBaseURLPattern(text string, log logger.Log, source *logger.Source, tracker **logger.LineColumnTracker, loc logger.Loc) bool {
 	var c0 byte
 	var c1 byte
 	var c2 byte
@@ -318,7 +347,11 @@ func isValidTSConfigPathNoBaseURLPattern(text string, log logger.Log, source *lo
 	}
 
 	r := source.RangeOfString(loc)
-	log.Add(logger.Warning, tracker, r, fmt.Sprintf(
+	if *tracker == nil {
+		t := logger.MakeLineColumnTracker(source)
+		*tracker = &t
+	}
+	log.Add(logger.Warning, *tracker, r, fmt.Sprintf(
 		"Non-relative path %q is not allowed when \"baseUrl\" is not set (did you forget a leading \"./\"?)", text))
 	return false
 }

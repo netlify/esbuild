@@ -14,10 +14,43 @@ var import_util = __toESM(require_util());
 console.log((0, import_util.default)());
 
 ================================================================================
+TestTsConfigBaseURLExtendsPaths
+---------- /Users/user/project/out.js ----------
+// Users/user/project/lib/foo.ts
+var foo = 123;
+
+// Users/user/project/src/entry.ts
+console.log(foo);
+
+================================================================================
 TestTsConfigJSX
 ---------- /Users/user/project/out.js ----------
 // Users/user/project/entry.tsx
 console.log(/* @__PURE__ */ R.c(R.F, null, /* @__PURE__ */ R.c("div", null), /* @__PURE__ */ R.c("div", null)));
+
+================================================================================
+TestTsConfigModuleSuffixesInsert
+---------- /Users/user/project/out.js ----------
+// Users/user/project/src/foo.a.ts
+console.log("foo.a");
+
+// Users/user/project/src/bar.a.ts
+console.log("bar.a");
+
+// Users/user/project/src/baz.a.ts
+console.log("baz.a");
+
+================================================================================
+TestTsConfigModuleSuffixesNoInsert
+---------- /Users/user/project/out.js ----------
+// Users/user/project/src/foo.b.ts
+console.log("foo.b");
+
+// Users/user/project/src/bar.ts
+console.log("bar");
+
+// Users/user/project/src/baz.b.ts
+console.log("baz.b");
 
 ================================================================================
 TestTsConfigNestedJSX
@@ -109,6 +142,15 @@ var baseurl_nested_default = {
 
 // Users/user/project/entry.ts
 console.log(baseurl_dot_default, baseurl_nested_default);
+
+================================================================================
+TestTsConfigPathsExtendsBaseURL
+---------- /Users/user/project/out.js ----------
+// Users/user/project/base/test/lib/foo.ts
+var foo = 123;
+
+// Users/user/project/src/entry.ts
+console.log(foo);
 
 ================================================================================
 TestTsConfigPathsNoBaseURL

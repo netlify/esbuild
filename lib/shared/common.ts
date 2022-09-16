@@ -35,6 +35,9 @@ let mustBeArray = <T>(value: T[] | undefined): string | null =>
 let mustBeObject = (value: Object | undefined): string | null =>
   typeof value === 'object' && value !== null && !Array.isArray(value) ? null : 'an object';
 
+let mustBeWebAssemblyModule = (value: WebAssembly.Module | undefined): string | null =>
+  value instanceof WebAssembly.Module ? null : 'a WebAssembly.Module';
+
 let mustBeArrayOrRecord = <T extends string>(value: T[] | Record<T, T> | undefined): string | null =>
   typeof value === 'object' && value !== null ? null : 'an array or an object';
 
@@ -75,10 +78,12 @@ function checkForInvalidFlags(object: Object, keys: OptionKeys, where: string): 
 export function validateInitializeOptions(options: types.InitializeOptions): types.InitializeOptions {
   let keys: OptionKeys = Object.create(null);
   let wasmURL = getFlag(options, keys, 'wasmURL', mustBeString);
+  let wasmModule = getFlag(options, keys, 'wasmModule', mustBeWebAssemblyModule);
   let worker = getFlag(options, keys, 'worker', mustBeBoolean);
-  checkForInvalidFlags(options, keys, 'in startService() call');
+  checkForInvalidFlags(options, keys, 'in initialize() call');
   return {
     wasmURL,
+    wasmModule,
     worker,
   };
 }
@@ -411,7 +416,7 @@ export interface StreamIn {
 
 export interface StreamOut {
   readFromStdout: (data: Uint8Array) => void;
-  afterClose: () => void;
+  afterClose: (error: Error | null) => void;
   service: StreamService;
 }
 
@@ -481,7 +486,7 @@ export function createChannel(streamIn: StreamIn): StreamOut {
   let pluginCallbacks = new Map<number, PluginCallback>();
   let watchCallbacks = new Map<number, WatchCallback>();
   let serveCallbacks = new Map<number, ServeCallbacks>();
-  let isClosed = false;
+  let closeData: { reason: string } | null = null;
   let nextRequestID = 0;
   let nextBuildKey = 0;
 
@@ -516,20 +521,21 @@ export function createChannel(streamIn: StreamIn): StreamOut {
     }
   };
 
-  let afterClose = () => {
+  let afterClose = (error: Error | null) => {
     // When the process is closed, fail all pending requests
-    isClosed = true;
+    closeData = { reason: error ? ': ' + (error.message || error) : '' };
+    const text = 'The service was stopped' + closeData.reason;
     for (let callback of responseCallbacks.values()) {
-      callback('The service was stopped', null);
+      callback(text, null);
     }
     responseCallbacks.clear();
     for (let callbacks of serveCallbacks.values()) {
-      callbacks.onWait('The service was stopped');
+      callbacks.onWait(text);
     }
     serveCallbacks.clear();
     for (let callback of watchCallbacks.values()) {
       try {
-        callback(new Error('The service was stopped'), null);
+        callback(new Error(text), null);
       } catch (e) {
         console.error(e)
       }
@@ -538,7 +544,7 @@ export function createChannel(streamIn: StreamIn): StreamOut {
   };
 
   let sendRequest = <Req, Res>(refs: Refs | null, value: Req, callback: (error: string | null, response: Res | null) => void): void => {
-    if (isClosed) return callback('The service is no longer running', null);
+    if (closeData) return callback('The service is no longer running' + closeData.reason, null);
     let id = nextRequestID++;
     responseCallbacks.set(id, (error, response) => {
       try {
@@ -552,7 +558,7 @@ export function createChannel(streamIn: StreamIn): StreamOut {
   };
 
   let sendResponse = (id: number, value: protocol.Value): void => {
-    if (isClosed) throw new Error('The service is no longer running');
+    if (closeData) throw new Error('The service is no longer running' + closeData.reason);
     streamIn.writeToStdin(protocol.encodePacket({ id, isRequest: false, value }));
   };
 
@@ -1268,7 +1274,7 @@ export function createChannel(streamIn: StreamIn): StreamOut {
           if (!rebuild) {
             let isDisposed = false;
             (rebuild as any) = () => new Promise<types.BuildResult>((resolve, reject) => {
-              if (isDisposed || isClosed) throw new Error('Cannot rebuild');
+              if (isDisposed || closeData) throw new Error('Cannot rebuild');
               sendRequest<protocol.RebuildRequest, protocol.BuildResponse>(refs, { command: 'rebuild', key },
                 (error2, response2) => {
                   if (error2) {

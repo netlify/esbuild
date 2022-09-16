@@ -430,9 +430,9 @@ func parseFile(args parseArgs) {
 					// code pattern for conditionally importing a module with a graceful
 					// fallback.
 					if !didLogError && !record.Flags.Has(ast.HandlesImportErrors) {
-						text, notes := ResolveFailureErrorTextAndNotes(args.res, record.Path.Text, record.Kind,
+						text, suggestion, notes := ResolveFailureErrorTextSuggestionNotes(args.res, record.Path.Text, record.Kind,
 							pluginName, args.fs, absResolveDir, args.options.Platform, source.PrettyPath)
-						debug.LogErrorMsg(args.log, &source, record.Range, text, notes)
+						debug.LogErrorMsg(args.log, &source, record.Range, text, suggestion, notes)
 					} else if args.log.Level <= logger.LevelDebug && !didLogError && record.Flags.Has(ast.HandlesImportErrors) {
 						args.log.AddWithNotes(logger.Debug, &tracker, record.Range,
 							fmt.Sprintf("Importing %q was allowed even though it could not be resolved because dynamic import failures appear to be handled here:",
@@ -552,7 +552,7 @@ func getDynamicExpressionModulePath(pathTemplate []config.PathTemplate, contents
 	return relPath
 }
 
-func ResolveFailureErrorTextAndNotes(
+func ResolveFailureErrorTextSuggestionNotes(
 	res resolver.Resolver,
 	path string,
 	kind ast.ImportKind,
@@ -561,7 +561,8 @@ func ResolveFailureErrorTextAndNotes(
 	absResolveDir string,
 	platform config.Platform,
 	originatingFilePath string,
-) (string, []logger.MsgData) {
+) (text string, suggestion string, notes []logger.MsgData) {
+	text = fmt.Sprintf("Could not resolve %q", path)
 	hint := ""
 
 	if resolver.IsPackagePath(path) {
@@ -576,6 +577,7 @@ func ResolveFailureErrorTextAndNotes(
 				hint = fmt.Sprintf("Use the relative path %q to reference the file %q. "+
 					"Without the leading \"./\", the path %q is being interpreted as a package path instead.",
 					"./"+path, res.PrettyPath(query.PathPair.Primary), path)
+				suggestion = string(js_printer.QuoteForJSON("./"+path, false))
 			}
 		}
 	}
@@ -605,11 +607,10 @@ func ResolveFailureErrorTextAndNotes(
 			"so esbuild did not search for %q on the file system.", pluginName, where, path)
 	}
 
-	var notes []logger.MsgData
 	if hint != "" {
 		notes = append(notes, logger.MsgData{Text: hint})
 	}
-	return fmt.Sprintf("Could not resolve %q", path), notes
+	return
 }
 
 func joinWithPublicPath(publicPath string, relPath string) string {
@@ -1130,13 +1131,17 @@ type scanner struct {
 	// thread. Note that not all results in the "results" array are necessarily
 	// valid. Make sure to check the "ok" flag before using them.
 	results       []parseResult
-	visited       map[logger.Path]uint32
+	visited       map[logger.Path]visitedFile
 	resultChannel chan parseResult
 
 	options config.Options
 
 	// Also not guarded by a mutex for the same reason
 	remaining int
+}
+
+type visitedFile struct {
+	sourceIndex uint32
 }
 
 type EntryPoint struct {
@@ -1197,7 +1202,7 @@ func ScanBundle(
 		options:         options,
 		timer:           timer,
 		results:         make([]parseResult, 0, caches.SourceIndexCache.LenHint()),
-		visited:         make(map[logger.Path]uint32),
+		visited:         make(map[logger.Path]visitedFile),
 		resultChannel:   make(chan parseResult),
 		uniqueKeyPrefix: uniqueKeyPrefix,
 	}
@@ -1294,13 +1299,15 @@ func (s *scanner) maybeParseFile(
 	}
 
 	// Only parse a given file path once
-	sourceIndex, ok := s.visited[visitedKey]
+	visited, ok := s.visited[visitedKey]
 	if ok {
-		return sourceIndex
+		return visited.sourceIndex
 	}
 
-	sourceIndex = s.allocateSourceIndex(visitedKey, cache.SourceIndexNormal)
-	s.visited[visitedKey] = sourceIndex
+	visited = visitedFile{
+		sourceIndex: s.allocateSourceIndex(visitedKey, cache.SourceIndexNormal),
+	}
+	s.visited[visitedKey] = visited
 	s.remaining++
 	optionsClone := s.options
 	if kind != inputKindStdin {
@@ -1350,6 +1357,10 @@ func (s *scanner) maybeParseFile(
 	if path.Namespace == "dataurl" {
 		if _, ok := resolver.ParseDataURL(path.Text); ok {
 			prettyPath = path.Text
+			if len(prettyPath) > 65 {
+				prettyPath = prettyPath[:65]
+			}
+			prettyPath = strings.ReplaceAll(prettyPath, "\n", "\\n")
 			if len(prettyPath) > 64 {
 				prettyPath = prettyPath[:64] + "..."
 			}
@@ -1370,7 +1381,7 @@ func (s *scanner) maybeParseFile(
 		caches:          s.caches,
 		keyPath:         path,
 		prettyPath:      prettyPath,
-		sourceIndex:     sourceIndex,
+		sourceIndex:     visited.sourceIndex,
 		importSource:    importSource,
 		sideEffects:     sideEffects,
 		importPathRange: importPathRange,
@@ -1382,7 +1393,7 @@ func (s *scanner) maybeParseFile(
 		uniqueKeyPrefix: s.uniqueKeyPrefix,
 	})
 
-	return sourceIndex
+	return visited.sourceIndex
 }
 
 func (s *scanner) allocateSourceIndex(path logger.Path, kind cache.SourceIndexKind) uint32 {
@@ -1419,7 +1430,7 @@ func (s *scanner) preprocessInjectedFiles() {
 		// These should be unique by construction so no need to check for collisions
 		visitedKey := logger.Path{Text: fmt.Sprintf("<define:%s>", define.Name)}
 		sourceIndex := s.allocateSourceIndex(visitedKey, cache.SourceIndexNormal)
-		s.visited[visitedKey] = sourceIndex
+		s.visited[visitedKey] = visitedFile{sourceIndex: sourceIndex}
 		source := logger.Source{
 			Index:          sourceIndex,
 			KeyPath:        visitedKey,
@@ -1608,7 +1619,7 @@ func (s *scanner) addEntryPoints(entryPoints []EntryPoint) []graph.EntryPoint {
 						})
 					}
 				}
-				debug.LogErrorMsg(s.log, nil, logger.Range{}, fmt.Sprintf("Could not resolve %q", entryPoint.InputPath), notes)
+				debug.LogErrorMsg(s.log, nil, logger.Range{}, fmt.Sprintf("Could not resolve %q", entryPoint.InputPath), "", notes)
 			}
 			entryPointWaitGroup.Done()
 		}(i, entryPoint)
@@ -1863,8 +1874,8 @@ func (s *scanner) processScannedFiles() []scannerFile {
 					if secondaryKey.Namespace == "file" {
 						secondaryKey.Text = canonicalFileSystemPathForWindows(secondaryKey.Text)
 					}
-					if secondarySourceIndex, ok := s.visited[secondaryKey]; ok {
-						record.SourceIndex = ast.MakeIndex32(secondarySourceIndex)
+					if secondaryVisited, ok := s.visited[secondaryKey]; ok {
+						record.SourceIndex = ast.MakeIndex32(secondaryVisited.sourceIndex)
 					}
 				}
 
