@@ -83,7 +83,7 @@ function installUsingNPM(pkg: string, subpath: string, binPath: string): void {
 
   // Create a temporary directory inside the "esbuild" package with an empty
   // "package.json" file. We'll use this to run "npm install" in.
-  const esbuildLibDir = path.dirname(require.resolve('esbuild'));
+  const esbuildLibDir = path.dirname(require.resolve('@netlify/esbuild'));
   const installDir = path.join(esbuildLibDir, 'npm-install');
   fs.mkdirSync(installDir);
   try {

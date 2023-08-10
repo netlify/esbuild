@@ -91,7 +91,7 @@ function pkgForSomeOtherPlatform(): string | null {
 }
 
 export function downloadedBinPath(pkg: string, subpath: string): string {
-  const esbuildLibDir = path.dirname(require.resolve('esbuild'));
+  const esbuildLibDir = path.dirname(require.resolve('@netlify/esbuild'));
   return path.join(esbuildLibDir, `downloaded-${pkg}-${path.basename(subpath)}`);
 }
 
