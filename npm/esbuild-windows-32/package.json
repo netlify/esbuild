@@ -1,6 +1,6 @@
 {
   "name": "@netlify/esbuild-windows-32",
-  "version": "0.14.39",
+  "version": "0.14.39-1",
   "description": "The Windows 32-bit binary for esbuild, a JavaScript bundler.",
   "repository": "https://github.com/netlify/esbuild",
   "license": "MIT",

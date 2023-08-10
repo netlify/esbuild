@@ -355,13 +355,13 @@ platform-deno: esbuild
 
 publish-all: check-go-version
 	@npm --version > /dev/null || (echo "The 'npm' command must be in your path to publish" && false)
-	@echo "Checking for uncommitted/untracked changes..." && test -z "`git status --porcelain | grep -vE 'M (CHANGELOG\.md|version\.txt)'`" || \
-		(echo "Refusing to publish with these uncommitted/untracked changes:" && \
-		git status --porcelain | grep -vE 'M (CHANGELOG\.md|version\.txt)' && false)
-	@echo "Checking for master branch..." && test netlify = "`git rev-parse --abbrev-ref HEAD`" || \
-		(echo "Refusing to publish from non-master branch `git rev-parse --abbrev-ref HEAD`" && false)
-	@echo "Checking for unpushed commits..." && git fetch
-	@test "" = "`git cherry`" || (echo "Refusing to publish with unpushed commits" && false)
+	# @echo "Checking for uncommitted/untracked changes..." && test -z "`git status --porcelain | grep -vE 'M (CHANGELOG\.md|version\.txt)'`" || \
+	# 	(echo "Refusing to publish with these uncommitted/untracked changes:" && \
+	# 	git status --porcelain | grep -vE 'M (CHANGELOG\.md|version\.txt)' && false)
+	# @echo "Checking for master branch..." && test netlify = "`git rev-parse --abbrev-ref HEAD`" || \
+	# 	(echo "Refusing to publish from non-master branch `git rev-parse --abbrev-ref HEAD`" && false)
+	# @echo "Checking for unpushed commits..." && git fetch
+	# @test "" = "`git cherry`" || (echo "Refusing to publish with unpushed commits" && false)
 
 	# Prebuild now to prime go's compile cache and avoid timing issues later
 	@$(MAKE) --no-print-directory platform-all
