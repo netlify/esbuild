@@ -26,6 +26,7 @@ const buildNeutralLib = (esbuildPath) => {
     '--target=' + nodeTarget,
     '--define:ESBUILD_VERSION=' + JSON.stringify(version),
     '--external:esbuild',
+    '--external:@netlify/esbuild',
     '--platform=node',
     '--log-level=warning',
   ], { cwd: repoDir })
@@ -39,6 +40,7 @@ const buildNeutralLib = (esbuildPath) => {
     '--define:WASM=false',
     '--define:ESBUILD_VERSION=' + JSON.stringify(version),
     '--external:esbuild',
+    '--external:@netlify/esbuild',
     '--platform=node',
     '--log-level=warning',
   ], { cwd: repoDir })
@@ -50,6 +52,7 @@ const buildNeutralLib = (esbuildPath) => {
     '--bundle',
     '--target=' + nodeTarget,
     '--external:esbuild',
+    '--external:@netlify/esbuild',
     '--platform=node',
     '--log-level=warning',
   ], { cwd: repoDir })
@@ -65,6 +68,7 @@ const buildNeutralLib = (esbuildPath) => {
     '--bundle',
     '--target=' + nodeTarget,
     '--external:esbuild',
+    '--external:@netlify/esbuild',
     '--platform=node',
     '--log-level=warning',
   ], { cwd: repoDir }))(platforms, platforms.exports, require)
@@ -121,6 +125,7 @@ exports.buildWasmLib = async (esbuildPath) => {
     '--define:WASM=true',
     '--define:ESBUILD_VERSION=' + JSON.stringify(version),
     '--external:esbuild',
+    '--external:@netlify/esbuild',
     '--platform=node',
     '--log-level=warning',
   ], { cwd: repoDir })
