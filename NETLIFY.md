@@ -1,6 +1,7 @@
 # @netlify/esbuild
 
-This is a fork of esbuild maintained by Netlify. If you're interested in using or contributing to this fork, please read this document carefully.
+This fork of esbuild was maintained by Netlify. esbuild added support for [glob-style imports](https://esbuild.github.io/api/#glob),
+which should be used instead of the `onDynamicImport` hook provided by this fork.
 
 ## Objectives and guiding principles
 
@@ -8,7 +9,7 @@ We're big fans of esbuild at Netlify! ❤️
 
 [zip-it-and-ship-it](https://github.com/netlify/zip-it-and-ship-it), our serverless functions bundler, uses esbuild to prepare JavaScript and TypeScript functions for deployment. In that context, there are certain features that we require in order to provide a smooth experience for our customers, some of which aren't provided by esbuild out-of-the-box just yet.
 
-We've implemented those changes in this fork, which we maintain with the following principles:
+We've implemented those changes in this fork, which we maintained with the following principles:
 
 1. **Minimize changes**: We don't have a different vision for esbuild, so we'll keep our changes to the mininum necessary. We won't introduce breaking changes to existing APIs.
 
@@ -18,7 +19,7 @@ We've implemented those changes in this fork, which we maintain with the followi
 
 4. **Aim for unification**: We plan every feature so that it benefits the esbuild community and not our specific needs (which is made possible by the fact that esbuild is extendable via a plugin API). We do this because our end goal is to eventually decommission this fork and go back to using the main package.
 
-As such, we prioritize the API designs from upstream over ours, which means that features in the fork are more volatile and subject to change based on what happens upstream.
+As such, we prioritized the API designs from upstream over ours, which means that features in the fork are more volatile and subject to change based on what happens upstream.
 
 ## Changes
 

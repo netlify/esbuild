@@ -9,7 +9,9 @@
   <a href="https://esbuild.github.io/faq/">FAQ</a>
 </p>
 
-> This is a fork of esbuild maintained by Netlify. See [here](NETLIFY.md) for more details.
+> esbuild implemented analysis of glob-style imports: https://esbuild.github.io/api/#glob
+> We recommend migrating to that, as this fork of esbuild is not maintained anymore.
+> See [here](NETLIFY.md) for more details.
 
 ## Why?
 
